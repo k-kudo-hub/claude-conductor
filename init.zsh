@@ -15,6 +15,7 @@ alias zjk='zellij kill-session'
 # Multi-task session with dashboard
 mdev() {
     local session_name="${1:-$(basename $(pwd))-$(date +%H%M%S)}"
+    bash "$CONDUCTOR_HOME/scripts/fetch-news.sh"
     zellij --new-session-with-layout "$CONDUCTOR_HOME/layouts/multi.kdl" --session "$session_name"
 }
 

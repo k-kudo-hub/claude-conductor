@@ -7,6 +7,7 @@ set -e
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX=$(mktemp -d)
 export HOME="$SANDBOX"
+export CONDUCTOR_HOME="$HOME/.claude-conductor"
 
 PASS=0
 FAIL=0
@@ -235,9 +236,9 @@ OUTPUT=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && echo loaded" 2>&1)
 [[ "$OUTPUT" == "loaded" ]] && pass "init.zsh sourced successfully" || fail "init.zsh failed: $OUTPUT"
 
 # Check functions are defined
-FUNCS=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && whence -w mdev dev task pdev zs pending-clear" 2>&1)
+FUNCS=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && whence -w mdev dev zs pending-clear" 2>&1)
 echo "$FUNCS" | grep -q "mdev: function" && pass "mdev function defined" || fail "mdev not defined"
-echo "$FUNCS" | grep -q "task: function" && pass "task function defined" || fail "task not defined"
+echo "$FUNCS" | grep -q "dev: function" && pass "dev function defined" || fail "dev not defined"
 
 # ============================================================
 section "13. Zellij calls were made correctly"
@@ -347,7 +348,188 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
-section "17. Uninstall"
+section "17. fetch-news.sh (successful fetch)"
+# ============================================================
+
+# Re-install for news tests
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+
+# Create a mock curl that returns fake Hacker News API response
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat << 'JSON'
+{
+  "hits": [
+    {
+      "title": "GPT-5 Released with Major Improvements",
+      "url": "https://example.com/gpt5",
+      "points": 500,
+      "num_comments": 200,
+      "created_at": "2026-04-19T08:00:00.000Z",
+      "objectID": "1001"
+    },
+    {
+      "title": "Claude 4.6 Beats All Benchmarks",
+      "url": "https://example.com/claude",
+      "points": 450,
+      "num_comments": 180,
+      "created_at": "2026-04-19T07:00:00.000Z",
+      "objectID": "1002"
+    },
+    {
+      "title": "Open Source LLM Surpasses Commercial Models",
+      "url": "https://example.com/open-llm",
+      "points": 300,
+      "num_comments": 120,
+      "created_at": "2026-04-19T06:00:00.000Z",
+      "objectID": "1003"
+    },
+    {
+      "title": "AI Chip Startup Raises $1B",
+      "url": "https://example.com/ai-chip",
+      "points": 250,
+      "num_comments": 90,
+      "created_at": "2026-04-19T05:00:00.000Z",
+      "objectID": "1004"
+    },
+    {
+      "title": "New AI Safety Framework Proposed",
+      "url": "https://example.com/ai-safety",
+      "points": 200,
+      "num_comments": 150,
+      "created_at": "2026-04-19T04:00:00.000Z",
+      "objectID": "1005"
+    }
+  ]
+}
+JSON
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+NEWS_DIR="$HOME/.claude-conductor/news"
+rm -rf "$NEWS_DIR"
+
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+NEWS_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+[[ -f "$NEWS_FILE" ]] && pass "news file created" || fail "news file not created"
+
+if [[ -f "$NEWS_FILE" ]]; then
+    NEWS_COUNT=$(jq -r '.hits | length' "$NEWS_FILE")
+    [[ "$NEWS_COUNT" == "5" ]] && pass "5 news items saved" || fail "news count wrong: $NEWS_COUNT"
+
+    FIRST_TITLE=$(jq -r '.hits[0].title' "$NEWS_FILE")
+    [[ "$FIRST_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "first title correct" || fail "first title wrong: $FIRST_TITLE"
+
+    FIRST_URL=$(jq -r '.hits[0].url' "$NEWS_FILE")
+    [[ "$FIRST_URL" == "https://example.com/gpt5" ]] && pass "first url correct" || fail "first url wrong: $FIRST_URL"
+fi
+
+# ============================================================
+section "18. fetch-news.sh (skips if today's file exists)"
+# ============================================================
+
+# Modify existing file to detect re-fetch
+if [[ -f "$NEWS_FILE" ]]; then
+    jq '.hits[0].title = "CACHED"' "$NEWS_FILE" > "${NEWS_FILE}.tmp"
+    mv "${NEWS_FILE}.tmp" "$NEWS_FILE"
+
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+    CACHED_TITLE=$(jq -r '.hits[0].title' "$NEWS_FILE")
+    [[ "$CACHED_TITLE" == "CACHED" ]] && pass "skipped fetch when today's file exists" || fail "re-fetched despite existing file: $CACHED_TITLE"
+else
+    fail "news file missing from previous test"
+fi
+
+# ============================================================
+section "19. fetch-news.sh (handles API failure gracefully)"
+# ============================================================
+
+# Replace curl mock with one that fails
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+exit 1
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# Remove existing file to force fetch
+rm -f "$NEWS_FILE"
+
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+EXIT_CODE=$?
+
+[[ $EXIT_CODE -eq 0 ]] && pass "fetch-news.sh exits 0 on API failure" || fail "fetch-news.sh exits non-zero: $EXIT_CODE"
+[[ ! -f "$NEWS_FILE" ]] && pass "no news file on API failure" || fail "news file created despite failure"
+
+# ============================================================
+section "20. news-loop.sh (displays news from file)"
+# ============================================================
+
+# Restore working curl mock
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat << 'JSON'
+{
+  "hits": [
+    {
+      "title": "GPT-5 Released",
+      "url": "https://example.com/gpt5",
+      "points": 500,
+      "num_comments": 200,
+      "created_at": "2026-04-19T08:00:00.000Z",
+      "objectID": "1001"
+    }
+  ]
+}
+JSON
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# Create news file for display test
+mkdir -p "$NEWS_DIR"
+cat > "$NEWS_FILE" << 'NEWSJSON'
+{
+  "hits": [
+    {
+      "title": "GPT-5 Released with Major Improvements",
+      "url": "https://example.com/gpt5",
+      "points": 500,
+      "num_comments": 200,
+      "created_at": "2026-04-19T08:00:00.000Z",
+      "objectID": "1001"
+    },
+    {
+      "title": "Claude 4.6 Beats All Benchmarks",
+      "url": "https://example.com/claude",
+      "points": 450,
+      "num_comments": 180,
+      "created_at": "2026-04-19T07:00:00.000Z",
+      "objectID": "1002"
+    }
+  ]
+}
+NEWSJSON
+
+# Run news-loop.sh in single-pass mode for testing
+OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+
+echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
+echo "$OUTPUT" | grep -q "example.com/gpt5" && pass "news url displayed" || fail "news url not displayed"
+echo "$OUTPUT" | grep -q "500" && pass "points displayed" || fail "points not displayed"
+
+# ============================================================
+section "21. news-loop.sh (handles missing news file)"
+# ============================================================
+
+rm -f "$NEWS_FILE"
+
+OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+
+echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
+
+# ============================================================
+section "22. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
