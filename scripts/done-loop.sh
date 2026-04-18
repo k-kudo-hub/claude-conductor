@@ -36,7 +36,7 @@ while true; do
         jq -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" '[
             .tab,
             (.summary.total_turns // "-" | tostring),
-            (.completed_at | split("T")[1] | split("+")[0] | .[0:5]),
+            (.completed_at | .[11:16]),
             ([ (if .markers.merged then $rocket else empty end),
                (if .markers.slack  then $chat else empty end),
                (if .markers.doc    then $memo else empty end)

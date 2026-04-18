@@ -82,7 +82,21 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         fi
     fi
 
-    echo "$RECORD" >> "$DAILY_FILE"
+    if [ -n "$RECORD" ]; then
+        echo "$RECORD" >> "$DAILY_FILE"
+    else
+        jq -n -c \
+            --arg tab "$TAB_NAME" \
+            --arg completed_at "$COMPLETED_AT" \
+            --arg message "${MESSAGE:-Parse failed}" \
+            '{
+                tab: $tab,
+                completed_at: $completed_at,
+                message: $message,
+                summary: null,
+                markers: { merged: false, slack: false, doc: false }
+            }' >> "$DAILY_FILE"
+    fi
 else
     jq -n -c \
         --arg tab "$TAB_NAME" \

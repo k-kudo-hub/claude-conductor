@@ -32,27 +32,14 @@ if [ -f "$PENDING_FILE" ] && [ "$HOOK_EVENT" = "Stop" ]; then
     fi
 fi
 
-if [ "$HOOK_EVENT" = "Stop" ] && [ -n "$TRANSCRIPT_PATH" ]; then
-    cat > "$PENDING_FILE" << EOF
-{
-  "tab": "$TAB_NAME",
-  "session": "$SESSION_NAME",
-  "claude_session_id": "$CLAUDE_SESSION_ID",
-  "message": "$MESSAGE",
-  "event": "$HOOK_EVENT",
-  "time": "$(date '+%H:%M:%S')",
-  "transcript_path": "$TRANSCRIPT_PATH"
-}
-EOF
-else
-    cat > "$PENDING_FILE" << EOF
-{
-  "tab": "$TAB_NAME",
-  "session": "$SESSION_NAME",
-  "claude_session_id": "$CLAUDE_SESSION_ID",
-  "message": "$MESSAGE",
-  "event": "$HOOK_EVENT",
-  "time": "$(date '+%H:%M:%S')"
-}
-EOF
-fi
+jq -n \
+    --arg tab "$TAB_NAME" \
+    --arg session "$SESSION_NAME" \
+    --arg claude_session_id "$CLAUDE_SESSION_ID" \
+    --arg message "$MESSAGE" \
+    --arg event "$HOOK_EVENT" \
+    --arg time "$(date '+%H:%M:%S')" \
+    --arg transcript_path "$TRANSCRIPT_PATH" \
+    '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time}
+     + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' \
+    > "$PENDING_FILE"
