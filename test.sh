@@ -176,14 +176,20 @@ echo '{"session_id":"sess-bbb"}' \
 [[ ! -f "$PENDING_DIR/sess-bbb.json" ]] && pass "Stop pending resolved by UserPromptSubmit" || fail "Stop pending NOT resolved"
 
 # ============================================================
-section "9. pending-resolve.sh (no-op when no pending file)"
+section "9. pending-resolve.sh (returns to Main even without pending file)"
 # ============================================================
+
+# Clear zellij call log to isolate this test
+: > "$HOME/.claude-pending/zellij-calls.log"
 
 echo '{"session_id":"sess-nonexistent"}' \
   | ZELLIJ_SESSION_NAME=test-session \
     bash "$HOME/.claude-conductor/scripts/pending-resolve.sh"
 
 pass "no error on missing pending file"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "go-to-tab-name Main called without pending file" \
+  || fail "go-to-tab-name Main NOT called without pending file"
 
 # ============================================================
 section "10. pending-notify.sh (no-op without session_id)"

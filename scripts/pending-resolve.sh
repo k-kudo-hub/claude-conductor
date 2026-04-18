@@ -13,11 +13,9 @@ if [ -z "$CLAUDE_SESSION_ID" ]; then
 fi
 
 PENDING_FILE="$PENDING_DIR/${CLAUDE_SESSION_ID}.json"
-if [ ! -f "$PENDING_FILE" ]; then
-    exit 0
+if [ -f "$PENDING_FILE" ]; then
+    rm -f "$PENDING_FILE"
 fi
-
-rm -f "$PENDING_FILE"
 
 if [ -n "$ZELLIJ_SESSION_NAME" ]; then
     zellij action go-to-tab-name "Main" 2>/dev/null
