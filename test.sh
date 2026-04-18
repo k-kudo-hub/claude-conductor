@@ -95,6 +95,12 @@ USER_PROMPT=$(jq -r '.hooks.UserPromptSubmit' "$HOME/.claude/settings.json")
 PERMS=$(jq -r '.permissions.allow[0]' "$HOME/.claude/settings.json")
 [[ "$PERMS" == "Bash" ]] && pass "existing permissions preserved" || fail "permissions lost"
 
+# Check that hook commands use CONDUCTOR_HOME variable
+HOOK_CMD=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$HOME/.claude/settings.json")
+[[ "$HOOK_CMD" == *'${CONDUCTOR_HOME:-$HOME/.claude-conductor}'* ]] \
+  && pass "hook command uses CONDUCTOR_HOME variable" \
+  || fail "hook command does not use CONDUCTOR_HOME: $HOOK_CMD"
+
 # ============================================================
 section "3. pending-notify.sh (Notification event)"
 # ============================================================
@@ -192,7 +198,26 @@ grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
   || fail "go-to-tab-name Main NOT called without pending file"
 
 # ============================================================
-section "10. pending-notify.sh (no-op without session_id)"
+section "10. CONDUCTOR_HOME overrides script path"
+# ============================================================
+
+# Create an alternate conductor home with a custom pending-resolve.sh
+ALT_HOME="$SANDBOX/alt-conductor"
+mkdir -p "$ALT_HOME/scripts"
+cat > "$ALT_HOME/scripts/pending-resolve.sh" << 'ALTSCRIPT'
+#!/bin/bash
+echo "alt-conductor-resolve" >> "$HOME/.claude-pending/alt-calls.log"
+ALTSCRIPT
+chmod +x "$ALT_HOME/scripts/pending-resolve.sh"
+
+CONDUCTOR_HOME="$ALT_HOME" bash -c '${CONDUCTOR_HOME}/scripts/pending-resolve.sh'
+
+[[ -f "$HOME/.claude-pending/alt-calls.log" ]] \
+  && pass "CONDUCTOR_HOME override used alternate script" \
+  || fail "CONDUCTOR_HOME override did not use alternate script"
+
+# ============================================================
+section "12. pending-notify.sh (no-op without session_id)"
 # ============================================================
 
 echo '{"message":"no session id"}' \
@@ -203,7 +228,7 @@ FILE_COUNT=$(ls "$PENDING_DIR" 2>/dev/null | wc -l | tr -d ' ')
 [[ "$FILE_COUNT" -eq 1 ]] && pass "no file created without session_id" || fail "unexpected file count: $FILE_COUNT"
 
 # ============================================================
-section "11. init.zsh loads without errors"
+section "13. init.zsh loads without errors"
 # ============================================================
 
 OUTPUT=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && echo loaded" 2>&1)
@@ -215,7 +240,7 @@ echo "$FUNCS" | grep -q "mdev: function" && pass "mdev function defined" || fail
 echo "$FUNCS" | grep -q "task: function" && pass "task function defined" || fail "task not defined"
 
 # ============================================================
-section "12. Zellij calls were made correctly"
+section "14. Zellij calls were made correctly"
 # ============================================================
 
 CALLS="$HOME/.claude-pending/zellij-calls.log"
@@ -227,7 +252,7 @@ else
 fi
 
 # ============================================================
-section "13. Uninstall"
+section "15. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

@@ -9,7 +9,7 @@
         },
         {
           "type": "command",
-          "command": "~/.claude-conductor/scripts/pending-notify.sh"
+          "command": "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/pending-notify.sh"
         }
       ]
     }
@@ -24,7 +24,7 @@
         },
         {
           "type": "command",
-          "command": "~/.claude-conductor/scripts/pending-notify.sh"
+          "command": "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/pending-notify.sh"
         }
       ]
     }
@@ -35,7 +35,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "~/.claude-conductor/scripts/pending-post-tool.sh"
+          "command": "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/pending-post-tool.sh"
         }
       ]
     }
@@ -46,7 +46,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "~/.claude-conductor/scripts/pending-resolve.sh"
+          "command": "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/pending-resolve.sh"
         }
       ]
     }
