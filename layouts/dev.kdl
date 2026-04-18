@@ -14,7 +14,7 @@ layout {
                 size "50%"
             }
             pane {
-                name "Preview"
+                name "LazyVim"
                 command "nvim"
                 size "50%"
             }
