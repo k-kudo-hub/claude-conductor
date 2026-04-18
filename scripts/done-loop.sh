@@ -33,13 +33,13 @@ while true; do
         echo -e "  ${YELLOW}${BOLD}${task_count}${NC} tasks  ${DIM}${total_turns} turns / ${total_calls} calls${NC}"
         echo ""
 
-        jq -r '[
+        jq -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" '[
             .tab,
             (.summary.total_turns // "-" | tostring),
             (.completed_at | split("T")[1] | split("+")[0] | .[0:5]),
-            ([ (if .markers.merged then "\u{0001F680}" else empty end),
-               (if .markers.slack  then "\u{0001F4AC}" else empty end),
-               (if .markers.doc    then "\u{0001F4DD}" else empty end)
+            ([ (if .markers.merged then $rocket else empty end),
+               (if .markers.slack  then $chat else empty end),
+               (if .markers.doc    then $memo else empty end)
             ] | join(""))
         ] | join("\t")' "$DAILY_FILE" 2>/dev/null | while IFS="$(printf '\t')" read -r tab turns time markers; do
             if [ -n "$markers" ]; then
