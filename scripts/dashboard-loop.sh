@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Conductor - Interactive Dashboard
+# Claude Conductor - Interactive Dashboard (Current Tasks)
 # Pending tasks are displayed in Zellij tab order.
 # Number keys to jump, d+number to delete.
 
@@ -18,31 +18,9 @@ NC='\033[0m'
 while true; do
     clear
 
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}  Claude Conductor${NC} ${DIM}[$SESSION_NAME]${NC}"
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
+    echo -e "${DIM}  ──────────────────────────${NC}"
     echo ""
-
-    # Today's Output section
-    DAILY_FILE="$HOME/.claude-conductor/daily/$(date '+%Y-%m-%d').jsonl"
-    if [[ -f "$DAILY_FILE" ]]; then
-        daily_stats=$(jq -s '{
-            count: length,
-            turns: ([.[].summary.total_turns // 0] | add),
-            calls: ([.[].summary.total_tool_calls // 0] | add)
-        }' "$DAILY_FILE" 2>/dev/null)
-        task_count=$(echo "$daily_stats" | jq -r '.count')
-        total_turns=$(echo "$daily_stats" | jq -r '.turns')
-        total_calls=$(echo "$daily_stats" | jq -r '.calls')
-
-        echo -e "  ${GREEN}Today's Output${NC} ${DIM}(${task_count} tasks / ${total_turns} turns / ${total_calls} tool calls)${NC}"
-        echo -e "  ${DIM}──────────────────────────────────────────────────${NC}"
-
-        tail -5 "$DAILY_FILE" | jq -r '[.tab, (.summary.total_turns // "-" | tostring), (.summary.total_tool_calls // "-" | tostring), (.completed_at | split("T")[1] | split("+")[0] | .[0:5])] | join("\t")' 2>/dev/null | while IFS=$'\t' read -r tab turns calls time; do
-            printf "  ${GREEN}✓${NC} %-18s %3s turns %3s calls  ${DIM}[%s]${NC}\n" "$tab" "$turns" "$calls" "$time"
-        done
-        echo ""
-    fi
 
     tabs=()
     i=1
@@ -78,12 +56,12 @@ while true; do
     if [[ $count -eq 0 ]]; then
         echo -e "  ${GREEN}All tasks running${NC}"
         echo ""
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
         sleep 2
     else
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
         echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
 
         key=""
         read -t 2 -n 1 -s key || true

@@ -6,13 +6,20 @@ layout {
         children
     }
 
-    // Main tab: Dashboard + Control terminal
+    // Main tab: Current Tasks (left) + Done Tasks (right) + Control terminal (bottom)
     tab name="Main" focus=true {
         pane split_direction="horizontal" {
-            pane size="70%" {
-                name "Dashboard"
-                command "bash"
-                args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+            pane size="70%" split_direction="vertical" {
+                pane size="60%" {
+                    name "Dashboard"
+                    command "bash"
+                    args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+                }
+                pane size="40%" {
+                    name "Done"
+                    command "bash"
+                    args "-c" "$HOME/.claude-conductor/scripts/done-loop.sh"
+                }
             }
             pane size="30%" {
                 name "Control"
