@@ -5,7 +5,7 @@
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 SEARCH_DIRS=("$HOME/projects" "$HOME/works")
-SEARCH_DEPTH=2
+SEARCH_DEPTH=1
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -46,8 +46,6 @@ create_task() {
             ;;
     esac
 
-    sleep 0.3
-    zellij action go-to-tab-name "Main" 2>/dev/null
 }
 
 while true; do
