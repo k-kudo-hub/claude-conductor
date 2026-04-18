@@ -31,32 +31,33 @@ done
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    TOTAL_TURNS=$(jq -s '[.[] | select(.type == "user")] | length' "$TRANSCRIPT_PATH" 2>/dev/null)
-    TOTAL_TOOL_CALLS=$(jq -s '[.[] | .message.content[]? | select(.type == "tool_use")] | length' "$TRANSCRIPT_PATH" 2>/dev/null)
-    TOOLS_USED=$(jq -s '[.[] | .message.content[]? | select(.type == "tool_use") | .name] | unique' "$TRANSCRIPT_PATH" 2>/dev/null)
-    TOTAL_INPUT_TOKENS=$(jq -s '[.[] | select(.message.usage?) | .message.usage.input_tokens] | add // 0' "$TRANSCRIPT_PATH" 2>/dev/null)
-    TOTAL_OUTPUT_TOKENS=$(jq -s '[.[] | select(.message.usage?) | .message.usage.output_tokens] | add // 0' "$TRANSCRIPT_PATH" 2>/dev/null)
+    SUMMARY=$(jq -s '. as $all |
+        ([.[] | select(.type == "user")] | length) as $turns |
+        [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
+        ($tools | length) as $calls |
+        ($tools | [.[].name] | unique) as $used |
+        [.[] | select(.message.usage?) | .message.usage] as $usage |
+        ($usage | [.[].input_tokens] | add // 0) as $in |
+        ($usage | [.[].output_tokens] | add // 0) as $out |
+        {
+            total_turns: $turns,
+            total_tool_calls: $calls,
+            tools_used: $used,
+            total_input_tokens: $in,
+            total_output_tokens: $out
+        }
+    ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     jq -n -c \
         --arg tab "$TAB_NAME" \
         --arg completed_at "$COMPLETED_AT" \
         --arg message "$MESSAGE" \
-        --argjson total_turns "${TOTAL_TURNS:-0}" \
-        --argjson total_tool_calls "${TOTAL_TOOL_CALLS:-0}" \
-        --argjson tools_used "${TOOLS_USED:-[]}" \
-        --argjson total_input_tokens "${TOTAL_INPUT_TOKENS:-0}" \
-        --argjson total_output_tokens "${TOTAL_OUTPUT_TOKENS:-0}" \
+        --argjson summary "${SUMMARY:-null}" \
         '{
             tab: $tab,
             completed_at: $completed_at,
             message: $message,
-            summary: {
-                total_turns: $total_turns,
-                total_tool_calls: $total_tool_calls,
-                tools_used: $tools_used,
-                total_input_tokens: $total_input_tokens,
-                total_output_tokens: $total_output_tokens
-            }
+            summary: $summary
         }' >> "$DAILY_FILE"
 else
     jq -n -c \

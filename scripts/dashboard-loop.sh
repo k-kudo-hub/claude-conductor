@@ -26,18 +26,19 @@ while true; do
     # Today's Output section
     DAILY_FILE="$HOME/.claude-conductor/daily/$(date '+%Y-%m-%d').jsonl"
     if [[ -f "$DAILY_FILE" ]]; then
-        task_count=$(wc -l < "$DAILY_FILE" | tr -d ' ')
-        total_turns=$(jq -s '[.[].summary.total_turns // 0] | add' "$DAILY_FILE" 2>/dev/null)
-        total_calls=$(jq -s '[.[].summary.total_tool_calls // 0] | add' "$DAILY_FILE" 2>/dev/null)
+        daily_stats=$(jq -s '{
+            count: length,
+            turns: ([.[].summary.total_turns // 0] | add),
+            calls: ([.[].summary.total_tool_calls // 0] | add)
+        }' "$DAILY_FILE" 2>/dev/null)
+        task_count=$(echo "$daily_stats" | jq -r '.count')
+        total_turns=$(echo "$daily_stats" | jq -r '.turns')
+        total_calls=$(echo "$daily_stats" | jq -r '.calls')
 
-        echo -e "  ${GREEN}Today's Output${NC} ${DIM}(${task_count} tasks / ${total_turns:-0} turns / ${total_calls:-0} tool calls)${NC}"
+        echo -e "  ${GREEN}Today's Output${NC} ${DIM}(${task_count} tasks / ${total_turns} turns / ${total_calls} tool calls)${NC}"
         echo -e "  ${DIM}──────────────────────────────────────────────────${NC}"
 
-        tail -5 "$DAILY_FILE" | while IFS= read -r line; do
-            tab=$(echo "$line" | jq -r '.tab')
-            turns=$(echo "$line" | jq -r '.summary.total_turns // "-"')
-            calls=$(echo "$line" | jq -r '.summary.total_tool_calls // "-"')
-            time=$(echo "$line" | jq -r '.completed_at' | cut -dT -f2 | cut -d+ -f1 | cut -c1-5)
+        tail -5 "$DAILY_FILE" | jq -r '[.tab, (.summary.total_turns // "-" | tostring), (.summary.total_tool_calls // "-" | tostring), (.completed_at | split("T")[1] | split("+")[0] | .[0:5])] | join("\t")' 2>/dev/null | while IFS=$'\t' read -r tab turns calls time; do
             printf "  ${GREEN}✓${NC} %-18s %3s turns %3s calls  ${DIM}[%s]${NC}\n" "$tab" "$turns" "$calls" "$time"
         done
         echo ""
