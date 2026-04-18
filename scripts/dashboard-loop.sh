@@ -1,8 +1,9 @@
 #!/bin/bash
-# Claude Conductor - Interactive Dashboard
+# Claude Conductor - Interactive Dashboard (Current Tasks)
 # Pending tasks are displayed in Zellij tab order.
 # Number keys to jump, d+number to delete.
 
+CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 mkdir -p "$PENDING_DIR"
@@ -17,9 +18,8 @@ NC='\033[0m'
 while true; do
     clear
 
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}  Claude Conductor${NC} ${DIM}[$SESSION_NAME]${NC}"
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
+    echo -e "${DIM}  ──────────────────────────${NC}"
     echo ""
 
     tabs=()
@@ -56,12 +56,12 @@ while true; do
     if [[ $count -eq 0 ]]; then
         echo -e "  ${GREEN}All tasks running${NC}"
         echo ""
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
         sleep 2
     else
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
         echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
-        echo -e "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
 
         key=""
         read -t 2 -n 1 -s key || true
@@ -72,6 +72,7 @@ while true; do
             read -t 3 -n 1 -s key2 || true
             if [[ "$key2" =~ [1-9] ]] && [[ $key2 -le $count ]]; then
                 target_tab="${tabs[$((key2-1))]}"
+                bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$target_tab"
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$target_tab" ]]; then

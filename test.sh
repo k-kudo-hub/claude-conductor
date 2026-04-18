@@ -252,7 +252,102 @@ else
 fi
 
 # ============================================================
-section "14. Uninstall"
+section "14. record-output.sh (with transcript)"
+# ============================================================
+
+# Re-install for record-output tests
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+
+DAILY_DIR="$HOME/.claude-conductor/daily/test-session"
+DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
+PENDING_DIR="$HOME/.claude-pending/test-session"
+mkdir -p "$PENDING_DIR"
+
+# Create a mock transcript file (JSONL format)
+MOCK_TRANSCRIPT="$SANDBOX/mock-transcript.jsonl"
+cat > "$MOCK_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"cwd":"/tmp/myapp","sessionId":"sess-rec","uuid":"u1","timestamp":"2026-04-18T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-04-18T10:00:01Z"}
+{"type":"user","message":{"role":"user","content":"fix the bug"},"cwd":"/tmp/myapp","sessionId":"sess-rec","uuid":"u2","timestamp":"2026-04-18T10:00:02Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/app.ts"}},{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/README.md"}}],"usage":{"input_tokens":200,"output_tokens":100}},"uuid":"a2","timestamp":"2026-04-18T10:00:03Z"}
+{"type":"user","message":{"role":"user","content":"send to slack"},"cwd":"/tmp/myapp","sessionId":"sess-rec","uuid":"u3","timestamp":"2026-04-18T10:00:04Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","name":"mcp__slack__send_message","input":{"channel":"general","text":"done"}}],"usage":{"input_tokens":150,"output_tokens":75}},"uuid":"a3","timestamp":"2026-04-18T10:00:05Z"}
+TRANSCRIPT
+
+# Create pending file with transcript_path
+cat > "$PENDING_DIR/sess-rec.json" << EOF
+{
+  "tab": "record-test",
+  "session": "test-session",
+  "claude_session_id": "sess-rec",
+  "message": "Task complete",
+  "event": "Stop",
+  "time": "10:00:05",
+  "transcript_path": "$MOCK_TRANSCRIPT"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "record-test"
+
+[[ -f "$DAILY_FILE" ]] && pass "daily log file created" || fail "daily log file not created"
+
+if [[ -f "$DAILY_FILE" ]]; then
+    RECORD=$(cat "$DAILY_FILE")
+    TAB_REC=$(echo "$RECORD" | jq -r '.tab')
+    [[ "$TAB_REC" == "record-test" ]] && pass "tab name recorded" || fail "tab name wrong: $TAB_REC"
+
+    TURNS=$(echo "$RECORD" | jq -r '.summary.total_turns')
+    [[ "$TURNS" == "3" ]] && pass "total_turns=3" || fail "total_turns wrong: $TURNS"
+
+    CALLS=$(echo "$RECORD" | jq -r '.summary.total_tool_calls')
+    [[ "$CALLS" == "3" ]] && pass "total_tool_calls=3" || fail "total_tool_calls wrong: $CALLS"
+
+    SLACK=$(echo "$RECORD" | jq -r '.markers.slack')
+    [[ "$SLACK" == "true" ]] && pass "slack marker detected" || fail "slack marker not detected: $SLACK"
+
+    DOC=$(echo "$RECORD" | jq -r '.markers.doc')
+    [[ "$DOC" == "true" ]] && pass "doc marker detected" || fail "doc marker not detected: $DOC"
+fi
+
+# ============================================================
+section "15. record-output.sh (without transcript)"
+# ============================================================
+
+cat > "$PENDING_DIR/sess-notranscript.json" << 'EOF'
+{
+  "tab": "no-transcript",
+  "session": "test-session",
+  "claude_session_id": "sess-notranscript",
+  "message": "Quick task",
+  "event": "Stop",
+  "time": "11:00:00"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "no-transcript"
+
+LINE_COUNT=$(wc -l < "$DAILY_FILE" | tr -d ' ')
+[[ "$LINE_COUNT" == "2" ]] && pass "second record appended" || fail "line count wrong: $LINE_COUNT"
+
+RECORD2=$(tail -1 "$DAILY_FILE")
+SUMMARY2=$(echo "$RECORD2" | jq -r '.summary')
+[[ "$SUMMARY2" == "null" ]] && pass "summary is null without transcript" || fail "summary not null: $SUMMARY2"
+
+MARKERS2=$(echo "$RECORD2" | jq -r '.markers.merged')
+[[ "$MARKERS2" == "false" ]] && pass "markers default to false" || fail "markers not false: $MARKERS2"
+
+# ============================================================
+section "16. record-output.sh (no pending file)"
+# ============================================================
+
+rm -f "$PENDING_DIR"/*.json
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "nonexistent-tab"
+
+LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
+[[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
+
+# ============================================================
+section "17. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

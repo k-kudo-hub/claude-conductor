@@ -20,6 +20,7 @@ fi
 
 MESSAGE=$(echo "$STDIN_DATA" | jq -r '.message // "Needs attention"' 2>/dev/null)
 HOOK_EVENT=$(echo "$STDIN_DATA" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
+TRANSCRIPT_PATH=$(echo "$STDIN_DATA" | jq -r '.transcript_path // empty' 2>/dev/null)
 
 PENDING_FILE="$PENDING_DIR/${CLAUDE_SESSION_ID}.json"
 
@@ -31,13 +32,14 @@ if [ -f "$PENDING_FILE" ] && [ "$HOOK_EVENT" = "Stop" ]; then
     fi
 fi
 
-cat > "$PENDING_FILE" << EOF
-{
-  "tab": "$TAB_NAME",
-  "session": "$SESSION_NAME",
-  "claude_session_id": "$CLAUDE_SESSION_ID",
-  "message": "$MESSAGE",
-  "event": "$HOOK_EVENT",
-  "time": "$(date '+%H:%M:%S')"
-}
-EOF
+jq -n \
+    --arg tab "$TAB_NAME" \
+    --arg session "$SESSION_NAME" \
+    --arg claude_session_id "$CLAUDE_SESSION_ID" \
+    --arg message "$MESSAGE" \
+    --arg event "$HOOK_EVENT" \
+    --arg time "$(date '+%H:%M:%S')" \
+    --arg transcript_path "$TRANSCRIPT_PATH" \
+    '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time}
+     + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' \
+    > "$PENDING_FILE"
