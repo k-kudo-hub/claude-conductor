@@ -6,7 +6,7 @@ layout {
         children
     }
 
-    // Main tab: Current Tasks (left) + Done Tasks (right) + Control terminal (bottom)
+    // Main tab: Current Tasks (left) + Done Tasks (right) + Task Creator (bottom)
     tab name="Main" focus=true {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
@@ -22,8 +22,10 @@ layout {
                 }
             }
             pane size="30%" {
-                name "Control"
+                name "TaskCreate"
                 focus true
+                command "bash"
+                args "-c" "$HOME/.claude-conductor/scripts/task-create-loop.sh"
             }
         }
     }
