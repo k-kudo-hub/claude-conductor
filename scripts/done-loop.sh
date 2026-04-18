@@ -8,7 +8,8 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-DAILY_DIR="$HOME/.claude-conductor/daily"
+SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
+DAILY_DIR="$HOME/.claude-conductor/daily/$SESSION_NAME"
 
 while true; do
     clear

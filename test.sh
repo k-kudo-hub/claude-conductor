@@ -258,7 +258,7 @@ section "14. record-output.sh (with transcript)"
 # Re-install for record-output tests
 echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 
-DAILY_DIR="$HOME/.claude-conductor/daily"
+DAILY_DIR="$HOME/.claude-conductor/daily/test-session"
 DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 PENDING_DIR="$HOME/.claude-pending/test-session"
 mkdir -p "$PENDING_DIR"

@@ -10,7 +10,7 @@ fi
 
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
-DAILY_DIR="$HOME/.claude-conductor/daily"
+DAILY_DIR="$HOME/.claude-conductor/daily/$SESSION_NAME"
 DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 
 mkdir -p "$DAILY_DIR"
