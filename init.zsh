@@ -48,6 +48,16 @@ task() {
     local type="${1:-dev}"
     local name="${2:-$type-$(date +%H%M%S)}"
 
+    # タイプのバリデーション
+    case "$type" in
+        dev|k8s|review|docs|survey) ;;
+        *)
+            echo "Unknown task type: $type"
+            echo "Available: dev, k8s, review, docs, survey"
+            return 1
+            ;;
+    esac
+
     # 共通: タブ作成 → コントロールバーを全幅で先に確保
     zellij action new-tab -n "$name" -- env TASK_TAB_NAME="$name" claude
     sleep 0.3
@@ -77,11 +87,6 @@ task() {
             ;;
         review|docs|survey)
             # Claude Codeのみ（追加ペインなし）
-            ;;
-        *)
-            echo "Unknown task type: $type"
-            echo "Available: dev, k8s, review, docs, survey"
-            return 1
             ;;
     esac
 }
