@@ -14,7 +14,8 @@ Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zell
 │                                                  │
 │  Pending: 2  [num]: jump / d+[num]: delete       │
 ├──────────────────────────────────────────────────┤
-│  Control: $ task dev api  / $ task review pr42   │
+│  New Task [session-name]                         │
+│  [n] Create task                                 │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -54,17 +55,15 @@ The installer will:
 ```bash
 mdev              # Multi-task dashboard session
 dev               # Single dev session (Claude + Neovim + lazygit)
-pdev              # Select a project directory, then start dev session
 ```
 
-### Manage tasks (inside Zellij)
+### Create tasks (in the dashboard)
 
-```bash
-task dev api      # Add a "dev" task tab named "api"
-task review pr42  # Add a "review" task tab named "pr42"
-task docs guide   # Add a "docs" task tab named "guide"
-task survey data  # Add a "survey" task tab named "data"
-```
+Press `n` in the bottom pane to start the task creation flow:
+
+1. Select a working directory (fzf, searches `~/projects` and `~/works`)
+2. Select a task type (dev, review, docs, survey, k8s)
+3. Enter a task name
 
 ### Dashboard controls
 
