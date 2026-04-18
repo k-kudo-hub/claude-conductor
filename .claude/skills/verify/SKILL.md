@@ -96,3 +96,4 @@ mv ~/.claude/settings.json.verify-bak ~/.claude/settings.json
 - 検証後は必ずロールバックすること（マージ後に install.sh で正式反映する）
 - 複数ファイルの変更がある場合は全てを一度にデプロイすること
 - settings.json のhooks以外の設定（permissions等）を壊さないこと
+- hooks.jsonのマージは同名イベントを上書きする。ユーザーが同じイベント（Notification等）にカスタムhookを追加している場合、デプロイ時に消えるため、バックアップからの復元を必ず行うこと

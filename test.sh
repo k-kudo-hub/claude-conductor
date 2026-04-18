@@ -210,14 +210,14 @@ echo "alt-conductor-resolve" >> "$HOME/.claude-pending/alt-calls.log"
 ALTSCRIPT
 chmod +x "$ALT_HOME/scripts/pending-resolve.sh"
 
-CONDUCTOR_HOME="$ALT_HOME" bash -c '${CONDUCTOR_HOME}/scripts/pending-resolve.sh'
+CONDUCTOR_HOME="$ALT_HOME" bash -c '${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/pending-resolve.sh'
 
 [[ -f "$HOME/.claude-pending/alt-calls.log" ]] \
   && pass "CONDUCTOR_HOME override used alternate script" \
   || fail "CONDUCTOR_HOME override did not use alternate script"
 
 # ============================================================
-section "12. pending-notify.sh (no-op without session_id)"
+section "11. pending-notify.sh (no-op without session_id)"
 # ============================================================
 
 echo '{"message":"no session id"}' \
@@ -228,7 +228,7 @@ FILE_COUNT=$(ls "$PENDING_DIR" 2>/dev/null | wc -l | tr -d ' ')
 [[ "$FILE_COUNT" -eq 1 ]] && pass "no file created without session_id" || fail "unexpected file count: $FILE_COUNT"
 
 # ============================================================
-section "13. init.zsh loads without errors"
+section "12. init.zsh loads without errors"
 # ============================================================
 
 OUTPUT=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && echo loaded" 2>&1)
@@ -240,7 +240,7 @@ echo "$FUNCS" | grep -q "mdev: function" && pass "mdev function defined" || fail
 echo "$FUNCS" | grep -q "task: function" && pass "task function defined" || fail "task not defined"
 
 # ============================================================
-section "14. Zellij calls were made correctly"
+section "13. Zellij calls were made correctly"
 # ============================================================
 
 CALLS="$HOME/.claude-pending/zellij-calls.log"
@@ -252,7 +252,7 @@ else
 fi
 
 # ============================================================
-section "15. Uninstall"
+section "14. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
