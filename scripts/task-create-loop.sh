@@ -45,7 +45,6 @@ create_task() {
             zellij action move-focus up
             ;;
     esac
-
 }
 
 while true; do
