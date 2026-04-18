@@ -3,6 +3,7 @@
 # Pending tasks are displayed in Zellij tab order.
 # Number keys to jump, d+number to delete.
 
+CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 mkdir -p "$PENDING_DIR"
@@ -21,6 +22,26 @@ while true; do
     echo -e "${BOLD}  Claude Conductor${NC} ${DIM}[$SESSION_NAME]${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+
+    # Today's Output section
+    DAILY_FILE="$HOME/.claude-conductor/daily/$(date '+%Y-%m-%d').jsonl"
+    if [[ -f "$DAILY_FILE" ]]; then
+        task_count=$(wc -l < "$DAILY_FILE" | tr -d ' ')
+        total_turns=$(jq -s '[.[].summary.total_turns // 0] | add' "$DAILY_FILE" 2>/dev/null)
+        total_calls=$(jq -s '[.[].summary.total_tool_calls // 0] | add' "$DAILY_FILE" 2>/dev/null)
+
+        echo -e "  ${GREEN}Today's Output${NC} ${DIM}(${task_count} tasks / ${total_turns:-0} turns / ${total_calls:-0} tool calls)${NC}"
+        echo -e "  ${DIM}──────────────────────────────────────────────────${NC}"
+
+        tail -5 "$DAILY_FILE" | while IFS= read -r line; do
+            tab=$(echo "$line" | jq -r '.tab')
+            turns=$(echo "$line" | jq -r '.summary.total_turns // "-"')
+            calls=$(echo "$line" | jq -r '.summary.total_tool_calls // "-"')
+            time=$(echo "$line" | jq -r '.completed_at' | cut -dT -f2 | cut -d+ -f1 | cut -c1-5)
+            printf "  ${GREEN}✓${NC} %-18s %3s turns %3s calls  ${DIM}[%s]${NC}\n" "$tab" "$turns" "$calls" "$time"
+        done
+        echo ""
+    fi
 
     tabs=()
     i=1
@@ -72,6 +93,7 @@ while true; do
             read -t 3 -n 1 -s key2 || true
             if [[ "$key2" =~ [1-9] ]] && [[ $key2 -le $count ]]; then
                 target_tab="${tabs[$((key2-1))]}"
+                bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$target_tab"
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$target_tab" ]]; then

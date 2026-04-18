@@ -2,6 +2,7 @@
 # Claude Conductor - Task Tab Control Bar
 # m: Go to Main tab / dd: Delete this tab
 
+CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 TAB_NAME="${1:-unknown}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
@@ -27,6 +28,7 @@ while true; do
             key2=""
             read -t 2 -n 1 -s key2
             if [[ "$key2" == "d" ]]; then
+                bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$TAB_NAME"
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$TAB_NAME" ]]; then
