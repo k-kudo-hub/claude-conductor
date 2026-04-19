@@ -15,6 +15,11 @@ NC='\033[0m'
 render() {
     clear
 
+    # Detect pane width (fallback to 40 for narrow panes)
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 40)
+    local max_len=$((cols - 6))
+
     echo -e "${BOLD}  AI Tech News${NC} ${DIM}[$(date '+%Y-%m-%d')]${NC}"
     echo -e "${DIM}  ──────────────────────────${NC}"
     echo ""
@@ -42,12 +47,25 @@ render() {
         description=$(jq -r ".items[$i].description" "$NEWS_FILE" 2>/dev/null)
         url=$(jq -r ".items[$i].url" "$NEWS_FILE" 2>/dev/null)
 
+        # Trim title to fit pane width
+        if [[ ${#title} -gt $max_len ]]; then
+            title="${title:0:$((max_len - 3))}..."
+        fi
+
         echo -e "  ${YELLOW}$((i+1)).${NC} ${BOLD}${title}${NC}"
         if [[ "$description" != "null" ]] && [[ -n "$description" ]]; then
-            echo -e "     ${DIM}${description}${NC}"
+            local desc_trimmed="$description"
+            if [[ ${#desc_trimmed} -gt $max_len ]]; then
+                desc_trimmed="${desc_trimmed:0:$((max_len - 3))}..."
+            fi
+            echo -e "     ${DIM}${desc_trimmed}${NC}"
         fi
         if [[ "$url" != "null" ]] && [[ -n "$url" ]]; then
-            echo -e "     ${CYAN}${url}${NC}"
+            local url_trimmed="$url"
+            if [[ ${#url_trimmed} -gt $max_len ]]; then
+                url_trimmed="${url_trimmed:0:$((max_len - 3))}..."
+            fi
+            echo -e "     ${CYAN}${url_trimmed}${NC}"
         fi
         echo ""
 

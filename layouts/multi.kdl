@@ -10,17 +10,17 @@ layout {
     tab name="Main" focus=true {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
-                pane size="40%" {
+                pane {
                     name "Dashboard"
                     command "bash"
                     args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
                 }
-                pane size="30%" {
+                pane {
                     name "Done"
                     command "bash"
                     args "-c" "$HOME/.claude-conductor/scripts/done-loop.sh"
                 }
-                pane size="30%" {
+                pane {
                     name "News"
                     command "bash"
                     args "-c" "$HOME/.claude-conductor/scripts/news-loop.sh"
