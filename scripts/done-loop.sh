@@ -42,7 +42,7 @@ while true; do
             echo -e "  ${YELLOW}${BOLD}${task_count}${NC} tasks  ${DIM}${total_turns} turns / ${total_calls} calls / ${total_cost}${NC}"
             echo ""
 
-            cat "${DAILY_FILES[@]}" | jq -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" '[
+            cat "${DAILY_FILES[@]}" | jq -s -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" 'sort_by(.completed_at) | .[] | [
                 .tab,
                 (.summary.total_turns // "-" | tostring),
                 (.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end),
