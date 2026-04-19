@@ -1,6 +1,51 @@
 {
   "search_dirs": ["~/projects", "~/works"],
   "search_depth": 1,
+  "pricing": {
+    "claude-opus-4-7": {
+      "input": 5.0,
+      "output": 25.0,
+      "cache_write_5m": 6.25,
+      "cache_write_1h": 10.0,
+      "cache_hit": 0.5
+    },
+    "claude-opus-4-6": {
+      "input": 5.0,
+      "output": 25.0,
+      "cache_write_5m": 6.25,
+      "cache_write_1h": 10.0,
+      "cache_hit": 0.5
+    },
+    "claude-opus-4-5": {
+      "input": 5.0,
+      "output": 25.0,
+      "cache_write_5m": 6.25,
+      "cache_write_1h": 10.0,
+      "cache_hit": 0.5
+    },
+    "claude-sonnet-4-6": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_write_5m": 3.75,
+      "cache_write_1h": 6.0,
+      "cache_hit": 0.3
+    },
+    "claude-sonnet-4-5": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_write_5m": 3.75,
+      "cache_write_1h": 6.0,
+      "cache_hit": 0.3
+    },
+    "claude-haiku-4-5": {
+      "input": 1.0,
+      "output": 5.0,
+      "cache_write_5m": 1.25,
+      "cache_write_1h": 2.0,
+      "cache_hit": 0.1
+    },
+    "fast_multiplier": 6
+  },
   "task_types": {
     "dev": {
       "description": "Claude Code + LazyVim",

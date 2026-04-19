@@ -584,6 +584,182 @@ MERGED_NONE=$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')
 [[ "$MERGED_NONE" == "false" ]] && pass "merged marker false without merge" || fail "merged marker unexpectedly set: $MERGED_NONE"
 
 # ============================================================
+section "26a. record-output.sh (token cost calculation with cache tokens)"
+# ============================================================
+
+rm -f "$DAILY_FILE"
+
+MOCK_TRANSCRIPT_COST="$SANDBOX/mock-transcript-cost.jsonl"
+cat > "$MOCK_TRANSCRIPT_COST" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"cwd":"/tmp","sessionId":"sess-cost","uuid":"u1","timestamp":"2026-04-19T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":500,"cache_read_input_tokens":10000,"cache_creation_input_tokens":5000,"cache_creation":{"ephemeral_5m_input_tokens":2000,"ephemeral_1h_input_tokens":3000},"speed":"standard"}},"uuid":"a1","timestamp":"2026-04-19T10:00:01Z"}
+{"type":"user","message":{"role":"user","content":"more"},"cwd":"/tmp","sessionId":"sess-cost","uuid":"u2","timestamp":"2026-04-19T10:00:02Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":50,"output_tokens":300,"cache_read_input_tokens":15000,"cache_creation_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":1000,"ephemeral_1h_input_tokens":0},"speed":"standard"}},"uuid":"a2","timestamp":"2026-04-19T10:00:03Z"}
+TRANSCRIPT
+
+# Expected cost for claude-opus-4-6 (standard speed):
+# input:       150 * 5.0 / 1M = 0.000750
+# output:      800 * 25.0 / 1M = 0.020000
+# cache_5m:   3000 * 6.25 / 1M = 0.018750
+# cache_1h:   3000 * 10.0 / 1M = 0.030000
+# cache_read: 25000 * 0.5 / 1M = 0.012500
+# total = 0.082000
+
+cat > "$PENDING_DIR/sess-cost.json" << EOF
+{
+  "tab": "cost-test",
+  "session": "test-session",
+  "claude_session_id": "sess-cost",
+  "message": "Cost test",
+  "event": "Stop",
+  "time": "10:00:03",
+  "transcript_path": "$MOCK_TRANSCRIPT_COST"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cost-test"
+
+if [[ -f "$DAILY_FILE" ]]; then
+    COST_RECORD=$(cat "$DAILY_FILE")
+
+    MODEL=$(echo "$COST_RECORD" | jq -r '.summary.model')
+    [[ "$MODEL" == "claude-opus-4-6" ]] && pass "model detected" || fail "model wrong: $MODEL"
+
+    SPEED=$(echo "$COST_RECORD" | jq -r '.summary.speed')
+    [[ "$SPEED" == "standard" ]] && pass "speed detected" || fail "speed wrong: $SPEED"
+
+    CACHE_READ=$(echo "$COST_RECORD" | jq -r '.summary.cache_read_tokens')
+    [[ "$CACHE_READ" == "25000" ]] && pass "cache_read_tokens=25000" || fail "cache_read_tokens wrong: $CACHE_READ"
+
+    CACHE_5M=$(echo "$COST_RECORD" | jq -r '.summary.cache_write_5m_tokens')
+    [[ "$CACHE_5M" == "3000" ]] && pass "cache_write_5m_tokens=3000" || fail "cache_write_5m_tokens wrong: $CACHE_5M"
+
+    CACHE_1H=$(echo "$COST_RECORD" | jq -r '.summary.cache_write_1h_tokens')
+    [[ "$CACHE_1H" == "3000" ]] && pass "cache_write_1h_tokens=3000" || fail "cache_write_1h_tokens wrong: $CACHE_1H"
+
+    COST=$(echo "$COST_RECORD" | jq -r '.summary.total_cost_usd')
+    [[ "$COST" == "0.082" ]] && pass "total_cost_usd=0.082" || fail "total_cost_usd wrong: $COST"
+else
+    fail "daily file not created for cost test"
+fi
+
+# ============================================================
+section "26b. record-output.sh (fast mode cost multiplier)"
+# ============================================================
+
+rm -f "$DAILY_FILE"
+
+MOCK_TRANSCRIPT_FAST="$SANDBOX/mock-transcript-fast.jsonl"
+cat > "$MOCK_TRANSCRIPT_FAST" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"cwd":"/tmp","sessionId":"sess-fast","uuid":"u1","timestamp":"2026-04-19T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1000,"output_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"speed":"fast"}},"uuid":"a1","timestamp":"2026-04-19T10:00:01Z"}
+TRANSCRIPT
+
+# Expected cost for fast mode (6x):
+# input:  1000 * 5.0 * 6 / 1M = 0.030000
+# output: 1000 * 25.0 * 6 / 1M = 0.150000
+# total = 0.180000
+
+cat > "$PENDING_DIR/sess-fast.json" << EOF
+{
+  "tab": "fast-test",
+  "session": "test-session",
+  "claude_session_id": "sess-fast",
+  "message": "Fast mode test",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$MOCK_TRANSCRIPT_FAST"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "fast-test"
+
+if [[ -f "$DAILY_FILE" ]]; then
+    FAST_RECORD=$(cat "$DAILY_FILE")
+
+    FAST_SPEED=$(echo "$FAST_RECORD" | jq -r '.summary.speed')
+    [[ "$FAST_SPEED" == "fast" ]] && pass "fast speed detected" || fail "speed wrong: $FAST_SPEED"
+
+    FAST_COST=$(echo "$FAST_RECORD" | jq -r '.summary.total_cost_usd')
+    [[ "$FAST_COST" == "0.18" ]] && pass "fast mode cost=0.18 (6x)" || fail "fast mode cost wrong: $FAST_COST"
+else
+    fail "daily file not created for fast mode test"
+fi
+
+# ============================================================
+section "26c. record-output.sh (sonnet model pricing)"
+# ============================================================
+
+rm -f "$DAILY_FILE"
+
+MOCK_TRANSCRIPT_SONNET="$SANDBOX/mock-transcript-sonnet.jsonl"
+cat > "$MOCK_TRANSCRIPT_SONNET" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"cwd":"/tmp","sessionId":"sess-sonnet","uuid":"u1","timestamp":"2026-04-19T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1000,"output_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"speed":"standard"}},"uuid":"a1","timestamp":"2026-04-19T10:00:01Z"}
+TRANSCRIPT
+
+# Expected cost for sonnet-4-6:
+# input:  1000 * 3.0 / 1M = 0.003000
+# output: 1000 * 15.0 / 1M = 0.015000
+# total = 0.018000
+
+cat > "$PENDING_DIR/sess-sonnet.json" << EOF
+{
+  "tab": "sonnet-test",
+  "session": "test-session",
+  "claude_session_id": "sess-sonnet",
+  "message": "Sonnet test",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$MOCK_TRANSCRIPT_SONNET"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "sonnet-test"
+
+if [[ -f "$DAILY_FILE" ]]; then
+    SONNET_COST=$(cat "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
+    [[ "$SONNET_COST" == "0.018" ]] && pass "sonnet cost=0.018" || fail "sonnet cost wrong: $SONNET_COST"
+
+    SONNET_MODEL=$(cat "$DAILY_FILE" | jq -r '.summary.model')
+    [[ "$SONNET_MODEL" == "claude-sonnet-4-6" ]] && pass "sonnet model detected" || fail "sonnet model wrong: $SONNET_MODEL"
+else
+    fail "daily file not created for sonnet test"
+fi
+
+# ============================================================
+section "26d. done-loop.sh (cost display format)"
+# ============================================================
+
+# Create a test daily file with known data
+TEST_DAILY_DIR="$SANDBOX/test-done-daily/test-session"
+mkdir -p "$TEST_DAILY_DIR"
+TEST_DAILY_FILE="$TEST_DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
+
+cat > "$TEST_DAILY_FILE" << 'JSONL'
+{"tab":"task-a","session":"s1","completed_at":"2026-04-19T10:05:00+0900","message":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":1.85},"markers":{"merged":true,"slack":false,"doc":false}}
+{"tab":"task-b","session":"s1","completed_at":"2026-04-19T11:30:00+0900","message":"done","summary":{"total_turns":10,"total_tool_calls":20,"total_cost_usd":2.67},"markers":{"merged":false,"slack":true,"doc":true}}
+{"tab":"old-task","session":"s1","completed_at":"2026-04-19T09:00:00+0900","message":"done","summary":{"total_turns":5,"total_tool_calls":3},"markers":{"merged":false,"slack":false,"doc":false}}
+JSONL
+
+# Test summary stats
+STATS=$(cat "$TEST_DAILY_FILE" | jq -s '{
+    count: length,
+    cost: ([.[].summary.total_cost_usd // 0] | add)
+}' 2>/dev/null)
+STAT_COUNT=$(echo "$STATS" | jq -r '.count')
+STAT_COST=$(echo "$STATS" | jq -r '.cost')
+[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3" || fail "stats count wrong: $STAT_COUNT"
+[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52" || fail "stats total cost wrong: $STAT_COST"
+
+# Test per-task cost formatting
+COST_A=$(head -1 "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
+[[ "$COST_A" == "\$1.85" ]] && pass "task-a cost formatted as \$1.85" || fail "task-a cost format wrong: $COST_A"
+
+COST_OLD=$(sed -n '3p' "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
+[[ "$COST_OLD" == "-" ]] && pass "old task without cost shows -" || fail "old task cost wrong: $COST_OLD"
+
+# ============================================================
 section "26. fetch-news.sh (successful fetch)"
 # ============================================================
 
