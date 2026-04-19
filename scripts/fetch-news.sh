@@ -93,3 +93,6 @@ VALIDATED=$(echo "$RESULT" | jq '.' 2>/dev/null)
 if [[ $? -eq 0 ]] && [[ -n "$VALIDATED" ]]; then
     echo "$VALIDATED" > "$NEWS_FILE"
 fi
+
+# Clean up news files older than 7 days
+find "$NEWS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null

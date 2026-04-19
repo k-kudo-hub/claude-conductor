@@ -465,6 +465,29 @@ else
     pass "no file on invalid XML"
 fi
 
+# Restore working curl mock for cleanup test
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat << 'RSS'
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>TC</title>
+<item><title><![CDATA[Test]]></title><link>https://example.com</link><description><![CDATA[desc]]></description></item>
+</channel></rss>
+RSS
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# Create an old news file (simulate 10 days ago)
+OLD_FILE="$NEWS_DIR/2026-01-01.json"
+echo '{"items":[]}' > "$OLD_FILE"
+touch -t 202601010000 "$OLD_FILE"
+
+# Run fetch (today's file missing, triggers fetch + cleanup)
+rm -f "$NEWS_FILE"
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+[[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
+
 # ============================================================
 section "20. news-loop.sh (displays news from file)"
 # ============================================================
