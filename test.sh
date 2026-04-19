@@ -447,6 +447,24 @@ EXIT_CODE=$?
 [[ $EXIT_CODE -eq 0 ]] && pass "fetch-news.sh exits 0 on API failure" || fail "fetch-news.sh exits non-zero: $EXIT_CODE"
 [[ ! -f "$NEWS_FILE" ]] && pass "no news file on API failure" || fail "news file created despite failure"
 
+# Test that invalid XML does not create empty/broken file
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+echo "not valid xml at all"
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+rm -f "$NEWS_FILE"
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+if [[ -f "$NEWS_FILE" ]]; then
+    FILE_SIZE=$(wc -c < "$NEWS_FILE" | tr -d ' ')
+    [[ "$FILE_SIZE" -gt 2 ]] && pass "no empty file on invalid XML" || fail "empty/tiny file created: ${FILE_SIZE} bytes"
+    rm -f "$NEWS_FILE"
+else
+    pass "no file on invalid XML"
+fi
+
 # ============================================================
 section "20. news-loop.sh (displays news from file)"
 # ============================================================

@@ -87,9 +87,9 @@ if [[ $? -ne 0 ]] || [[ -z "$RESULT" ]]; then
     exit 0
 fi
 
-# Validate JSON with jq before saving
-echo "$RESULT" | jq '.' > "$NEWS_FILE" 2>/dev/null
+# Validate JSON with jq before saving (write to temp file to avoid empty file on failure)
+VALIDATED=$(echo "$RESULT" | jq '.' 2>/dev/null)
 
-if [[ $? -ne 0 ]]; then
-    rm -f "$NEWS_FILE"
+if [[ $? -eq 0 ]] && [[ -n "$VALIDATED" ]]; then
+    echo "$VALIDATED" > "$NEWS_FILE"
 fi
