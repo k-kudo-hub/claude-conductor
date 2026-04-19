@@ -13,8 +13,6 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 render() {
-    clear
-
     echo -e "${BOLD}  AI Tech News${NC} ${DIM}[$(date '+%Y-%m-%d')]${NC}"
     echo -e "${DIM}  ──────────────────────${NC}"
     echo ""
@@ -63,9 +61,17 @@ if [[ "$CONDUCTOR_NEWS_ONCE" == "1" ]]; then
 fi
 
 ITEM_COUNT=0
+TMPFILE=$(mktemp)
+printf '\033[?25l'
+trap 'printf "\033[?25h"; rm -f "$TMPFILE"' EXIT
+clear
 
 while true; do
-    render
+    render > "$TMPFILE"
+
+    printf '\033[H'
+    cat "$TMPFILE"
+    printf '\033[J'
 
     key=""
     read -t 5 -n 1 -s key || true
