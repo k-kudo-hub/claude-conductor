@@ -15,54 +15,66 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+TMPFILE=$(mktemp)
+printf '\033[?25l'
+trap 'printf "\033[?25h"; rm -f "$TMPFILE"' EXIT
+clear
+
 while true; do
-    clear
-
-    echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
-    echo -e "${DIM}  ──────────────────────────${NC}"
-    echo ""
-
     tabs=()
     i=1
 
     # Display pending items sorted by Zellij tab position
     tab_order=$(zellij action list-tabs 2>/dev/null | tail -n +2 | awk '{print $3}')
 
-    for tab_name in $tab_order; do
-        for f in "$PENDING_DIR"/*.json; do
-            [[ -f "$f" ]] || continue
-            ftab=$(jq -r '.tab' "$f" 2>/dev/null)
-            [[ "$ftab" == "$tab_name" ]] || continue
+    {
+        echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
+        echo ""
 
-            msg=$(jq -r '.message' "$f" 2>/dev/null | head -c 60)
-            time=$(jq -r '.time' "$f" 2>/dev/null)
-            event=$(jq -r '.event' "$f" 2>/dev/null)
+        for tab_name in $tab_order; do
+            for f in "$PENDING_DIR"/*.json; do
+                [[ -f "$f" ]] || continue
+                ftab=$(jq -r '.tab' "$f" 2>/dev/null)
+                [[ "$ftab" == "$tab_name" ]] || continue
 
-            if [[ "$event" == "Stop" ]]; then
-                echo -e "  ${YELLOW}[$i]${NC} ${GREEN}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC} done"
-            else
-                echo -e "  ${YELLOW}[$i]${NC} ${RED}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC}"
-            fi
-            echo -e "      $msg"
-            echo ""
+                msg=$(jq -r '.message' "$f" 2>/dev/null | head -c 60)
+                time=$(jq -r '.time' "$f" 2>/dev/null)
+                event=$(jq -r '.event' "$f" 2>/dev/null)
 
-            tabs+=("$ftab")
-            i=$((i + 1))
+                if [[ "$event" == "Stop" ]]; then
+                    echo -e "  ${YELLOW}[$i]${NC} ${GREEN}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC} done"
+                else
+                    echo -e "  ${YELLOW}[$i]${NC} ${RED}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC}"
+                fi
+                echo -e "      $msg"
+                echo ""
+
+                tabs+=("$ftab")
+                i=$((i + 1))
+            done
         done
-    done
 
-    count=${#tabs[@]}
+        count=${#tabs[@]}
+
+        if [[ $count -eq 0 ]]; then
+            echo -e "  ${GREEN}All tasks running${NC}"
+            echo ""
+            echo -e "${DIM}  ──────────────────────────${NC}"
+        else
+            echo -e "${DIM}  ──────────────────────────${NC}"
+            echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
+            echo -e "${DIM}  ──────────────────────────${NC}"
+        fi
+    } > "$TMPFILE"
+
+    printf '\033[H'
+    cat "$TMPFILE"
+    printf '\033[J'
 
     if [[ $count -eq 0 ]]; then
-        echo -e "  ${GREEN}All tasks running${NC}"
-        echo ""
-        echo -e "${DIM}  ──────────────────────────${NC}"
         sleep 2
     else
-        echo -e "${DIM}  ──────────────────────────${NC}"
-        echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
-        echo -e "${DIM}  ──────────────────────────${NC}"
-
         key=""
         read -t 2 -n 1 -s key || true
 
