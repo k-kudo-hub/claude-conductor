@@ -14,14 +14,17 @@ while true; do
     clear
 
     TODAY=$(date '+%Y-%m-%d')
-    DAILY_FILES=$(find "$DAILY_BASE" -name "${TODAY}.jsonl" -type f 2>/dev/null)
+    DAILY_FILES=()
+    while IFS= read -r -d '' f; do
+        DAILY_FILES+=("$f")
+    done < <(find "$DAILY_BASE" -name "${TODAY}.jsonl" -type f -print0 2>/dev/null)
 
     echo -e "${BOLD}  Done Tasks${NC}"
     echo -e "${DIM}  ──────────────────────────${NC}"
     echo ""
 
-    if [ -n "$DAILY_FILES" ]; then
-        daily_stats=$(cat $DAILY_FILES | jq -s '{
+    if [ ${#DAILY_FILES[@]} -gt 0 ]; then
+        daily_stats=$(cat "${DAILY_FILES[@]}" | jq -s '{
             count: length,
             turns: ([.[].summary.total_turns // 0] | add),
             calls: ([.[].summary.total_tool_calls // 0] | add)
@@ -33,7 +36,7 @@ while true; do
         echo -e "  ${YELLOW}${BOLD}${task_count}${NC} tasks  ${DIM}${total_turns} turns / ${total_calls} calls${NC}"
         echo ""
 
-        cat $DAILY_FILES | jq -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" '[
+        cat "${DAILY_FILES[@]}" | jq -r --arg rocket "🚀" --arg chat "💬" --arg memo "📝" '[
             .tab,
             (.summary.total_turns // "-" | tostring),
             (.completed_at | .[11:16]),
