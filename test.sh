@@ -496,7 +496,95 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
-section "23. fetch-news.sh (successful fetch)"
+section "23. record-output.sh (merge detected via MCP tool)"
+# ============================================================
+
+# Clean daily file for fresh test
+rm -f "$DAILY_FILE"
+
+MOCK_TRANSCRIPT_MERGE_MCP="$SANDBOX/mock-transcript-merge-mcp.jsonl"
+cat > "$MOCK_TRANSCRIPT_MERGE_MCP" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"merge the PR"},"cwd":"/tmp/myapp","sessionId":"sess-merge-mcp","uuid":"u1","timestamp":"2026-04-18T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","name":"mcp__github__merge_pull_request","input":{"owner":"org","repo":"app","pullNumber":42}}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-04-18T10:00:01Z"}
+TRANSCRIPT
+
+cat > "$PENDING_DIR/sess-merge-mcp.json" << EOF
+{
+  "tab": "merge-mcp-test",
+  "session": "test-session",
+  "claude_session_id": "sess-merge-mcp",
+  "message": "PR merged",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$MOCK_TRANSCRIPT_MERGE_MCP"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "merge-mcp-test"
+
+if [[ -f "$DAILY_FILE" ]]; then
+    MERGED_MCP=$(jq -r '.markers.merged' "$DAILY_FILE")
+    [[ "$MERGED_MCP" == "true" ]] && pass "merged marker via MCP tool" || fail "merged marker not set via MCP: $MERGED_MCP"
+else
+    fail "daily file not created for MCP merge test"
+fi
+
+# ============================================================
+section "24. record-output.sh (merge detected via gh pr merge)"
+# ============================================================
+
+MOCK_TRANSCRIPT_MERGE_BASH="$SANDBOX/mock-transcript-merge-bash.jsonl"
+cat > "$MOCK_TRANSCRIPT_MERGE_BASH" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"merge it"},"cwd":"/tmp/myapp","sessionId":"sess-merge-bash","uuid":"u1","timestamp":"2026-04-18T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr merge 42 --squash"}}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-04-18T10:00:01Z"}
+TRANSCRIPT
+
+cat > "$PENDING_DIR/sess-merge-bash.json" << EOF
+{
+  "tab": "merge-bash-test",
+  "session": "test-session",
+  "claude_session_id": "sess-merge-bash",
+  "message": "PR merged via CLI",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$MOCK_TRANSCRIPT_MERGE_BASH"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "merge-bash-test"
+
+MERGED_BASH=$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')
+[[ "$MERGED_BASH" == "true" ]] && pass "merged marker via gh pr merge" || fail "merged marker not set via Bash: $MERGED_BASH"
+
+# ============================================================
+section "25. record-output.sh (no merge markers)"
+# ============================================================
+
+MOCK_TRANSCRIPT_NO_MERGE="$SANDBOX/mock-transcript-no-merge.jsonl"
+cat > "$MOCK_TRANSCRIPT_NO_MERGE" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"fix bug"},"cwd":"/tmp/myapp","sessionId":"sess-no-merge","uuid":"u1","timestamp":"2026-04-18T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/app.ts"}}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-04-18T10:00:01Z"}
+TRANSCRIPT
+
+cat > "$PENDING_DIR/sess-no-merge.json" << EOF
+{
+  "tab": "no-merge-test",
+  "session": "test-session",
+  "claude_session_id": "sess-no-merge",
+  "message": "Bug fixed",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$MOCK_TRANSCRIPT_NO_MERGE"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "no-merge-test"
+
+MERGED_NONE=$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')
+[[ "$MERGED_NONE" == "false" ]] && pass "merged marker false without merge" || fail "merged marker unexpectedly set: $MERGED_NONE"
+
+# ============================================================
+section "26. fetch-news.sh (successful fetch)"
 # ============================================================
 
 # Re-install for news tests
@@ -559,7 +647,7 @@ if [[ -f "$NEWS_FILE" ]]; then
 fi
 
 # ============================================================
-section "24. fetch-news.sh (skips if today's file exists)"
+section "27. fetch-news.sh (skips if today's file exists)"
 # ============================================================
 
 # Modify existing file to detect re-fetch
@@ -576,7 +664,7 @@ else
 fi
 
 # ============================================================
-section "25. fetch-news.sh (handles API failure gracefully)"
+section "28. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 
 # Replace curl mock with one that fails
@@ -637,7 +725,7 @@ bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 [[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
 
 # ============================================================
-section "26. news-loop.sh (displays news from file)"
+section "29. news-loop.sh (displays news from file)"
 # ============================================================
 
 # Create news file for display test
@@ -667,7 +755,7 @@ echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" |
 echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
 
 # ============================================================
-section "27. news-loop.sh (handles missing news file)"
+section "30. news-loop.sh (handles missing news file)"
 # ============================================================
 
 rm -f "$NEWS_FILE"
@@ -677,7 +765,7 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
-section "28. Uninstall"
+section "31. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

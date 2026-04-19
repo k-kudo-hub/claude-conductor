@@ -49,6 +49,10 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         ($tools | [.[] | select(.name | test("^mcp__slack"))] | length > 0) as $has_slack |
         ($tools | [.[] | select(.name == "Write" or .name == "Edit")] |
             [.[].input? // {} | .file_path? // "" | select(test("\\.(md|mdx|txt|rst|adoc)$"))] | length > 0) as $has_doc |
+        ($tools | [.[] | select(
+            .name == "mcp__github__merge_pull_request" or
+            (.name == "Bash" and (.input?.command? // "" | test("gh\\s+pr\\s+merge")))
+        )] | length > 0) as $has_merged |
         {
             tab: $tab,
             completed_at: $completed_at,
@@ -61,26 +65,12 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 total_output_tokens: $out
             },
             markers: {
-                merged: false,
+                merged: $has_merged,
                 slack: $has_slack,
                 doc: $has_doc
             }
         }
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
-
-    # Check for GitHub PR merge (requires gh CLI)
-    if command -v gh >/dev/null 2>&1; then
-        CWD_FROM_TRANSCRIPT=$(jq -r '[.[] | select(.cwd?) | .cwd][0] // empty' "$TRANSCRIPT_PATH" 2>/dev/null)
-        if [ -n "$CWD_FROM_TRANSCRIPT" ] && [ -d "$CWD_FROM_TRANSCRIPT" ]; then
-            BRANCH=$(git -C "$CWD_FROM_TRANSCRIPT" branch --show-current 2>/dev/null)
-            if [ -n "$BRANCH" ]; then
-                MERGED=$(gh pr list --state merged --head "$BRANCH" --json number --limit 1 2>/dev/null)
-                if [ -n "$MERGED" ] && [ "$MERGED" != "[]" ]; then
-                    RECORD=$(echo "$RECORD" | jq -c '.markers.merged = true')
-                fi
-            fi
-        fi
-    fi
 
     if [ -n "$RECORD" ]; then
         echo "$RECORD" >> "$DAILY_FILE"
