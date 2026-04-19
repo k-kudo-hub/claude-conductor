@@ -75,7 +75,11 @@ while true; do
         NEWS_FILE="$NEWS_DIR/$TODAY.json"
         url=$(jq -r ".items[$((key-1))].url" "$NEWS_FILE" 2>/dev/null)
         if [[ -n "$url" ]] && [[ "$url" != "null" ]]; then
-            open "$url" 2>/dev/null
+            if command -v open &>/dev/null; then
+                open "$url" 2>/dev/null
+            elif command -v xdg-open &>/dev/null; then
+                xdg-open "$url" 2>/dev/null
+            fi
         fi
     fi
 done
