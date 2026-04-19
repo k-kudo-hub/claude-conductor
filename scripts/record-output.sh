@@ -10,7 +10,7 @@ fi
 
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
-DAILY_DIR="$HOME/.claude-conductor/daily/$SESSION_NAME"
+DAILY_DIR="$HOME/.claude-conductor/daily"
 DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 
 mkdir -p "$DAILY_DIR"
@@ -38,7 +38,7 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary and output markers in a single jq pass
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" '. as $all |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" '. as $all |
         ([.[] | select(.type == "user")] | length) as $turns |
         [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
         ($tools | length) as $calls |
@@ -55,6 +55,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         )] | length > 0) as $has_merged |
         {
             tab: $tab,
+            session: $session,
             completed_at: $completed_at,
             message: $message,
             summary: {
@@ -77,10 +78,12 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     else
         jq -n -c \
             --arg tab "$TAB_NAME" \
+            --arg session "$SESSION_NAME" \
             --arg completed_at "$COMPLETED_AT" \
             --arg message "${MESSAGE:-Parse failed}" \
             '{
                 tab: $tab,
+                session: $session,
                 completed_at: $completed_at,
                 message: $message,
                 summary: null,
@@ -90,10 +93,12 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
 else
     jq -n -c \
         --arg tab "$TAB_NAME" \
+        --arg session "$SESSION_NAME" \
         --arg completed_at "$COMPLETED_AT" \
         --arg message "${MESSAGE:-No summary available}" \
         '{
             tab: $tab,
+            session: $session,
             completed_at: $completed_at,
             message: $message,
             summary: null,
