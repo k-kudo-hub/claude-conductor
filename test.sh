@@ -149,7 +149,7 @@ section "6. pending-notify.sh (fallback tab name from cwd)"
 # ============================================================
 
 echo '{"session_id":"sess-ccc","message":"test","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
-  | ZELLIJ_SESSION_NAME=test-session \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME= \
     bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
 
 TAB_FALLBACK=$(jq -r '.tab' "$PENDING_DIR/sess-ccc.json")
