@@ -60,11 +60,10 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         ($usage | [.[].input_tokens] | add // 0) as $in |
         ($usage | [.[].output_tokens] | add // 0) as $out |
         ($usage | [.[].cache_read_input_tokens // 0] | add // 0) as $cache_read |
-        ($usage | [.[].cache_creation_input_tokens // 0] | add // 0) as $cache_creation_total |
         ($usage | [.[].cache_creation?.ephemeral_5m_input_tokens // 0] | add // 0) as $cache_5m |
         ($usage | [.[].cache_creation?.ephemeral_1h_input_tokens // 0] | add // 0) as $cache_1h |
-        ([.[] | select(.message.model?) | .message.model] | first // "unknown") as $model |
-        ([.[] | select(.message.usage?.speed?) | .message.usage.speed] | first // "standard") as $speed |
+        ([.[] | select(.message.model?) | .message.model] | .[0] // "unknown") as $model |
+        ([.[] | select(.message.usage?.speed?) | .message.usage.speed] | .[0] // "standard") as $speed |
         ($pricing[$model] // $pricing["claude-sonnet-4-6"] // {input:3,output:15,cache_write_5m:3.75,cache_write_1h:6,cache_hit:0.3}) as $p |
         (if $speed == "fast" then ($pricing.fast_multiplier // 6) else 1 end) as $fm |
         (
