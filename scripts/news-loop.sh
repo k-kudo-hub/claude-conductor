@@ -42,15 +42,14 @@ render() {
         description=$(jq -r ".items[$i].description" "$NEWS_FILE" 2>/dev/null)
         url=$(jq -r ".items[$i].url" "$NEWS_FILE" 2>/dev/null)
 
-        printf "  ${YELLOW}%d.${NC} ${BOLD}%.45s${NC}\n" "$((i+1))" "$title"
+        # OSC 8 hyperlink: clickable title linking to full URL
+        if [[ "$url" != "null" ]] && [[ -n "$url" ]]; then
+            printf "  ${YELLOW}%d.${NC} \033]8;;%s\033\\\\${BOLD}%.42s${NC}\033]8;;\033\\\\\n" "$((i+1))" "$url" "$title"
+        else
+            printf "  ${YELLOW}%d.${NC} ${BOLD}%.42s${NC}\n" "$((i+1))" "$title"
+        fi
         if [[ "$description" != "null" ]] && [[ -n "$description" ]]; then
             printf "     ${DIM}%.42s${NC}\n" "$description"
-        fi
-        if [[ "$url" != "null" ]] && [[ -n "$url" ]]; then
-            # Show shortened URL: domain + truncated path
-            local short_url
-            short_url=$(echo "$url" | sed 's|https\?://||; s|www\.||; s|\(.\{38\}\).*|\1...|')
-            printf "     ${CYAN}%s${NC}\n" "$short_url"
         fi
         echo ""
 
