@@ -63,9 +63,11 @@ NR > 1 && count < 5 {
         gsub(/\r/, "", title)
         gsub(/\n/, " ", desc)
         gsub(/\r/, "", desc)
-        # Escape backslashes and double quotes
+        # Escape backslashes and double quotes in all fields
         gsub(/\\/, "\\\\", title)
         gsub(/"/, "\\\"", title)
+        gsub(/\\/, "\\\\", link)
+        gsub(/"/, "\\\"", link)
         gsub(/\\/, "\\\\", desc)
         gsub(/"/, "\\\"", desc)
         # Trim description to 120 chars

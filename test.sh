@@ -364,7 +364,7 @@ cat << 'RSS'
 <title>TechCrunch AI</title>
 <item><title><![CDATA[GPT-5 Released with Major Improvements]]></title><link>https://techcrunch.com/gpt5</link><description><![CDATA[OpenAI has released GPT-5 with significant performance gains across all benchmarks.]]></description></item>
 <item><title><![CDATA[Claude 4.6 Beats All Benchmarks]]></title><link>https://techcrunch.com/claude</link><description><![CDATA[Anthropic Claude 4.6 sets new records in reasoning and coding tasks.]]></description></item>
-<item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
+<item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm?ref=rss&amp;utm=ai</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
 <item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures <a href="https://example.com">massive funding</a> for next-gen AI processors.]]></description></item>
 <item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose
 comprehensive guidelines for safe
@@ -404,6 +404,10 @@ if [[ -f "$NEWS_FILE" ]]; then
     # Verify newlines in CDATA are replaced with spaces
     SAFETY_DESC=$(jq -r '.items[4].description' "$NEWS_FILE")
     [[ "$SAFETY_DESC" != *$'\n'* ]] && pass "newlines removed from description" || fail "newlines remain in description"
+
+    # Verify URL with query params is preserved and JSON is valid
+    LLM_URL=$(jq -r '.items[2].url' "$NEWS_FILE")
+    [[ "$LLM_URL" == *"ref=rss"* ]] && pass "URL with query params preserved" || fail "URL wrong: $LLM_URL"
 fi
 
 # ============================================================
