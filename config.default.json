@@ -1,0 +1,35 @@
+{
+  "search_dirs": ["~/projects", "~/works"],
+  "search_depth": 1,
+  "task_types": {
+    "dev": {
+      "description": "Claude Code + LazyVim",
+      "layout": [
+        { "action": "new-pane", "direction": "right", "command": "nvim" },
+        { "action": "focus-previous-pane" }
+      ]
+    },
+    "review": {
+      "description": "Claude Code only",
+      "layout": []
+    },
+    "docs": {
+      "description": "Claude Code only",
+      "layout": []
+    },
+    "survey": {
+      "description": "Claude Code only",
+      "layout": []
+    },
+    "k8s": {
+      "description": "Claude Code + k9s + Shell + LazyVim",
+      "layout": [
+        { "action": "new-pane", "direction": "right", "command": "k9s" },
+        { "action": "new-pane", "direction": "down", "command": "nvim" },
+        { "action": "move-focus", "direction": "left" },
+        { "action": "new-pane", "direction": "down" },
+        { "action": "move-focus", "direction": "up" }
+      ]
+    }
+  }
+}

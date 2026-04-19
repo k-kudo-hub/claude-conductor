@@ -57,8 +57,17 @@ cp "$REPO_DIR"/layouts/*.kdl "$CONDUCTOR_HOME/layouts/"
 cp "$REPO_DIR"/init.zsh "$CONDUCTOR_HOME/init.zsh"
 cp "$REPO_DIR"/hooks.json "$CONDUCTOR_HOME/hooks.json"
 
+# config.default.json は常に最新版で上書き
+cp "$REPO_DIR"/config.default.json "$CONDUCTOR_HOME/config.default.json"
+
+# config.json はユーザーカスタマイズを保護（初回のみコピー）
+if [[ ! -f "$CONDUCTOR_HOME/config.json" ]]; then
+    cp "$REPO_DIR"/config.default.json "$CONDUCTOR_HOME/config.json"
+fi
+
 echo -e "  ${GREEN}✓${NC} Scripts"
 echo -e "  ${GREEN}✓${NC} Layouts"
+echo -e "  ${GREEN}✓${NC} Config"
 echo -e "  ${GREEN}✓${NC} Shell functions"
 echo ""
 

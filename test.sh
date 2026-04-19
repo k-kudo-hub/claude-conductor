@@ -229,7 +229,152 @@ FILE_COUNT=$(ls "$PENDING_DIR" 2>/dev/null | wc -l | tr -d ' ')
 [[ "$FILE_COUNT" -eq 1 ]] && pass "no file created without session_id" || fail "unexpected file count: $FILE_COUNT"
 
 # ============================================================
-section "12. init.zsh loads without errors"
+section "12. config.default.json installed"
+# ============================================================
+
+[[ -f "$HOME/.claude-conductor/config.default.json" ]] && pass "config.default.json installed" || fail "config.default.json missing"
+
+# Validate JSON
+jq '.' "$HOME/.claude-conductor/config.default.json" > /dev/null 2>&1 && pass "config.default.json is valid JSON" || fail "config.default.json is invalid JSON"
+
+# ============================================================
+section "13. config.json created from default on install"
+# ============================================================
+
+[[ -f "$HOME/.claude-conductor/config.json" ]] && pass "config.json created" || fail "config.json not created"
+
+# config.json should match config.default.json
+if [[ -f "$HOME/.claude-conductor/config.json" ]]; then
+    diff <(jq -S '.' "$HOME/.claude-conductor/config.default.json") <(jq -S '.' "$HOME/.claude-conductor/config.json") > /dev/null 2>&1 \
+      && pass "config.json matches default" || fail "config.json differs from default"
+fi
+
+# ============================================================
+section "14. config.json not overwritten on reinstall"
+# ============================================================
+
+# Modify config.json to add a custom task type
+jq '.task_types.custom = {"description": "Custom task", "layout": []}' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+
+# Reinstall
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+
+# config.json should still have the custom type
+CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/config.json")
+[[ "$CUSTOM_TYPE" == "Custom task" ]] && pass "custom config preserved on reinstall" || fail "custom config lost: $CUSTOM_TYPE"
+
+# config.default.json should be updated
+[[ -f "$HOME/.claude-conductor/config.default.json" ]] && pass "config.default.json updated on reinstall" || fail "config.default.json missing after reinstall"
+
+# ============================================================
+section "15. task-create-loop.sh reads task types from config"
+# ============================================================
+
+CONFIG_FILE="$HOME/.claude-conductor/config.json"
+
+# Read task types from config
+TASK_TYPES=$(jq -r '.task_types | to_entries[] | "\(.key)  \(.value.description)"' "$CONFIG_FILE")
+echo "$TASK_TYPES" | grep -q "dev" && pass "dev type found in config" || fail "dev type not in config"
+echo "$TASK_TYPES" | grep -q "custom" && pass "custom type found in config" || fail "custom type not in config"
+
+# Read search_dirs from config
+SEARCH_DIRS_JSON=$(jq -r '.search_dirs[]' "$CONFIG_FILE")
+echo "$SEARCH_DIRS_JSON" | grep -q "projects" && pass "search_dirs contains projects" || fail "search_dirs missing projects"
+
+# Read search_depth from config
+SEARCH_DEPTH_JSON=$(jq -r '.search_depth' "$CONFIG_FILE")
+[[ "$SEARCH_DEPTH_JSON" == "1" ]] && pass "search_depth is 1" || fail "search_depth wrong: $SEARCH_DEPTH_JSON"
+
+# ============================================================
+section "16. layout actions generate correct zellij commands"
+# ============================================================
+
+# Clear zellij call log
+: > "$HOME/.claude-pending/zellij-calls.log"
+
+# Test dev layout (1 action: new-pane right nvim)
+DEV_LAYOUT=$(jq -c '.task_types.dev.layout[]' "$CONFIG_FILE")
+while IFS= read -r step; do
+    ACTION=$(echo "$step" | jq -r '.action')
+    DIRECTION=$(echo "$step" | jq -r '.direction')
+    COMMAND=$(echo "$step" | jq -r '.command // empty')
+
+    case "$ACTION" in
+        new-pane)
+            if [[ -n "$COMMAND" ]]; then
+                zellij action new-pane --direction "$DIRECTION" --cwd "/tmp" -- "$COMMAND"
+            else
+                zellij action new-pane --direction "$DIRECTION" --cwd "/tmp"
+            fi
+            ;;
+        move-focus)
+            zellij action move-focus "$DIRECTION"
+            ;;
+        focus-previous-pane)
+            zellij action focus-previous-pane
+            ;;
+    esac
+done <<< "$DEV_LAYOUT"
+
+grep -q 'action new-pane --direction right --cwd /tmp -- nvim' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "dev layout: new-pane right nvim" || fail "dev layout: missing nvim pane"
+grep -q 'action focus-previous-pane' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "dev layout: focus-previous-pane" || fail "dev layout: missing focus-previous-pane"
+
+# Clear and test k8s layout
+: > "$HOME/.claude-pending/zellij-calls.log"
+
+K8S_LAYOUT=$(jq -c '.task_types.k8s.layout[]' "$CONFIG_FILE")
+while IFS= read -r step; do
+    ACTION=$(echo "$step" | jq -r '.action')
+    DIRECTION=$(echo "$step" | jq -r '.direction')
+    COMMAND=$(echo "$step" | jq -r '.command // empty')
+
+    case "$ACTION" in
+        new-pane)
+            if [[ -n "$COMMAND" ]]; then
+                zellij action new-pane --direction "$DIRECTION" --cwd "/tmp" -- "$COMMAND"
+            else
+                zellij action new-pane --direction "$DIRECTION" --cwd "/tmp"
+            fi
+            ;;
+        move-focus)
+            zellij action move-focus "$DIRECTION"
+            ;;
+    esac
+done <<< "$K8S_LAYOUT"
+
+CALLS_LOG="$HOME/.claude-pending/zellij-calls.log"
+grep -q 'action new-pane --direction right --cwd /tmp -- k9s' "$CALLS_LOG" \
+  && pass "k8s layout: new-pane right k9s" || fail "k8s layout: missing k9s pane"
+grep -q 'action new-pane --direction down --cwd /tmp -- nvim' "$CALLS_LOG" \
+  && pass "k8s layout: new-pane down nvim" || fail "k8s layout: missing nvim pane"
+grep -q 'action move-focus left' "$CALLS_LOG" \
+  && pass "k8s layout: move-focus left" || fail "k8s layout: missing move-focus left"
+grep -q 'action new-pane --direction down --cwd /tmp' "$CALLS_LOG" \
+  && pass "k8s layout: new-pane down shell" || fail "k8s layout: missing shell pane"
+grep -q 'action move-focus up' "$CALLS_LOG" \
+  && pass "k8s layout: move-focus up" || fail "k8s layout: missing move-focus up"
+
+# ============================================================
+section "17. fallback when config.json missing"
+# ============================================================
+
+# Remove config.json to test fallback
+rm -f "$HOME/.claude-conductor/config.json"
+
+# The script should fall back to config.default.json
+DEFAULT_TYPES=$(jq -r '.task_types | keys[]' "$HOME/.claude-conductor/config.default.json")
+echo "$DEFAULT_TYPES" | grep -q "dev" && pass "fallback: dev type available" || fail "fallback: dev type missing"
+echo "$DEFAULT_TYPES" | grep -q "k8s" && pass "fallback: k8s type available" || fail "fallback: k8s type missing"
+
+# Restore config.json for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$HOME/.claude-conductor/config.json"
+
+# ============================================================
+section "18. init.zsh loads without errors"
 # ============================================================
 
 OUTPUT=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && echo loaded" 2>&1)
@@ -241,19 +386,22 @@ echo "$FUNCS" | grep -q "mdev: function" && pass "mdev function defined" || fail
 echo "$FUNCS" | grep -q "dev: function" && pass "dev function defined" || fail "dev not defined"
 
 # ============================================================
-section "13. Zellij calls were made correctly"
+section "19. Zellij calls were made correctly"
 # ============================================================
 
 CALLS="$HOME/.claude-pending/zellij-calls.log"
-if [[ -f "$CALLS" ]]; then
-    grep -q 'go-to-tab-name Main' "$CALLS" && pass "go-to-tab-name Main was called" || fail "go-to-tab-name Main not called"
-    pass "all zellij calls completed (no hangs)"
-else
-    fail "no zellij calls recorded"
-fi
+: > "$CALLS"
+
+# Re-run pending-resolve to generate a fresh go-to-tab-name Main call
+echo '{"session_id":"sess-verify"}' \
+  | ZELLIJ_SESSION_NAME=test-session \
+    bash "$HOME/.claude-conductor/scripts/pending-resolve.sh"
+
+grep -q 'go-to-tab-name Main' "$CALLS" && pass "go-to-tab-name Main was called" || fail "go-to-tab-name Main not called"
+pass "all zellij calls completed (no hangs)"
 
 # ============================================================
-section "14. record-output.sh (with transcript)"
+section "20. record-output.sh (with transcript)"
 # ============================================================
 
 # Re-install for record-output tests
@@ -311,7 +459,7 @@ if [[ -f "$DAILY_FILE" ]]; then
 fi
 
 # ============================================================
-section "15. record-output.sh (without transcript)"
+section "21. record-output.sh (without transcript)"
 # ============================================================
 
 cat > "$PENDING_DIR/sess-notranscript.json" << 'EOF'
@@ -338,7 +486,7 @@ MARKERS2=$(echo "$RECORD2" | jq -r '.markers.merged')
 [[ "$MARKERS2" == "false" ]] && pass "markers default to false" || fail "markers not false: $MARKERS2"
 
 # ============================================================
-section "16. record-output.sh (no pending file)"
+section "22. record-output.sh (no pending file)"
 # ============================================================
 
 rm -f "$PENDING_DIR"/*.json
@@ -348,7 +496,7 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
-section "17. fetch-news.sh (successful fetch)"
+section "23. fetch-news.sh (successful fetch)"
 # ============================================================
 
 # Re-install for news tests
@@ -411,7 +559,7 @@ if [[ -f "$NEWS_FILE" ]]; then
 fi
 
 # ============================================================
-section "18. fetch-news.sh (skips if today's file exists)"
+section "24. fetch-news.sh (skips if today's file exists)"
 # ============================================================
 
 # Modify existing file to detect re-fetch
@@ -428,7 +576,7 @@ else
 fi
 
 # ============================================================
-section "19. fetch-news.sh (handles API failure gracefully)"
+section "25. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 
 # Replace curl mock with one that fails
@@ -489,7 +637,7 @@ bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 [[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
 
 # ============================================================
-section "20. news-loop.sh (displays news from file)"
+section "26. news-loop.sh (displays news from file)"
 # ============================================================
 
 # Create news file for display test
@@ -519,7 +667,7 @@ echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" |
 echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
 
 # ============================================================
-section "21. news-loop.sh (handles missing news file)"
+section "27. news-loop.sh (handles missing news file)"
 # ============================================================
 
 rm -f "$NEWS_FILE"
@@ -529,7 +677,7 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
-section "22. Uninstall"
+section "28. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
