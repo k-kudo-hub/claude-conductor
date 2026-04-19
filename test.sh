@@ -354,55 +354,22 @@ section "17. fetch-news.sh (successful fetch)"
 # Re-install for news tests
 echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 
-# Create a mock curl that returns fake Hacker News API response
+# Create a mock curl that returns fake TechCrunch RSS response
 cat > "$MOCK_BIN/curl" << 'MOCKCURL'
 #!/bin/bash
-cat << 'JSON'
-{
-  "hits": [
-    {
-      "title": "GPT-5 Released with Major Improvements",
-      "url": "https://example.com/gpt5",
-      "points": 500,
-      "num_comments": 200,
-      "created_at": "2026-04-19T08:00:00.000Z",
-      "objectID": "1001"
-    },
-    {
-      "title": "Claude 4.6 Beats All Benchmarks",
-      "url": "https://example.com/claude",
-      "points": 450,
-      "num_comments": 180,
-      "created_at": "2026-04-19T07:00:00.000Z",
-      "objectID": "1002"
-    },
-    {
-      "title": "Open Source LLM Surpasses Commercial Models",
-      "url": "https://example.com/open-llm",
-      "points": 300,
-      "num_comments": 120,
-      "created_at": "2026-04-19T06:00:00.000Z",
-      "objectID": "1003"
-    },
-    {
-      "title": "AI Chip Startup Raises $1B",
-      "url": "https://example.com/ai-chip",
-      "points": 250,
-      "num_comments": 90,
-      "created_at": "2026-04-19T05:00:00.000Z",
-      "objectID": "1004"
-    },
-    {
-      "title": "New AI Safety Framework Proposed",
-      "url": "https://example.com/ai-safety",
-      "points": 200,
-      "num_comments": 150,
-      "created_at": "2026-04-19T04:00:00.000Z",
-      "objectID": "1005"
-    }
-  ]
-}
-JSON
+cat << 'RSS'
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>TechCrunch AI</title>
+<item><title><![CDATA[GPT-5 Released with Major Improvements]]></title><link>https://techcrunch.com/gpt5</link><description><![CDATA[OpenAI has released GPT-5 with significant performance gains across all benchmarks.]]></description></item>
+<item><title><![CDATA[Claude 4.6 Beats All Benchmarks]]></title><link>https://techcrunch.com/claude</link><description><![CDATA[Anthropic Claude 4.6 sets new records in reasoning and coding tasks.]]></description></item>
+<item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
+<item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures massive funding for next-gen AI processors.]]></description></item>
+<item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose comprehensive guidelines for safe AI deployment.]]></description></item>
+</channel>
+</rss>
+RSS
 MOCKCURL
 chmod +x "$MOCK_BIN/curl"
 
@@ -415,14 +382,17 @@ NEWS_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
 [[ -f "$NEWS_FILE" ]] && pass "news file created" || fail "news file not created"
 
 if [[ -f "$NEWS_FILE" ]]; then
-    NEWS_COUNT=$(jq -r '.hits | length' "$NEWS_FILE")
+    NEWS_COUNT=$(jq -r '.items | length' "$NEWS_FILE")
     [[ "$NEWS_COUNT" == "5" ]] && pass "5 news items saved" || fail "news count wrong: $NEWS_COUNT"
 
-    FIRST_TITLE=$(jq -r '.hits[0].title' "$NEWS_FILE")
+    FIRST_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
     [[ "$FIRST_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "first title correct" || fail "first title wrong: $FIRST_TITLE"
 
-    FIRST_URL=$(jq -r '.hits[0].url' "$NEWS_FILE")
-    [[ "$FIRST_URL" == "https://news.ycombinator.com/item?id=1001" ]] && pass "first url is HN discussion link" || fail "first url wrong: $FIRST_URL"
+    FIRST_URL=$(jq -r '.items[0].url' "$NEWS_FILE")
+    [[ "$FIRST_URL" == "https://techcrunch.com/gpt5" ]] && pass "first url correct" || fail "first url wrong: $FIRST_URL"
+
+    FIRST_DESC=$(jq -r '.items[0].description' "$NEWS_FILE")
+    [[ "$FIRST_DESC" == *"GPT-5"* ]] && pass "description contains content" || fail "description wrong: $FIRST_DESC"
 fi
 
 # ============================================================
@@ -431,12 +401,12 @@ section "18. fetch-news.sh (skips if today's file exists)"
 
 # Modify existing file to detect re-fetch
 if [[ -f "$NEWS_FILE" ]]; then
-    jq '.hits[0].title = "CACHED"' "$NEWS_FILE" > "${NEWS_FILE}.tmp"
+    jq '.items[0].title = "CACHED"' "$NEWS_FILE" > "${NEWS_FILE}.tmp"
     mv "${NEWS_FILE}.tmp" "$NEWS_FILE"
 
     bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 
-    CACHED_TITLE=$(jq -r '.hits[0].title' "$NEWS_FILE")
+    CACHED_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
     [[ "$CACHED_TITLE" == "CACHED" ]] && pass "skipped fetch when today's file exists" || fail "re-fetched despite existing file: $CACHED_TITLE"
 else
     fail "news file missing from previous test"
@@ -466,46 +436,20 @@ EXIT_CODE=$?
 section "20. news-loop.sh (displays news from file)"
 # ============================================================
 
-# Restore working curl mock
-cat > "$MOCK_BIN/curl" << 'MOCKCURL'
-#!/bin/bash
-cat << 'JSON'
-{
-  "hits": [
-    {
-      "title": "GPT-5 Released",
-      "url": "https://example.com/gpt5",
-      "points": 500,
-      "num_comments": 200,
-      "created_at": "2026-04-19T08:00:00.000Z",
-      "objectID": "1001"
-    }
-  ]
-}
-JSON
-MOCKCURL
-chmod +x "$MOCK_BIN/curl"
-
 # Create news file for display test
 mkdir -p "$NEWS_DIR"
 cat > "$NEWS_FILE" << 'NEWSJSON'
 {
-  "hits": [
+  "items": [
     {
       "title": "GPT-5 Released with Major Improvements",
-      "url": "https://news.ycombinator.com/item?id=1001",
-      "points": 500,
-      "num_comments": 200,
-      "created_at": "2026-04-19T08:00:00.000Z",
-      "objectID": "1001"
+      "url": "https://techcrunch.com/gpt5",
+      "description": "OpenAI has released GPT-5 with significant gains."
     },
     {
       "title": "Claude 4.6 Beats All Benchmarks",
-      "url": "https://news.ycombinator.com/item?id=1002",
-      "points": 450,
-      "num_comments": 180,
-      "created_at": "2026-04-19T07:00:00.000Z",
-      "objectID": "1002"
+      "url": "https://techcrunch.com/claude",
+      "description": "Anthropic Claude 4.6 sets new records."
     }
   ]
 }
@@ -515,8 +459,8 @@ NEWSJSON
 OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
 
 echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
-echo "$OUTPUT" | grep -q "news.ycombinator.com/item?id=1001" && pass "news url displayed" || fail "news url not displayed"
-echo "$OUTPUT" | grep -q "500" && pass "points displayed" || fail "points not displayed"
+echo "$OUTPUT" | grep -q "techcrunch.com/gpt5" && pass "news url displayed" || fail "news url not displayed"
+echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
 
 # ============================================================
 section "21. news-loop.sh (handles missing news file)"

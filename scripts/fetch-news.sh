@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Conductor - Fetch AI Tech News
-# Fetches AI-related news from Hacker News Algolia API and saves to a daily file.
+# Fetches AI-related news from TechCrunch AI RSS feed and saves to a daily JSON file.
 # Skips if today's file already exists.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
@@ -15,28 +15,73 @@ fi
 
 mkdir -p "$NEWS_DIR"
 
-# Fetch AI-related stories from Hacker News (timeout 5s, filter by points>10)
-RESPONSE=$(curl -s --max-time 5 \
-    "https://hn.algolia.com/api/v1/search?query=AI+LLM+GPT+Claude&tags=story&numericFilters=points%3E10&hitsPerPage=5" 2>/dev/null)
+# Fetch TechCrunch AI RSS feed (timeout 5s)
+RSS=$(curl -s --max-time 5 \
+    "https://techcrunch.com/category/artificial-intelligence/feed/" 2>/dev/null)
 
-if [[ $? -ne 0 ]] || [[ -z "$RESPONSE" ]]; then
+if [[ $? -ne 0 ]] || [[ -z "$RSS" ]]; then
     exit 0
 fi
 
-# Validate JSON, extract fields, and generate HN discussion URL
-RESULT=$(echo "$RESPONSE" | jq '{
-    hits: [.hits[] | {
-        title: .title,
-        url: ("https://news.ycombinator.com/item?id=" + .objectID),
-        points: .points,
-        num_comments: .num_comments,
-        created_at: .created_at,
-        objectID: .objectID
-    }]
-}' 2>/dev/null)
+# Parse RSS XML with awk (BSD-compatible) and convert to JSON (first 5 items)
+RESULT=$(echo "$RSS" | awk '
+function extract(str, open, end,    n, parts, val) {
+    n = split(str, parts, open)
+    if (n < 2) return ""
+    split(parts[2], val, end)
+    return val[1]
+}
+BEGIN {
+    RS = "<item>"
+    count = 0
+    print "{\"items\":["
+}
+NR > 1 && count < 5 {
+    title = ""; link = ""; desc = ""
+
+    # Extract title (try CDATA first, then plain)
+    raw = extract($0, "<title>", "</title>")
+    gsub(/<!\[CDATA\[/, "", raw)
+    gsub(/\]\]>/, "", raw)
+    title = raw
+
+    # Extract link
+    link = extract($0, "<link>", "</link>")
+
+    # Extract description (try CDATA first, then plain)
+    raw = extract($0, "<description>", "</description>")
+    gsub(/<!\[CDATA\[/, "", raw)
+    gsub(/\]\]>/, "", raw)
+    desc = raw
+
+    if (title != "" && link != "") {
+        # Escape double quotes and backslashes in title and desc
+        gsub(/\\/, "\\\\", title)
+        gsub(/"/, "\\\"", title)
+        gsub(/\\/, "\\\\", desc)
+        gsub(/"/, "\\\"", desc)
+        # Strip HTML tags from description
+        gsub(/<[^>]*>/, "", desc)
+        # Trim description to 120 chars
+        if (length(desc) > 120) desc = substr(desc, 1, 120) "..."
+
+        if (count > 0) print ","
+        printf "{\"title\":\"%s\",\"url\":\"%s\",\"description\":\"%s\"}", title, link, desc
+        count++
+    }
+}
+END {
+    print "]}"
+}
+' 2>/dev/null)
 
 if [[ $? -ne 0 ]] || [[ -z "$RESULT" ]]; then
     exit 0
 fi
 
-echo "$RESULT" > "$NEWS_FILE"
+# Validate JSON with jq before saving
+echo "$RESULT" | jq '.' > "$NEWS_FILE" 2>/dev/null
+
+if [[ $? -ne 0 ]]; then
+    rm -f "$NEWS_FILE"
+fi
