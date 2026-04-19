@@ -422,7 +422,7 @@ if [[ -f "$NEWS_FILE" ]]; then
     [[ "$FIRST_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "first title correct" || fail "first title wrong: $FIRST_TITLE"
 
     FIRST_URL=$(jq -r '.hits[0].url' "$NEWS_FILE")
-    [[ "$FIRST_URL" == "https://example.com/gpt5" ]] && pass "first url correct" || fail "first url wrong: $FIRST_URL"
+    [[ "$FIRST_URL" == "https://news.ycombinator.com/item?id=1001" ]] && pass "first url is HN discussion link" || fail "first url wrong: $FIRST_URL"
 fi
 
 # ============================================================
@@ -493,7 +493,7 @@ cat > "$NEWS_FILE" << 'NEWSJSON'
   "hits": [
     {
       "title": "GPT-5 Released with Major Improvements",
-      "url": "https://example.com/gpt5",
+      "url": "https://news.ycombinator.com/item?id=1001",
       "points": 500,
       "num_comments": 200,
       "created_at": "2026-04-19T08:00:00.000Z",
@@ -501,7 +501,7 @@ cat > "$NEWS_FILE" << 'NEWSJSON'
     },
     {
       "title": "Claude 4.6 Beats All Benchmarks",
-      "url": "https://example.com/claude",
+      "url": "https://news.ycombinator.com/item?id=1002",
       "points": 450,
       "num_comments": 180,
       "created_at": "2026-04-19T07:00:00.000Z",
@@ -515,7 +515,7 @@ NEWSJSON
 OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
 
 echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
-echo "$OUTPUT" | grep -q "example.com/gpt5" && pass "news url displayed" || fail "news url not displayed"
+echo "$OUTPUT" | grep -q "news.ycombinator.com/item?id=1001" && pass "news url displayed" || fail "news url not displayed"
 echo "$OUTPUT" | grep -q "500" && pass "points displayed" || fail "points not displayed"
 
 # ============================================================

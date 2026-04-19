@@ -6,7 +6,7 @@ layout {
         children
     }
 
-    // Main tab: Current Tasks (left-top) + Done Tasks (left-bottom) + News (right-top) + Task Creator (right-bottom)
+    // Main tab: Dashboard (left) + News (right-top) + Done (right-bottom) + Task Creator (bottom)
     tab name="Main" focus=true {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
@@ -15,24 +15,24 @@ layout {
                     command "bash"
                     args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
                 }
-                pane size="40%" {
-                    name "Done"
-                    command "bash"
-                    args "-c" "$HOME/.claude-conductor/scripts/done-loop.sh"
+                pane size="40%" split_direction="horizontal" {
+                    pane size="40%" {
+                        name "News"
+                        command "bash"
+                        args "-c" "$HOME/.claude-conductor/scripts/news-loop.sh"
+                    }
+                    pane size="60%" {
+                        name "Done"
+                        command "bash"
+                        args "-c" "$HOME/.claude-conductor/scripts/done-loop.sh"
+                    }
                 }
             }
-            pane size="30%" split_direction="vertical" {
-                pane size="40%" {
-                    name "News"
-                    command "bash"
-                    args "-c" "$HOME/.claude-conductor/scripts/news-loop.sh"
-                }
-                pane size="60%" {
-                    name "TaskCreate"
-                    focus true
-                    command "bash"
-                    args "-c" "$HOME/.claude-conductor/scripts/task-create-loop.sh"
-                }
+            pane size="30%" {
+                name "TaskCreate"
+                focus true
+                command "bash"
+                args "-c" "$HOME/.claude-conductor/scripts/task-create-loop.sh"
             }
         }
     }

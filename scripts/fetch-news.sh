@@ -15,19 +15,19 @@ fi
 
 mkdir -p "$NEWS_DIR"
 
-# Fetch AI-related stories from Hacker News (timeout 5s)
+# Fetch AI-related stories from Hacker News (timeout 5s, filter by points>10)
 RESPONSE=$(curl -s --max-time 5 \
-    "https://hn.algolia.com/api/v1/search?query=AI+LLM+GPT+Claude&tags=story&hitsPerPage=5" 2>/dev/null)
+    "https://hn.algolia.com/api/v1/search?query=AI+LLM+GPT+Claude&tags=story&numericFilters=points%3E10&hitsPerPage=5" 2>/dev/null)
 
 if [[ $? -ne 0 ]] || [[ -z "$RESPONSE" ]]; then
     exit 0
 fi
 
-# Validate JSON and extract required fields
+# Validate JSON, extract fields, and generate HN discussion URL
 RESULT=$(echo "$RESPONSE" | jq '{
     hits: [.hits[] | {
         title: .title,
-        url: .url,
+        url: ("https://news.ycombinator.com/item?id=" + .objectID),
         points: .points,
         num_comments: .num_comments,
         created_at: .created_at,
