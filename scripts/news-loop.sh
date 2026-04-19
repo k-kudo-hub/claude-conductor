@@ -2,7 +2,7 @@
 # Claude Conductor - AI Tech News Pane
 # Displays AI tech news fetched from TechCrunch.
 # Reads from ~/.claude-conductor/news/YYYY-MM-DD.json
-# Full URLs are stored in the JSON file for reference.
+# Press [1-5] to open article in browser.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 NEWS_DIR="$CONDUCTOR_HOME/news"
@@ -17,6 +17,7 @@ render() {
 
     echo -e "${BOLD}  AI Tech News${NC} ${DIM}[$(date '+%Y-%m-%d')]${NC}"
     echo -e "${DIM}  ──────────────────────${NC}"
+    echo ""
 
     TODAY=$(date '+%Y-%m-%d')
     NEWS_FILE="$NEWS_DIR/$TODAY.json"
@@ -34,6 +35,8 @@ render() {
         return
     fi
 
+    ITEM_COUNT=$count
+
     local i=0
     while [[ $i -lt $count ]]; do
         local title description
@@ -44,9 +47,13 @@ render() {
         if [[ "$description" != "null" ]] && [[ -n "$description" ]]; then
             echo -e "     ${DIM}${description}${NC}"
         fi
+        echo ""
 
         i=$((i + 1))
     done
+
+    echo -e "${DIM}  ──────────────────────${NC}"
+    echo -e "  ${DIM}[1-${count}]: open in browser${NC}"
 }
 
 # Single-pass mode for testing
@@ -55,7 +62,20 @@ if [[ "$CONDUCTOR_NEWS_ONCE" == "1" ]]; then
     exit 0
 fi
 
+ITEM_COUNT=0
+
 while true; do
     render
-    sleep 300
+
+    key=""
+    read -t 5 -n 1 -s key || true
+
+    if [[ "$key" =~ [1-9] ]] && [[ $key -le ${ITEM_COUNT:-0} ]]; then
+        TODAY=$(date '+%Y-%m-%d')
+        NEWS_FILE="$NEWS_DIR/$TODAY.json"
+        url=$(jq -r ".items[$((key-1))].url" "$NEWS_FILE" 2>/dev/null)
+        if [[ -n "$url" ]] && [[ "$url" != "null" ]]; then
+            open "$url" 2>/dev/null
+        fi
+    fi
 done
