@@ -366,7 +366,9 @@ cat << 'RSS'
 <item><title><![CDATA[Claude 4.6 Beats All Benchmarks]]></title><link>https://techcrunch.com/claude</link><description><![CDATA[Anthropic Claude 4.6 sets new records in reasoning and coding tasks.]]></description></item>
 <item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
 <item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures <a href="https://example.com">massive funding</a> for next-gen AI processors.]]></description></item>
-<item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose comprehensive guidelines for safe AI deployment.]]></description></item>
+<item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose
+comprehensive guidelines for safe
+AI deployment.]]></description></item>
 </channel>
 </rss>
 RSS
@@ -398,6 +400,10 @@ if [[ -f "$NEWS_FILE" ]]; then
     CHIP_DESC=$(jq -r '.items[3].description' "$NEWS_FILE")
     [[ "$CHIP_DESC" != *"<a "* ]] && pass "HTML tags stripped from description" || fail "HTML tags remain: $CHIP_DESC"
     jq '.' "$NEWS_FILE" > /dev/null 2>&1 && pass "JSON is valid after HTML stripping" || fail "JSON is invalid"
+
+    # Verify newlines in CDATA are replaced with spaces
+    SAFETY_DESC=$(jq -r '.items[4].description' "$NEWS_FILE")
+    [[ "$SAFETY_DESC" != *$'\n'* ]] && pass "newlines removed from description" || fail "newlines remain in description"
 fi
 
 # ============================================================

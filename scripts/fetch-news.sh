@@ -58,6 +58,11 @@ NR > 1 && count < 5 {
         # Strip HTML tags before escaping (tags may contain quotes)
         gsub(/<[^>]*>/, "", title)
         gsub(/<[^>]*>/, "", desc)
+        # Remove newlines/carriage returns (CDATA blocks may contain them)
+        gsub(/\n/, " ", title)
+        gsub(/\r/, "", title)
+        gsub(/\n/, " ", desc)
+        gsub(/\r/, "", desc)
         # Escape backslashes and double quotes
         gsub(/\\/, "\\\\", title)
         gsub(/"/, "\\\"", title)
