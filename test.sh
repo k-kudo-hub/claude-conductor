@@ -7,6 +7,7 @@ set -e
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX=$(mktemp -d)
 export HOME="$SANDBOX"
+export CONDUCTOR_HOME="$HOME/.claude-conductor"
 
 PASS=0
 FAIL=0
@@ -148,7 +149,7 @@ section "6. pending-notify.sh (fallback tab name from cwd)"
 # ============================================================
 
 echo '{"session_id":"sess-ccc","message":"test","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
-  | ZELLIJ_SESSION_NAME=test-session \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME= \
     bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
 
 TAB_FALLBACK=$(jq -r '.tab' "$PENDING_DIR/sess-ccc.json")
@@ -380,21 +381,24 @@ OUTPUT=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && echo loaded" 2>&1)
 [[ "$OUTPUT" == "loaded" ]] && pass "init.zsh sourced successfully" || fail "init.zsh failed: $OUTPUT"
 
 # Check functions are defined
-FUNCS=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && whence -w mdev dev task pdev zs pending-clear" 2>&1)
+FUNCS=$(zsh -c "source '$HOME/.claude-conductor/init.zsh' && whence -w mdev dev zs pending-clear" 2>&1)
 echo "$FUNCS" | grep -q "mdev: function" && pass "mdev function defined" || fail "mdev not defined"
-echo "$FUNCS" | grep -q "task: function" && pass "task function defined" || fail "task not defined"
+echo "$FUNCS" | grep -q "dev: function" && pass "dev function defined" || fail "dev not defined"
 
 # ============================================================
 section "19. Zellij calls were made correctly"
 # ============================================================
 
 CALLS="$HOME/.claude-pending/zellij-calls.log"
-if [[ -f "$CALLS" ]]; then
-    grep -q 'go-to-tab-name Main' "$CALLS" && pass "go-to-tab-name Main was called" || fail "go-to-tab-name Main not called"
-    pass "all zellij calls completed (no hangs)"
-else
-    fail "no zellij calls recorded"
-fi
+: > "$CALLS"
+
+# Re-run pending-resolve to generate a fresh go-to-tab-name Main call
+echo '{"session_id":"sess-verify"}' \
+  | ZELLIJ_SESSION_NAME=test-session \
+    bash "$HOME/.claude-conductor/scripts/pending-resolve.sh"
+
+grep -q 'go-to-tab-name Main' "$CALLS" && pass "go-to-tab-name Main was called" || fail "go-to-tab-name Main not called"
+pass "all zellij calls completed (no hangs)"
 
 # ============================================================
 section "20. record-output.sh (with transcript)"
@@ -492,7 +496,188 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
-section "23. Uninstall"
+section "23. fetch-news.sh (successful fetch)"
+# ============================================================
+
+# Re-install for news tests
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+
+# Create a mock curl that returns fake TechCrunch RSS response
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat << 'RSS'
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>TechCrunch AI</title>
+<item><title><![CDATA[GPT-5 Released with Major Improvements]]></title><link>https://techcrunch.com/gpt5</link><description><![CDATA[OpenAI has released GPT-5 with significant performance gains across all benchmarks.]]></description></item>
+<item><title><![CDATA[Claude 4.6 Beats All Benchmarks]]></title><link>https://techcrunch.com/claude</link><description><![CDATA[Anthropic Claude 4.6 sets new records in reasoning and coding tasks.]]></description></item>
+<item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm?ref=rss&amp;utm=ai</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
+<item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures <a href="https://example.com">massive funding</a> for next-gen AI processors.]]></description></item>
+<item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose
+comprehensive guidelines for safe
+AI deployment.]]></description></item>
+</channel>
+</rss>
+RSS
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+NEWS_DIR="$HOME/.claude-conductor/news"
+rm -rf "$NEWS_DIR"
+
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+NEWS_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+[[ -f "$NEWS_FILE" ]] && pass "news file created" || fail "news file not created"
+
+if [[ -f "$NEWS_FILE" ]]; then
+    NEWS_COUNT=$(jq -r '.items | length' "$NEWS_FILE")
+    [[ "$NEWS_COUNT" == "5" ]] && pass "5 news items saved" || fail "news count wrong: $NEWS_COUNT"
+
+    FIRST_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
+    [[ "$FIRST_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "first title correct" || fail "first title wrong: $FIRST_TITLE"
+
+    FIRST_URL=$(jq -r '.items[0].url' "$NEWS_FILE")
+    [[ "$FIRST_URL" == "https://techcrunch.com/gpt5" ]] && pass "first url correct" || fail "first url wrong: $FIRST_URL"
+
+    FIRST_DESC=$(jq -r '.items[0].description' "$NEWS_FILE")
+    [[ "$FIRST_DESC" == *"GPT-5"* ]] && pass "description contains content" || fail "description wrong: $FIRST_DESC"
+
+    # Verify HTML tags with quotes are stripped and JSON remains valid
+    CHIP_DESC=$(jq -r '.items[3].description' "$NEWS_FILE")
+    [[ "$CHIP_DESC" != *"<a "* ]] && pass "HTML tags stripped from description" || fail "HTML tags remain: $CHIP_DESC"
+    jq '.' "$NEWS_FILE" > /dev/null 2>&1 && pass "JSON is valid after HTML stripping" || fail "JSON is invalid"
+
+    # Verify newlines in CDATA are replaced with spaces
+    SAFETY_DESC=$(jq -r '.items[4].description' "$NEWS_FILE")
+    [[ "$SAFETY_DESC" != *$'\n'* ]] && pass "newlines removed from description" || fail "newlines remain in description"
+
+    # Verify URL with query params is preserved and JSON is valid
+    LLM_URL=$(jq -r '.items[2].url' "$NEWS_FILE")
+    [[ "$LLM_URL" == *"ref=rss"* ]] && pass "URL with query params preserved" || fail "URL wrong: $LLM_URL"
+fi
+
+# ============================================================
+section "24. fetch-news.sh (skips if today's file exists)"
+# ============================================================
+
+# Modify existing file to detect re-fetch
+if [[ -f "$NEWS_FILE" ]]; then
+    jq '.items[0].title = "CACHED"' "$NEWS_FILE" > "${NEWS_FILE}.tmp"
+    mv "${NEWS_FILE}.tmp" "$NEWS_FILE"
+
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+    CACHED_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
+    [[ "$CACHED_TITLE" == "CACHED" ]] && pass "skipped fetch when today's file exists" || fail "re-fetched despite existing file: $CACHED_TITLE"
+else
+    fail "news file missing from previous test"
+fi
+
+# ============================================================
+section "25. fetch-news.sh (handles API failure gracefully)"
+# ============================================================
+
+# Replace curl mock with one that fails
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+exit 1
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# Remove existing file to force fetch
+rm -f "$NEWS_FILE"
+
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+EXIT_CODE=$?
+
+[[ $EXIT_CODE -eq 0 ]] && pass "fetch-news.sh exits 0 on API failure" || fail "fetch-news.sh exits non-zero: $EXIT_CODE"
+[[ ! -f "$NEWS_FILE" ]] && pass "no news file on API failure" || fail "news file created despite failure"
+
+# Test that invalid XML does not create empty/broken file
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+echo "not valid xml at all"
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+rm -f "$NEWS_FILE"
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+if [[ -f "$NEWS_FILE" ]]; then
+    FILE_SIZE=$(wc -c < "$NEWS_FILE" | tr -d ' ')
+    [[ "$FILE_SIZE" -gt 2 ]] && pass "no empty file on invalid XML" || fail "empty/tiny file created: ${FILE_SIZE} bytes"
+    rm -f "$NEWS_FILE"
+else
+    pass "no file on invalid XML"
+fi
+
+# Restore working curl mock for cleanup test
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat << 'RSS'
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>TC</title>
+<item><title><![CDATA[Test]]></title><link>https://example.com</link><description><![CDATA[desc]]></description></item>
+</channel></rss>
+RSS
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# Create an old news file (simulate 10 days ago)
+OLD_FILE="$NEWS_DIR/2026-01-01.json"
+echo '{"items":[]}' > "$OLD_FILE"
+touch -t 202601010000 "$OLD_FILE"
+
+# Run fetch (today's file missing, triggers fetch + cleanup)
+rm -f "$NEWS_FILE"
+bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+
+[[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
+
+# ============================================================
+section "26. news-loop.sh (displays news from file)"
+# ============================================================
+
+# Create news file for display test
+mkdir -p "$NEWS_DIR"
+cat > "$NEWS_FILE" << 'NEWSJSON'
+{
+  "items": [
+    {
+      "title": "GPT-5 Released with Major Improvements",
+      "url": "https://techcrunch.com/gpt5",
+      "description": "OpenAI has released GPT-5 with significant gains."
+    },
+    {
+      "title": "Claude 4.6 Beats All Benchmarks",
+      "url": "https://techcrunch.com/claude",
+      "description": "Anthropic Claude 4.6 sets new records."
+    }
+  ]
+}
+NEWSJSON
+
+# Run news-loop.sh in single-pass mode for testing
+OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+
+echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
+echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
+echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
+
+# ============================================================
+section "27. news-loop.sh (handles missing news file)"
+# ============================================================
+
+rm -f "$NEWS_FILE"
+
+OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+
+echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
+
+# ============================================================
+section "28. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

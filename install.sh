@@ -48,6 +48,7 @@ echo -e "${BOLD}Installing to ${CONDUCTOR_HOME}...${NC}"
 
 mkdir -p "$CONDUCTOR_HOME/scripts"
 mkdir -p "$CONDUCTOR_HOME/layouts"
+mkdir -p "$CONDUCTOR_HOME/news"
 
 cp "$REPO_DIR"/scripts/*.sh "$CONDUCTOR_HOME/scripts/"
 chmod +x "$CONDUCTOR_HOME/scripts/"*.sh
