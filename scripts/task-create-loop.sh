@@ -4,8 +4,6 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
-SEARCH_DIRS=("$HOME/projects" "$HOME/works")
-SEARCH_DEPTH=1
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -14,6 +12,61 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
+
+load_config() {
+    local config_file="$CONDUCTOR_HOME/config.json"
+    if [[ ! -f "$config_file" ]]; then
+        config_file="$CONDUCTOR_HOME/config.default.json"
+    fi
+    echo "$config_file"
+}
+
+apply_layout() {
+    local dir="$1"
+    local type="$2"
+    local config_file
+    config_file=$(load_config)
+
+    local steps
+    steps=$(jq -c --arg t "$type" '.task_types[$t].layout[]' "$config_file" 2>/dev/null)
+
+    if [[ -z "$steps" ]]; then
+        return
+    fi
+
+    sleep 0.3
+
+    while IFS= read -r step; do
+        local action direction command
+        action=$(echo "$step" | jq -r '.action')
+        direction=$(echo "$step" | jq -r '.direction')
+        command=$(echo "$step" | jq -r '.command // empty')
+
+        case "$action" in
+            new-pane)
+                if [[ -n "$command" ]]; then
+                    zellij action new-pane --direction "$direction" --cwd "$dir" -- "$command"
+                else
+                    zellij action new-pane --direction "$direction" --cwd "$dir"
+                fi
+                ;;
+            move-focus)
+                zellij action move-focus "$direction"
+                ;;
+            focus-previous-pane)
+                zellij action focus-previous-pane
+                ;;
+            resize)
+                local amount
+                amount=$(echo "$step" | jq -r '.amount // 1')
+                local j
+                for (( j=0; j<amount; j++ )); do
+                    zellij action resize "$direction"
+                done
+                ;;
+        esac
+    done <<< "$steps"
+}
 
 create_task() {
     local dir="$1"
@@ -30,21 +83,7 @@ create_task() {
     done
     zellij action focus-previous-pane
 
-    case "$type" in
-        dev)
-            sleep 0.3
-            zellij action new-pane --direction right --cwd "$dir" -- nvim
-            zellij action focus-previous-pane
-            ;;
-        k8s)
-            sleep 0.3
-            zellij action new-pane --direction right --cwd "$dir" -- k9s
-            zellij action new-pane --direction down --cwd "$dir" -- nvim
-            zellij action move-focus left
-            zellij action new-pane --direction down --cwd "$dir"
-            zellij action move-focus up
-            ;;
-    esac
+    apply_layout "$dir" "$type"
 }
 
 while true; do
@@ -60,11 +99,14 @@ while true; do
 
     case "$key" in
         n|N)
+            config_file=$(load_config)
+
             # Step 1: ディレクトリ選択
             fd_args=()
-            for d in "${SEARCH_DIRS[@]}"; do
-                [[ -d "$d" ]] && fd_args+=("$d")
-            done
+            while IFS= read -r d; do
+                expanded="${d/#\~/$HOME}"
+                [[ -d "$expanded" ]] && fd_args+=("$expanded")
+            done < <(jq -r '.search_dirs[]' "$config_file")
 
             if [[ ${#fd_args[@]} -eq 0 ]]; then
                 echo -e "  ${RED}検索対象ディレクトリが見つかりません${NC}"
@@ -72,16 +114,14 @@ while true; do
                 continue
             fi
 
-            dir=$(fd --type d --max-depth "$SEARCH_DEPTH" . "${fd_args[@]}" 2>/dev/null | fzf --prompt="Directory: ")
+            search_depth=$(jq -r '.search_depth' "$config_file")
+
+            dir=$(fd --type d --max-depth "$search_depth" . "${fd_args[@]}" 2>/dev/null | fzf --prompt="Directory: ")
             [[ -z "$dir" ]] && continue
 
             # Step 2: タスクタイプ選択
-            type=$(printf '%s\n' \
-                "dev      Claude Code + LazyVim" \
-                "review   Claude Code only" \
-                "docs     Claude Code only" \
-                "survey   Claude Code only" \
-                "k8s      Claude Code + k9s + Shell + LazyVim" \
+            type=$(jq -r '.task_types | to_entries[] | "\(.key)  \(.value.description)"' "$config_file" \
+                | column -t \
                 | fzf --prompt="Task type: " | awk '{print $1}')
             [[ -z "$type" ]] && continue
 
