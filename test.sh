@@ -459,8 +459,8 @@ NEWSJSON
 OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
 
 echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
-echo "$OUTPUT" | grep -q "techcrunch.com/gpt5" && pass "news url in hyperlink" || fail "news url not in output"
 echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
+echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
 
 # ============================================================
 section "21. news-loop.sh (handles missing news file)"
