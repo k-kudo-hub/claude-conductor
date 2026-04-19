@@ -27,21 +27,20 @@ apply_layout() {
     local config_file
     config_file=$(load_config)
 
-    local layout_count
-    layout_count=$(jq -r ".task_types[\"$type\"].layout | length" "$config_file")
+    local steps
+    steps=$(jq -c --arg t "$type" '.task_types[$t].layout[]' "$config_file" 2>/dev/null)
 
-    if [[ "$layout_count" -eq 0 ]]; then
+    if [[ -z "$steps" ]]; then
         return
     fi
 
     sleep 0.3
 
-    local i
-    for (( i=0; i<layout_count; i++ )); do
+    while IFS= read -r step; do
         local action direction command
-        action=$(jq -r ".task_types[\"$type\"].layout[$i].action" "$config_file")
-        direction=$(jq -r ".task_types[\"$type\"].layout[$i].direction" "$config_file")
-        command=$(jq -r ".task_types[\"$type\"].layout[$i].command // empty" "$config_file")
+        action=$(echo "$step" | jq -r '.action')
+        direction=$(echo "$step" | jq -r '.direction')
+        command=$(echo "$step" | jq -r '.command // empty')
 
         case "$action" in
             new-pane)
@@ -59,16 +58,14 @@ apply_layout() {
                 ;;
             resize)
                 local amount
-                amount=$(jq -r ".task_types[\"$type\"].layout[$i].amount // 1" "$config_file")
+                amount=$(echo "$step" | jq -r '.amount // 1')
                 local j
                 for (( j=0; j<amount; j++ )); do
                     zellij action resize "$direction"
                 done
                 ;;
         esac
-    done
-
-    zellij action focus-previous-pane
+    done <<< "$steps"
 }
 
 create_task() {

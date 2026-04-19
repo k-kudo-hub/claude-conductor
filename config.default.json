@@ -5,7 +5,8 @@
     "dev": {
       "description": "Claude Code + LazyVim",
       "layout": [
-        { "action": "new-pane", "direction": "right", "command": "nvim" }
+        { "action": "new-pane", "direction": "right", "command": "nvim" },
+        { "action": "focus-previous-pane" }
       ]
     },
     "review": {

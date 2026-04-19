@@ -311,11 +311,16 @@ while IFS= read -r step; do
         move-focus)
             zellij action move-focus "$DIRECTION"
             ;;
+        focus-previous-pane)
+            zellij action focus-previous-pane
+            ;;
     esac
 done <<< "$DEV_LAYOUT"
 
 grep -q 'action new-pane --direction right --cwd /tmp -- nvim' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "dev layout: new-pane right nvim" || fail "dev layout: missing nvim pane"
+grep -q 'action focus-previous-pane' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "dev layout: focus-previous-pane" || fail "dev layout: missing focus-previous-pane"
 
 # Clear and test k8s layout
 : > "$HOME/.claude-pending/zellij-calls.log"
