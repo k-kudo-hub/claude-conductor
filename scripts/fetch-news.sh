@@ -55,13 +55,14 @@ NR > 1 && count < 5 {
     desc = raw
 
     if (title != "" && link != "") {
-        # Escape double quotes and backslashes in title and desc
+        # Strip HTML tags before escaping (tags may contain quotes)
+        gsub(/<[^>]*>/, "", title)
+        gsub(/<[^>]*>/, "", desc)
+        # Escape backslashes and double quotes
         gsub(/\\/, "\\\\", title)
         gsub(/"/, "\\\"", title)
         gsub(/\\/, "\\\\", desc)
         gsub(/"/, "\\\"", desc)
-        # Strip HTML tags from description
-        gsub(/<[^>]*>/, "", desc)
         # Trim description to 120 chars
         if (length(desc) > 120) desc = substr(desc, 1, 120) "..."
 

@@ -365,7 +365,7 @@ cat << 'RSS'
 <item><title><![CDATA[GPT-5 Released with Major Improvements]]></title><link>https://techcrunch.com/gpt5</link><description><![CDATA[OpenAI has released GPT-5 with significant performance gains across all benchmarks.]]></description></item>
 <item><title><![CDATA[Claude 4.6 Beats All Benchmarks]]></title><link>https://techcrunch.com/claude</link><description><![CDATA[Anthropic Claude 4.6 sets new records in reasoning and coding tasks.]]></description></item>
 <item><title><![CDATA[Open Source LLM Surpasses Commercial Models]]></title><link>https://techcrunch.com/open-llm</link><description><![CDATA[A new open-source model outperforms proprietary alternatives.]]></description></item>
-<item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures massive funding for next-gen AI processors.]]></description></item>
+<item><title><![CDATA[AI Chip Startup Raises 1B]]></title><link>https://techcrunch.com/ai-chip</link><description><![CDATA[Startup secures <a href="https://example.com">massive funding</a> for next-gen AI processors.]]></description></item>
 <item><title><![CDATA[New AI Safety Framework Proposed]]></title><link>https://techcrunch.com/ai-safety</link><description><![CDATA[Researchers propose comprehensive guidelines for safe AI deployment.]]></description></item>
 </channel>
 </rss>
@@ -393,6 +393,11 @@ if [[ -f "$NEWS_FILE" ]]; then
 
     FIRST_DESC=$(jq -r '.items[0].description' "$NEWS_FILE")
     [[ "$FIRST_DESC" == *"GPT-5"* ]] && pass "description contains content" || fail "description wrong: $FIRST_DESC"
+
+    # Verify HTML tags with quotes are stripped and JSON remains valid
+    CHIP_DESC=$(jq -r '.items[3].description' "$NEWS_FILE")
+    [[ "$CHIP_DESC" != *"<a "* ]] && pass "HTML tags stripped from description" || fail "HTML tags remain: $CHIP_DESC"
+    jq '.' "$NEWS_FILE" > /dev/null 2>&1 && pass "JSON is valid after HTML stripping" || fail "JSON is invalid"
 fi
 
 # ============================================================
