@@ -1722,7 +1722,7 @@ run_push() {
 }
 
 # A self-contained populated repo (seeded 'main') for this section's C/D cases,
-# so it does not depend on state created in section 36.
+# so it does not depend on state created in the end-to-end push section (44).
 POP_REMOTE="$SANDBOX/pop-log.git"
 git init --bare -q "$POP_REMOTE"
 POP_SEED="$SANDBOX/pop-seed"
