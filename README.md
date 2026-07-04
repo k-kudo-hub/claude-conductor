@@ -77,6 +77,12 @@ sessions.
 > **Note:** Changes to `hooks.json`'s *structure* (adding events or swapping
 > commands) are **not** covered by `mdev-test`, because hooks live in the global
 > `~/.claude/settings.json`. Only changes to the hook *scripts* are reflected.
+>
+> **Note:** A worktree only gets *full* pane isolation once its `layouts/multi.kdl`
+> references `${CONDUCTOR_HOME}` (this feature and later). For older worktrees whose
+> layout hardcodes `~/.claude-conductor`, the Main-tab panes run the **installed**
+> scripts — `mdev-test` prints a warning in that case. Data and hook scripts are
+> still isolated via `CONDUCTOR_HOME`.
 
 ### Create tasks (in the dashboard)
 
