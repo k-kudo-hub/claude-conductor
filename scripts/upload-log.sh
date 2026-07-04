@@ -41,9 +41,39 @@ filter_secrets() {
         -e 's/([Bb]earer )[A-Za-z0-9._-]{10,}/\1***REDACTED***/g'
 }
 
-# generate_summary <transcript_path>: print a conversation summary, non-zero on failure.
+# generate_summary <transcript_path>: print a conversation summary via the
+# claude CLI. Returns non-zero on any failure so the caller can abort dd.
 generate_summary() {
-    return 0
+    local transcript="$1"
+    command -v claude >/dev/null 2>&1 || return 1
+    [ -n "$transcript" ] && [ -f "$transcript" ] || return 1
+
+    # Extract human-readable text (user + assistant text blocks) from the JSONL transcript
+    local convo
+    convo=$(jq -rs '
+        [ .[]
+          | select(.type == "user" or .type == "assistant")
+          | .message.content as $c
+          | (if ($c | type) == "string" then $c
+             else ([ $c[]? | select(.type == "text") | .text ] | join("\n"))
+             end)
+          | select(. != null and . != "")
+        ] | join("\n")
+    ' "$transcript" 2>/dev/null)
+
+    [ -n "$convo" ] || return 1
+
+    # Strip secrets before sending the conversation to the model
+    convo=$(printf '%s' "$convo" | filter_secrets)
+
+    local summary
+    summary=$(printf '%s' "$convo" | claude -p "以下はあるタスクの作業会話ログです。何を行ったかを日本語の箇条書き3〜6点で簡潔に要約してください。前置きや後書きは不要です。" 2>/dev/null)
+    local rc=$?
+
+    if [ $rc -ne 0 ] || [ -z "$summary" ]; then
+        return 1
+    fi
+    printf '%s' "$summary"
 }
 
 # build_log_path <base_dir> <completed_at> <taskname>: print the relative log path.

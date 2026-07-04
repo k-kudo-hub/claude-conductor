@@ -994,6 +994,60 @@ OUT=$(run_filter "just a normal log line about task completion")
     && pass "normal text unchanged" || fail "normal text altered: $OUT"
 
 # ============================================================
+section "34. upload-log.sh generate_summary (via claude CLI)"
+# ============================================================
+
+run_summary() {
+    ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; generate_summary "$1" )
+}
+
+# Mock claude CLI that echoes a canned summary
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null   # drain the conversation on stdin
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+if SUM=$(run_summary "$MOCK_TRANSCRIPT"); then
+    echo "$SUM" | grep -q "モックの作業要約" \
+        && pass "summary generated via claude" || fail "summary content wrong: $SUM"
+else
+    fail "generate_summary returned non-zero on success path"
+fi
+
+# Missing transcript -> failure
+if run_summary "/nonexistent/transcript.jsonl" >/dev/null 2>&1; then
+    fail "generate_summary should fail on missing transcript"
+else
+    pass "generate_summary fails on missing transcript"
+fi
+
+# claude CLI error -> failure (so caller can abort dd)
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+exit 1
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+if run_summary "$MOCK_TRANSCRIPT" >/dev/null 2>&1; then
+    fail "generate_summary should fail when claude errors"
+else
+    pass "generate_summary fails when claude errors"
+fi
+
+# Restore working mock claude for later sections
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
