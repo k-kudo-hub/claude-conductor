@@ -66,6 +66,7 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/pending-resolve.sh" ]] && pass "pending-resolve.sh installed" || fail "pending-resolve.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 [[ -f "$HOME/.claude-conductor/layouts/dev.kdl" ]] && pass "dev.kdl installed" || fail "dev.kdl missing"
 [[ -f "$HOME/.claude-conductor/init.zsh" ]] && pass "init.zsh installed" || fail "init.zsh missing"
@@ -372,6 +373,20 @@ echo "$DEFAULT_TYPES" | grep -q "k8s" && pass "fallback: k8s type available" || 
 
 # Restore config.json for subsequent tests
 cp "$HOME/.claude-conductor/config.default.json" "$HOME/.claude-conductor/config.json"
+
+# ============================================================
+section "17b. task-lib.sh create_task passes TASK_TYPE"
+# ============================================================
+
+# task-lib.sh should be sourceable and define the shared functions
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && declare -F create_task >/dev/null && declare -F apply_layout >/dev/null ) \
+  && pass "task-lib.sh defines create_task/apply_layout" || fail "task-lib.sh functions missing"
+
+# create_task should launch the claude tab with TASK_TYPE env var
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "restore-me" ) >/dev/null 2>&1
+grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task passes TASK_TAB_NAME and TASK_TYPE" || fail "create_task missing TASK_TYPE"
 
 # ============================================================
 section "18. init.zsh loads without errors"
