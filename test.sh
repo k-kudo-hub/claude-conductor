@@ -941,6 +941,25 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
+section "32. upload-log.sh (skipped when upload disabled)"
+# ============================================================
+
+UPLOAD_SCRIPT="$HOME/.claude-conductor/scripts/upload-log.sh"
+UPLOAD_CONFIG="$HOME/.claude-conductor/config.json"
+
+[[ -f "$UPLOAD_SCRIPT" ]] && pass "upload-log.sh installed" || fail "upload-log.sh not installed"
+
+# Default config ships with upload.enabled=false -> must exit 0 and do nothing
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "some-tab" \
+    && pass "exits 0 when upload disabled" || fail "non-zero exit when upload disabled"
+
+# enabled=true but repo empty -> still skipped (exit 0)
+jq '.upload.enabled = true | .upload.repo = ""' "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "some-tab" \
+    && pass "exits 0 when repo unset" || fail "non-zero exit when repo unset"
+rm -f "$UPLOAD_CONFIG"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
