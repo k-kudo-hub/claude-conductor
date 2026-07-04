@@ -1243,13 +1243,17 @@ echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news f
 section "30. scripts are executable (mdev-test runs them directly)"
 # ============================================================
 
-# mdev-test runs the worktree's scripts in place (install.sh's chmod does not
-# apply), so every script must carry the execute bit in the repo itself.
+# Layout panes run their script directly (bash -c "<path>/x.sh"), which needs the
+# execute bit. mdev-test runs the worktree copy in place (install.sh's chmod does
+# not apply), so those scripts must carry the bit in the repo itself. (Libraries
+# that are sourced, and scripts invoked via `bash <script>`, do not need it.)
+LAYOUT_SCRIPTS=$(grep -ohE 'scripts/[a-z0-9-]+\.sh' "$REPO_DIR"/layouts/*.kdl | sort -u)
 NON_EXEC=""
-for f in "$REPO_DIR/scripts/"*.sh; do
-    [[ -x "$f" ]] || NON_EXEC="$NON_EXEC $(basename "$f")"
+for s in $LAYOUT_SCRIPTS; do
+    f="$REPO_DIR/$s"
+    [[ -f "$f" && ! -x "$f" ]] && NON_EXEC="$NON_EXEC $(basename "$f")"
 done
-[[ -z "$NON_EXEC" ]] && pass "all scripts/*.sh are executable" || fail "non-executable scripts:$NON_EXEC"
+[[ -z "$NON_EXEC" ]] && pass "layout pane scripts are executable" || fail "non-executable pane scripts:$NON_EXEC"
 
 # ============================================================
 section "30a. multi.kdl honors CONDUCTOR_HOME"
