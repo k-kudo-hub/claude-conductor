@@ -57,6 +57,27 @@ mdev              # Multi-task dashboard session
 dev               # Single dev session (Claude + Neovim + lazygit)
 ```
 
+### Test a worktree in isolation
+
+When developing Conductor itself across parallel worktrees, launch a throwaway
+test session **in a new terminal window** without overwriting your installed
+`~/.claude-conductor/`:
+
+```bash
+mdev-test <worktree-path>   # absolute or relative path to a worktree
+mdev-test <branch-name>     # resolved under <repo>/.worktree/<name>
+mdev-test                   # pick from .worktree/ with fzf
+```
+
+`mdev-test` points `CONDUCTOR_HOME` at the worktree, so its `scripts/`,
+`layouts/`, and hook **scripts** run from the worktree copy. The session is
+named `test-<worktree>` to keep its pending/daily data separate from your real
+sessions.
+
+> **Note:** Changes to `hooks.json`'s *structure* (adding events or swapping
+> commands) are **not** covered by `mdev-test`, because hooks live in the global
+> `~/.claude/settings.json`. Only changes to the hook *scripts* are reflected.
+
 ### Create tasks (in the dashboard)
 
 Press `n` in the bottom pane to start the task creation flow:
