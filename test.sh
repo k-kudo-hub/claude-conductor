@@ -73,6 +73,8 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/pending-resolve.sh" ]] && pass "pending-resolve.sh installed" || fail "pending-resolve.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
@@ -124,7 +126,7 @@ section "3. pending-notify.sh (Notification event)"
 PENDING_DIR="$HOME/.claude-pending/test-session"
 
 echo '{"session_id":"sess-aaa","message":"Permission needed","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
-  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature TASK_TYPE=dev \
     bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
 
 [[ -f "$PENDING_DIR/sess-aaa.json" ]] && pass "pending file created" || fail "pending file not created"
@@ -134,6 +136,12 @@ TAB=$(jq -r '.tab' "$PENDING_DIR/sess-aaa.json")
 
 EVENT=$(jq -r '.event' "$PENDING_DIR/sess-aaa.json")
 [[ "$EVENT" == "Notification" ]] && pass "event is Notification" || fail "event wrong: $EVENT"
+
+DIR=$(jq -r '.dir' "$PENDING_DIR/sess-aaa.json")
+[[ "$DIR" == "/tmp/myapp" ]] && pass "dir recorded from cwd" || fail "dir wrong: $DIR"
+
+PTYPE=$(jq -r '.task_type' "$PENDING_DIR/sess-aaa.json")
+[[ "$PTYPE" == "dev" ]] && pass "task_type recorded from TASK_TYPE" || fail "task_type wrong: $PTYPE"
 
 # ============================================================
 section "4. pending-notify.sh (Stop does not overwrite Notification)"
@@ -399,6 +407,89 @@ echo "$DEFAULT_TYPES" | grep -q "k8s" && pass "fallback: k8s type available" || 
 cp "$HOME/.claude-conductor/config.default.json" "$HOME/.claude-conductor/config.json"
 
 # ============================================================
+section "17b. task-lib.sh create_task passes TASK_TYPE"
+# ============================================================
+
+# task-lib.sh should be sourceable and define the shared functions
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && declare -F create_task >/dev/null && declare -F apply_layout >/dev/null ) \
+  && pass "task-lib.sh defines create_task/apply_layout" || fail "task-lib.sh functions missing"
+
+# create_task should launch the claude tab with TASK_TYPE env var
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "restore-me" ) >/dev/null 2>&1
+grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task passes TASK_TAB_NAME and TASK_TYPE" || fail "create_task missing TASK_TYPE"
+
+# create_task with a resume id should launch claude --resume <id>
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "resume-me" "sess-xyz" ) >/dev/null 2>&1
+grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume-me TASK_TYPE=dev claude --resume sess-xyz' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task resumes session with claude --resume" || fail "create_task did not pass --resume"
+
+# ============================================================
+section "17c. lock-lib.sh (mkdir-based advisory lock)"
+# ============================================================
+
+( source "$HOME/.claude-conductor/scripts/lock-lib.sh" && declare -F acquire_lock >/dev/null && declare -F release_lock >/dev/null ) \
+  && pass "lock-lib.sh defines acquire_lock/release_lock" || fail "lock-lib.sh functions missing"
+
+source "$HOME/.claude-conductor/scripts/lock-lib.sh"
+LOCKDIR="$SANDBOX/test.lock"
+
+LK_RC=0; acquire_lock "$LOCKDIR" || LK_RC=$?
+[[ $LK_RC -eq 0 ]] && pass "acquire_lock succeeds on free lock" || fail "acquire_lock failed: $LK_RC"
+[[ -d "$LOCKDIR" ]] && pass "lock directory created" || fail "lock directory missing"
+
+# A held lock blocks a second acquire (short timeout)
+LK_RC2=0; acquire_lock "$LOCKDIR" 1 || LK_RC2=$?
+[[ $LK_RC2 -eq 1 ]] && pass "held lock blocks second acquire (timeout)" || fail "second acquire wrong: $LK_RC2"
+
+release_lock "$LOCKDIR"
+[[ ! -d "$LOCKDIR" ]] && pass "release_lock removes the lock" || fail "release_lock left the lock"
+
+LK_RC3=0; acquire_lock "$LOCKDIR" || LK_RC3=$?
+[[ $LK_RC3 -eq 0 ]] && pass "re-acquire after release" || fail "re-acquire failed: $LK_RC3"
+release_lock "$LOCKDIR"
+
+# A stale lock (owner PID gone) is reclaimed
+mkdir -p "$LOCKDIR"
+echo "999999" > "$LOCKDIR/pid"
+LK_RC4=0; acquire_lock "$LOCKDIR" 1 || LK_RC4=$?
+[[ $LK_RC4 -eq 0 ]] && pass "stale lock reclaimed (dead owner)" || fail "stale lock not reclaimed: $LK_RC4"
+release_lock "$LOCKDIR"
+
+# ============================================================
+section "17d. record-output.sh waits for the daily-log lock"
+# ============================================================
+
+HOLD_SESSION="hold-sess"
+HOLD_PENDING="$HOME/.claude-pending/$HOLD_SESSION"
+HOLD_DAILY_DIR="$HOME/.claude-conductor/daily/$HOLD_SESSION"
+mkdir -p "$HOLD_PENDING" "$HOLD_DAILY_DIR"
+HOLD_DAILY="$HOLD_DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
+HOLD_LOCK="$HOLD_DAILY.lock"
+: > "$HOLD_DAILY"
+cat > "$HOLD_PENDING/held.json" << 'EOF'
+{"tab":"held-tab","session":"hold-sess","claude_session_id":"held","message":"blocked","event":"Stop","time":"09:00:00"}
+EOF
+
+# Hold the lock as a live owner (this shell), then start record-output in the background.
+mkdir -p "$HOLD_LOCK"
+echo "$$" > "$HOLD_LOCK/pid"
+( ZELLIJ_SESSION_NAME="$HOLD_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "held-tab" ) &
+RO_PID=$!
+sleep 1
+BEFORE=$(wc -l < "$HOLD_DAILY" | tr -d ' ')
+[[ "$BEFORE" -eq 0 ]] && pass "record-output blocks while lock is held" || fail "record-output wrote despite held lock: $BEFORE"
+
+# Release and let record-output proceed
+release_lock "$HOLD_LOCK"
+wait "$RO_PID" 2>/dev/null || true
+AFTER=$(wc -l < "$HOLD_DAILY" | tr -d ' ')
+[[ "$AFTER" -eq 1 ]] && pass "record-output appends after lock released" || fail "record-output append wrong: $AFTER"
+[[ ! -d "$HOLD_LOCK" ]] && pass "record-output releases the lock on exit" || fail "record-output left the lock"
+
+# ============================================================
 section "18. init.zsh loads without errors"
 # ============================================================
 
@@ -457,7 +548,9 @@ cat > "$PENDING_DIR/sess-rec.json" << EOF
   "message": "Task complete",
   "event": "Stop",
   "time": "10:00:05",
-  "transcript_path": "$MOCK_TRANSCRIPT"
+  "transcript_path": "$MOCK_TRANSCRIPT",
+  "dir": "/tmp/myapp",
+  "task_type": "dev"
 }
 EOF
 
@@ -481,6 +574,18 @@ if [[ -f "$DAILY_FILE" ]]; then
 
     DOC=$(echo "$RECORD" | jq -r '.markers.doc')
     [[ "$DOC" == "true" ]] && pass "doc marker detected" || fail "doc marker not detected: $DOC"
+
+    DIR_REC=$(echo "$RECORD" | jq -r '.dir')
+    [[ "$DIR_REC" == "/tmp/myapp" ]] && pass "dir carried into daily log" || fail "dir not carried: $DIR_REC"
+
+    TYPE_REC=$(echo "$RECORD" | jq -r '.task_type')
+    [[ "$TYPE_REC" == "dev" ]] && pass "task_type carried into daily log" || fail "task_type not carried: $TYPE_REC"
+
+    SID_REC=$(echo "$RECORD" | jq -r '.claude_session_id')
+    [[ "$SID_REC" == "sess-rec" ]] && pass "claude_session_id carried into daily log" || fail "claude_session_id not carried: $SID_REC"
+
+    TP_REC=$(echo "$RECORD" | jq -r '.transcript_path')
+    [[ "$TP_REC" == "$MOCK_TRANSCRIPT" ]] && pass "transcript_path carried into daily log" || fail "transcript_path not carried: $TP_REC"
 fi
 
 # ============================================================
@@ -765,17 +870,23 @@ cat > "$TEST_DAILY_FILE" << 'JSONL'
 {"tab":"task-a","session":"s1","completed_at":"2026-04-19T10:05:00+0900","message":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":1.85},"markers":{"merged":true,"slack":false,"doc":false}}
 {"tab":"task-b","session":"s1","completed_at":"2026-04-19T11:30:00+0900","message":"done","summary":{"total_turns":10,"total_tool_calls":20,"total_cost_usd":2.67},"markers":{"merged":false,"slack":true,"doc":true}}
 {"tab":"old-task","session":"s1","completed_at":"2026-04-19T09:00:00+0900","message":"done","summary":{"total_turns":5,"total_tool_calls":3},"markers":{"merged":false,"slack":false,"doc":false}}
+{"tab":"restored-task","session":"s1","completed_at":"2026-04-19T08:00:00+0900","message":"done","summary":{"total_turns":2,"total_tool_calls":2,"total_cost_usd":9.99},"markers":{"merged":false,"slack":false,"doc":false},"restored":true}
 JSONL
 
-# Test summary stats
-STATS=$(cat "$TEST_DAILY_FILE" | jq -s '{
+# Test summary stats (restored entries are excluded, as done-loop.sh does)
+STATS=$(cat "$TEST_DAILY_FILE" | jq -s 'map(select((.restored // false) != true)) | {
     count: length,
     cost: ([.[].summary.total_cost_usd // 0] | add)
 }' 2>/dev/null)
 STAT_COUNT=$(echo "$STATS" | jq -r '.count')
 STAT_COST=$(echo "$STATS" | jq -r '.cost')
-[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3" || fail "stats count wrong: $STAT_COUNT"
-[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52" || fail "stats total cost wrong: $STAT_COST"
+[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3 (restored excluded)" || fail "stats count wrong: $STAT_COUNT"
+[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52 (restored excluded)" || fail "stats total cost wrong: $STAT_COST"
+
+# Restored entries must not appear in the displayed list
+LIST_TABS=$(cat "$TEST_DAILY_FILE" | jq -s -r 'map(select((.restored // false) != true)) | sort_by(.completed_at) | .[].tab')
+echo "$LIST_TABS" | grep -q "restored-task" && fail "restored task wrongly listed" || pass "restored task excluded from list"
+echo "$LIST_TABS" | grep -q "task-a" && pass "active task listed" || fail "active task missing from list"
 
 # Test per-task cost formatting
 COST_A=$(head -1 "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
@@ -783,6 +894,154 @@ COST_A=$(head -1 "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | i
 
 COST_OLD=$(sed -n '3p' "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
 [[ "$COST_OLD" == "-" ]] && pass "old task without cost shows -" || fail "old task cost wrong: $COST_OLD"
+
+# ============================================================
+section "26e. restore-task.sh (restore Done task to dashboard)"
+# ============================================================
+
+RESTORE_SESSION="restore-sess"
+RESTORE_DAILY_DIR="$HOME/.claude-conductor/daily/$RESTORE_SESSION"
+mkdir -p "$RESTORE_DAILY_DIR"
+RESTORE_TODAY=$(date '+%Y-%m-%d')
+RESTORE_DAILY_FILE="$RESTORE_DAILY_DIR/$RESTORE_TODAY.jsonl"
+RESTORE_AT="${RESTORE_TODAY}T10:00:00+0900"
+OLD_AT="${RESTORE_TODAY}T09:00:00+0900"
+STALE_AT="${RESTORE_TODAY}T08:00:00+0900"
+GONE_AT="${RESTORE_TODAY}T07:00:00+0900"
+NT_AT="${RESTORE_TODAY}T06:00:00+0900"
+
+# Working directories that still exist (restore requires the dir to be present)
+PROJ_DIR="$SANDBOX/proj"
+PROJ2_DIR="$SANDBOX/proj2"
+mkdir -p "$PROJ_DIR" "$PROJ2_DIR"
+
+# A transcript file that still exists (session resumable)
+RESTORE_TRANSCRIPT="$SANDBOX/restore-transcript.jsonl"
+echo '{}' > "$RESTORE_TRANSCRIPT"
+
+# Entries:
+#  - restore-me : dir + resumable session (transcript exists)     -> claude --resume
+#  - legacy-task: no dir                                          -> not restorable (exit 2)
+#  - stale-task : dir + session id but transcript is gone         -> fresh claude
+#  - gone-task  : dir no longer exists on disk                    -> not restorable (exit 3)
+#  - notrans    : dir + session id but no transcript_path field   -> fresh claude
+cat > "$RESTORE_DAILY_FILE" << JSONL
+{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ_DIR","task_type":"dev","claude_session_id":"sess-restore","transcript_path":"$RESTORE_TRANSCRIPT"}
+{"tab":"legacy-task","session":"$RESTORE_SESSION","completed_at":"$OLD_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false}}
+{"tab":"stale-task","session":"$RESTORE_SESSION","completed_at":"$STALE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ2_DIR","task_type":"dev","claude_session_id":"sess-stale","transcript_path":"$SANDBOX/gone.jsonl"}
+{"tab":"gone-task","session":"$RESTORE_SESSION","completed_at":"$GONE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$SANDBOX/removed","task_type":"dev","claude_session_id":"sess-gone","transcript_path":"$RESTORE_TRANSCRIPT"}
+{"tab":"notrans","session":"$RESTORE_SESSION","completed_at":"$NT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ2_DIR","task_type":"dev","claude_session_id":"sess-notrans"}
+JSONL
+
+# Restore the entry that has dir and a resumable session
+: > "$HOME/.claude-pending/zellij-calls.log"
+RESTORE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "restore-me" "$RESTORE_SESSION" "$RESTORE_AT" || RESTORE_RC=$?
+[[ $RESTORE_RC -eq 0 ]] && pass "restore-task.sh exits 0 on restorable entry" || fail "restore-task.sh exit wrong: $RESTORE_RC"
+
+grep -q "action new-tab -n restore-me --cwd $PROJ_DIR -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude --resume sess-restore" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "restore recreates tab and resumes session" || fail "restore did not resume session correctly"
+
+RESTORED_FLAG=$(jq -r 'select(.tab=="restore-me") | .restored' "$RESTORE_DAILY_FILE")
+[[ "$RESTORED_FLAG" == "true" ]] && pass "restored entry marked restored:true" || fail "restored flag wrong: $RESTORED_FLAG"
+
+# The other entries must stay untouched
+LEGACY_FLAG=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$LEGACY_FLAG" == "absent" ]] && pass "unrelated entry untouched" || fail "unrelated entry changed: $LEGACY_FLAG"
+
+# Legacy entry without dir cannot be restored
+: > "$HOME/.claude-pending/zellij-calls.log"
+LEGACY_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "legacy-task" "$RESTORE_SESSION" "$OLD_AT" || LEGACY_RC=$?
+[[ $LEGACY_RC -eq 2 ]] && pass "restore-task.sh exits 2 when dir missing" || fail "legacy exit wrong: $LEGACY_RC"
+[[ ! -s "$HOME/.claude-pending/zellij-calls.log" ]] && pass "no tab created for legacy entry" || fail "tab wrongly created for legacy entry"
+LEGACY_FLAG2=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$LEGACY_FLAG2" == "absent" ]] && pass "legacy entry not marked restored" || fail "legacy entry wrongly marked: $LEGACY_FLAG2"
+
+# Stale session (transcript gone): still restorable, but falls back to a fresh claude
+: > "$HOME/.claude-pending/zellij-calls.log"
+STALE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "stale-task" "$RESTORE_SESSION" "$STALE_AT" || STALE_RC=$?
+[[ $STALE_RC -eq 0 ]] && pass "stale-session entry still restores" || fail "stale restore exit wrong: $STALE_RC"
+grep -q "action new-tab -n stale-task --cwd $PROJ2_DIR -- env TASK_TAB_NAME=stale-task TASK_TYPE=dev claude\$" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "stale session falls back to fresh claude (no --resume)" || fail "stale session did not fall back correctly"
+
+# Session id but no transcript_path recorded: falls back to a fresh claude
+: > "$HOME/.claude-pending/zellij-calls.log"
+NT_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "notrans" "$RESTORE_SESSION" "$NT_AT" || NT_RC=$?
+[[ $NT_RC -eq 0 ]] && pass "no-transcript entry still restores" || fail "no-transcript exit wrong: $NT_RC"
+grep -q "action new-tab -n notrans --cwd $PROJ2_DIR -- env TASK_TAB_NAME=notrans TASK_TYPE=dev claude\$" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "no-transcript entry starts a fresh claude (no --resume)" || fail "no-transcript did not fall back correctly"
+
+# Recorded dir no longer exists: not restorable, entry left in Done
+: > "$HOME/.claude-pending/zellij-calls.log"
+GONE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "gone-task" "$RESTORE_SESSION" "$GONE_AT" || GONE_RC=$?
+[[ $GONE_RC -eq 3 ]] && pass "restore-task.sh exits 3 when dir is gone" || fail "gone-dir exit wrong: $GONE_RC"
+[[ ! -s "$HOME/.claude-pending/zellij-calls.log" ]] && pass "no tab created for gone-dir entry" || fail "tab wrongly created for gone-dir entry"
+GONE_FLAG=$(jq -r 'select(.tab=="gone-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$GONE_FLAG" == "absent" ]] && pass "gone-dir entry left in Done (not marked)" || fail "gone-dir entry wrongly marked: $GONE_FLAG"
+
+# ============================================================
+section "26f. done-loop.sh (r+number triggers restore)"
+# ============================================================
+
+# Isolate today's daily log to a single restorable entry so [1] is deterministic
+rm -rf "$HOME/.claude-conductor/daily"
+INT_SESSION="int-restore"
+INT_DIR="$HOME/.claude-conductor/daily/$INT_SESSION"
+mkdir -p "$INT_DIR"
+INT_PROJ="$SANDBOX/intproj"
+mkdir -p "$INT_PROJ"
+INT_TODAY=$(date '+%Y-%m-%d')
+INT_FILE="$INT_DIR/$INT_TODAY.jsonl"
+INT_AT="${INT_TODAY}T10:00:00+0900"
+cat > "$INT_FILE" << JSONL
+{"tab":"int-task","session":"$INT_SESSION","completed_at":"$INT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$INT_PROJ","task_type":"dev"}
+JSONL
+
+# Drive the interactive loop: feed 'r' then '1', keep stdin open briefly, then kill it.
+: > "$HOME/.claude-pending/zellij-calls.log"
+( printf 'r1'; sleep 3 ) | ZELLIJ_SESSION_NAME="$INT_SESSION" bash "$HOME/.claude-conductor/scripts/done-loop.sh" >/dev/null 2>&1 &
+DL_PID=$!
+sleep 2
+kill "$DL_PID" 2>/dev/null || true
+wait "$DL_PID" 2>/dev/null || true
+
+grep -q "action new-tab -n int-task --cwd $INT_PROJ -- env TASK_TAB_NAME=int-task TASK_TYPE=dev claude" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "done-loop r+num recreates the tab" || fail "done-loop r+num did not recreate tab"
+
+INT_FLAG=$(jq -r 'select(.tab=="int-task") | .restored' "$INT_FILE")
+[[ "$INT_FLAG" == "true" ]] && pass "done-loop r+num marks entry restored" || fail "done-loop restored flag wrong: $INT_FLAG"
+
+# ============================================================
+section "26g. restore-task.sh (duplicate tab+completed_at marks only one)"
+# ============================================================
+
+# Two entries sharing the same tab AND completed_at: restoring must flip exactly
+# one of them, leaving the sibling available in the Done pane.
+DUP_SESSION="dup-sess"
+DUP_DIR_DAILY="$HOME/.claude-conductor/daily/$DUP_SESSION"
+mkdir -p "$DUP_DIR_DAILY"
+DUP_TODAY=$(date '+%Y-%m-%d')
+DUP_FILE="$DUP_DIR_DAILY/$DUP_TODAY.jsonl"
+DUP_AT="${DUP_TODAY}T12:00:00+0900"
+DUP_PROJ="$SANDBOX/dupproj"
+mkdir -p "$DUP_PROJ"
+cat > "$DUP_FILE" << JSONL
+{"tab":"dup-task","session":"$DUP_SESSION","completed_at":"$DUP_AT","message":"first","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$DUP_PROJ","task_type":"dev"}
+{"tab":"dup-task","session":"$DUP_SESSION","completed_at":"$DUP_AT","message":"second","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$DUP_PROJ","task_type":"dev"}
+JSONL
+
+DUP_RC=0
+ZELLIJ_SESSION_NAME="$DUP_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "dup-task" "$DUP_SESSION" "$DUP_AT" || DUP_RC=$?
+[[ $DUP_RC -eq 0 ]] && pass "duplicate restore exits 0" || fail "duplicate restore exit wrong: $DUP_RC"
+
+DUP_RESTORED=$(jq -s '[.[] | select(.restored == true)] | length' "$DUP_FILE")
+[[ "$DUP_RESTORED" == "1" ]] && pass "exactly one duplicate marked restored" || fail "wrong restored count: $DUP_RESTORED"
+DUP_REMAIN=$(jq -s '[.[] | select((.restored // false) != true)] | length' "$DUP_FILE")
+[[ "$DUP_REMAIN" == "1" ]] && pass "sibling entry still available in Done" || fail "sibling count wrong: $DUP_REMAIN"
 
 # ============================================================
 section "26. fetch-news.sh (successful fetch)"
