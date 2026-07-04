@@ -981,12 +981,28 @@ ZELLIJ_SESSION_NAME=wait-session \
 EVENT_W=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
 [[ "$EVENT_W" == "Waiting" ]] && pass "Notification toggled to Waiting" || fail "toggle to Waiting failed: $EVENT_W"
 
-# Toggle again -> back to Notification
+# Toggle again -> back to Notification (prev_event restored, field removed)
 ZELLIJ_SESSION_NAME=wait-session \
   bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "pr-review"
 
 EVENT_W2=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
 [[ "$EVENT_W2" == "Notification" ]] && pass "Waiting toggled back to Notification" || fail "toggle back failed: $EVENT_W2"
+PREV_W2=$(jq -r '.prev_event // "absent"' "$WAIT_DIR/sess-w1.json")
+[[ "$PREV_W2" == "absent" ]] && pass "prev_event removed after resume" || fail "prev_event lingering: $PREV_W2"
+
+# A completed (Stop/done) task must return to Stop after Waiting -> resume
+echo '{"tab":"done-task","session":"wait-session","message":"review completed","event":"Stop","time":"10:00:00"}' > "$WAIT_DIR/sess-done.json"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "done-task"
+EVENT_D1=$(jq -r '.event' "$WAIT_DIR/sess-done.json")
+PREV_D1=$(jq -r '.prev_event' "$WAIT_DIR/sess-done.json")
+[[ "$EVENT_D1" == "Waiting" && "$PREV_D1" == "Stop" ]] && pass "Stop task remembers prev_event on Waiting" || fail "prev_event not saved: event=$EVENT_D1 prev=$PREV_D1"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "done-task"
+EVENT_D2=$(jq -r '.event' "$WAIT_DIR/sess-done.json")
+[[ "$EVENT_D2" == "Stop" ]] && pass "Stop task restored to Stop on resume" || fail "Stop not restored: $EVENT_D2"
 
 # No existing pending for this tab -> no-op (Waiting only applies to tasks with a pending entry)
 ZELLIJ_SESSION_NAME=wait-session \

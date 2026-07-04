@@ -1,7 +1,9 @@
 #!/bin/bash
 # Claude Conductor - Waiting Toggle
-# Toggles a task's pending status between Waiting and Notification.
-# Called from task-control.sh (w key).
+# Toggles a task's Waiting state. Entering Waiting saves the current event
+# (Notification or Stop) into prev_event; resuming restores it (default
+# Notification), so a completed (Stop/done) task returns to done, not to
+# an unhandled Notification. Called from task-control.sh (w key).
 #
 # Waiting represents a task blocked on an external response (e.g. PR review).
 # It is separated from the Dashboard and shown in the Waiting pane instead.
@@ -29,15 +31,19 @@ done
 [[ -n "$TARGET" ]] || exit 0
 
 CURRENT=$(jq -r '.event' "$TARGET" 2>/dev/null)
-if [[ "$CURRENT" == "Waiting" ]]; then
-    NEW_EVENT="Notification"
-else
-    NEW_EVENT="Waiting"
-fi
 
 tmp=$(mktemp)
-if jq --arg event "$NEW_EVENT" --arg time "$(date '+%H:%M:%S')" \
-    '.event = $event | .time = $time' "$TARGET" > "$tmp" 2>/dev/null; then
+if [[ "$CURRENT" == "Waiting" ]]; then
+    # Resume: restore the event we saved when entering Waiting (default Notification)
+    FILTER='.event = (.prev_event // "Notification") | del(.prev_event) | .time = $time'
+    JQ_ARGS=(--arg time "$(date '+%H:%M:%S')")
+else
+    # Enter Waiting: remember the current event so we can restore it on resume
+    FILTER='.prev_event = .event | .event = "Waiting" | .time = $time'
+    JQ_ARGS=(--arg time "$(date '+%H:%M:%S')")
+fi
+
+if jq "${JQ_ARGS[@]}" "$FILTER" "$TARGET" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$TARGET"
 else
     rm -f "$tmp"
