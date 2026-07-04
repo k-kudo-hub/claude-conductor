@@ -68,6 +68,13 @@ mdev-test() {
     wt_name="$(basename "$wt_path")"
     session="test-$wt_name"
 
+    # zellij (>=0.44) rejects session names longer than 24 characters
+    if (( ${#session} > 24 )); then
+        session="${session:0:24}"
+        session="${session%-}"
+        echo "mdev-test: session name truncated to '$session' (zellij 24-char limit)" >&2
+    fi
+
     # Command executed inside the new terminal window
     local run_cmd="export CONDUCTOR_HOME='$wt_path'; cd '$wt_path'; bash '$wt_path/scripts/fetch-news.sh'; zellij --new-session-with-layout '$wt_path/layouts/multi.kdl' --session '$session'"
 
@@ -81,9 +88,16 @@ mdev-test() {
 
     echo "Launching isolated test session '$session' from $wt_path"
 
-    # Write the launch command to a temp script to avoid osascript quoting issues
+    # Write the launch command to a temp .command script.
+    # macOS mktemp rejects a suffix after the X's, so create then rename;
+    # Terminal.app runs *.command files directly.
     local launch_script
-    launch_script="$(mktemp "${TMPDIR:-/tmp}/mdev-test-XXXXXX.sh")"
+    launch_script="$(mktemp "${TMPDIR:-/tmp}/mdev-test-XXXXXX")" || {
+        echo "mdev-test: failed to create temp launch script" >&2
+        return 1
+    }
+    mv "$launch_script" "$launch_script.command"
+    launch_script="$launch_script.command"
     {
         echo "#!/bin/bash"
         echo "$run_cmd"
@@ -91,19 +105,15 @@ mdev-test() {
     } > "$launch_script"
     chmod +x "$launch_script"
 
-    # Open a new OS terminal window and run the script there
+    # Open a new OS terminal window and run the script there.
+    # `open -a` uses LaunchServices (no Automation/Apple Events permission needed),
+    # which works from any host terminal including Warp.
     case "$TERM_PROGRAM" in
         iTerm.app)
-            osascript \
-                -e 'tell application "iTerm"' \
-                -e '    create window with default profile' \
-                -e "    tell current session of current window to write text \"bash '$launch_script'\"" \
-                -e 'end tell' >/dev/null
+            open -a iTerm "$launch_script"
             ;;
         *)
-            osascript \
-                -e "tell application \"Terminal\" to do script \"bash '$launch_script'\"" \
-                -e 'tell application "Terminal" to activate' >/dev/null
+            open -a Terminal "$launch_script"
             ;;
     esac
 }

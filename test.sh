@@ -994,6 +994,16 @@ echo "$OUTPUT" | grep -q "SESSION=test-my-feature" \
 echo "$OUTPUT" | grep -q "$FAKE_WT/layouts/multi.kdl" \
   && pass "dry-run launch command uses worktree layout" || fail "wrong layout in command: $OUTPUT"
 
+# Long worktree names must be truncated to zellij's 24-char session-name limit
+LONG_WT="$SANDBOX/fake-worktrees/add-isolated-test-launcher"
+mkdir -p "$LONG_WT/scripts" "$LONG_WT/layouts"
+touch "$LONG_WT/scripts/fetch-news.sh" "$LONG_WT/layouts/multi.kdl"
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$LONG_WT'" 2>/dev/null)
+SESSION_LINE=$(echo "$OUTPUT" | grep '^SESSION=' | cut -d= -f2)
+[[ "${#SESSION_LINE}" -le 24 && -n "$SESSION_LINE" ]] \
+  && pass "long worktree name truncated to <=24 chars ($SESSION_LINE)" \
+  || fail "session name not truncated: '$SESSION_LINE' (${#SESSION_LINE} chars)"
+
 # ============================================================
 section "30e. mdev-test errors on invalid worktree"
 # ============================================================
