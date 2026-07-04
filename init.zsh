@@ -76,15 +76,21 @@ mdev-test() {
         echo "mdev-test:   Main-tab panes will run INSTALLED scripts, not this worktree's (partial isolation)." >&2
     fi
 
-    # zellij (>=0.44) rejects session names longer than 24 characters
+    # zellij (>=0.44) rejects session names longer than 24 characters. Truncate,
+    # appending a short hash of the full path so distinct worktrees whose names
+    # share a prefix don't collapse onto the same session name.
     if (( ${#session} > 24 )); then
-        session="${session:0:24}"
-        session="${session%-}"
+        local wt_hash
+        wt_hash=$(printf '%s' "$wt_path" | cksum | cut -d' ' -f1)
+        wt_hash=${wt_hash: -4}
+        session="${session:0:19}"
+        session="${session%-}-$wt_hash"
         echo "mdev-test: session name truncated to '$session' (zellij 24-char limit)" >&2
     fi
 
-    # Command executed inside the new terminal window
-    local run_cmd="export CONDUCTOR_HOME='$wt_path'; cd '$wt_path'; bash '$wt_path/scripts/fetch-news.sh'; zellij --new-session-with-layout '$wt_path/layouts/multi.kdl' --session '$session'"
+    # Command executed inside the new terminal window. Attach to the session if it
+    # already exists (re-run of the same worktree) instead of failing to recreate it.
+    local run_cmd="export CONDUCTOR_HOME='$wt_path'; cd '$wt_path'; bash '$wt_path/scripts/fetch-news.sh'; zellij attach '$session' 2>/dev/null || zellij --new-session-with-layout '$wt_path/layouts/multi.kdl' --session '$session'"
 
     # Dry-run mode for testing: print the resolved launch spec and exit
     if [[ -n "$CONDUCTOR_MDEV_TEST_DRYRUN" ]]; then
@@ -92,6 +98,11 @@ mdev-test() {
         echo "SESSION=$session"
         echo "CMD=$run_cmd"
         return 0
+    fi
+
+    if zellij list-sessions -s 2>/dev/null | grep -qx "$session"; then
+        echo "mdev-test: session '$session' already exists; the new window will attach to it." >&2
+        echo "mdev-test:   run 'zellij delete-session $session' first for a fresh start." >&2
     fi
 
     echo "Launching isolated test session '$session' from $wt_path"
@@ -114,11 +125,18 @@ mdev-test() {
     chmod +x "$launch_script"
 
     # Open a new OS terminal window and run the script there.
-    # `open -a` uses LaunchServices (no Automation/Apple Events permission needed),
-    # which works from any host terminal including Warp.
+    # Terminal.app executes an opened *.command via LaunchServices (no Automation
+    # permission needed) with the login PATH. iTerm does not reliably run an opened
+    # .command, so drive it through its scripting API, falling back to Terminal.app
+    # if that is blocked (e.g. Automation permission denied).
     case "$TERM_PROGRAM" in
         iTerm.app)
-            open -a iTerm "$launch_script"
+            osascript \
+                -e 'tell application "iTerm"' \
+                -e '    create window with default profile' \
+                -e "    tell current session of current window to write text \"bash '$launch_script'\"" \
+                -e 'end tell' >/dev/null 2>&1 \
+                || open -a Terminal "$launch_script"
             ;;
         *)
             open -a Terminal "$launch_script"

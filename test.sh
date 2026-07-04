@@ -1018,6 +1018,21 @@ echo "$OUTPUT" | grep -q "SESSION=test-my-feature" \
   && pass "dry-run derives test-<basename> session name" || fail "wrong session name: $OUTPUT"
 echo "$OUTPUT" | grep -q "$FAKE_WT/layouts/multi.kdl" \
   && pass "dry-run launch command uses worktree layout" || fail "wrong layout in command: $OUTPUT"
+echo "$OUTPUT" | grep -q "zellij attach" \
+  && pass "launch command attaches to existing session (re-run safe)" || fail "no attach fallback in command: $OUTPUT"
+
+# Distinct long worktrees sharing a name prefix must get distinct session names
+WT_A="$SANDBOX/fake-worktrees/dashboard-redesign-alpha"
+WT_B="$SANDBOX/fake-worktrees/dashboard-redesign-beta"
+for d in "$WT_A" "$WT_B"; do
+  mkdir -p "$d/scripts" "$d/layouts"
+  touch "$d/scripts/fetch-news.sh" "$d/layouts/multi.kdl"
+done
+SESS_A=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$WT_A'" 2>/dev/null | grep '^SESSION=' | cut -d= -f2)
+SESS_B=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$WT_B'" 2>/dev/null | grep '^SESSION=' | cut -d= -f2)
+[[ -n "$SESS_A" && "$SESS_A" != "$SESS_B" && "${#SESS_A}" -le 24 && "${#SESS_B}" -le 24 ]] \
+  && pass "prefix-sharing worktrees get distinct sessions ($SESS_A / $SESS_B)" \
+  || fail "session name collision: '$SESS_A' vs '$SESS_B'"
 
 # Long worktree names must be truncated to zellij's 24-char session-name limit
 LONG_WT="$SANDBOX/fake-worktrees/add-isolated-test-launcher"
