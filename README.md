@@ -199,6 +199,36 @@ Notes:
   leave your machine.
 - You need push access to `repo`, and `git` / `claude` available on your `PATH`.
 
+## Releasing
+
+Versioning is driven by pull request labels. Every PR **must** carry exactly one bump
+label, and the version is tagged automatically on merge.
+
+- `bump:patch` — backwards-compatible fixes (`v1.2.3` → `v1.2.4`)
+- `bump:minor` — backwards-compatible features (`v1.2.3` → `v1.3.0`)
+- `bump:major` — breaking changes (`v1.2.3` → `v2.0.0`)
+
+Workflow:
+
+1. Open a PR and add one `bump:*` label. The **Bump label check** workflow fails the PR
+   until a label is present (`.github/workflows/bump-label-check.yml`).
+2. On merge to `main`, the **Tag on merge** workflow computes the next version with
+   `scripts/bump-version.sh`, pushes the tag, and creates a GitHub Release
+   (`.github/workflows/tag.yml`).
+3. The base version when no tag exists yet is `v0.0.0`, so the first `bump:minor` merge
+   produces `v0.1.0`.
+
+`install.sh` records the installed version (from the nearest git tag) into
+`~/.claude-conductor/VERSION`.
+
+The bump labels are created once with:
+
+```bash
+gh label create bump:major --color B60205 --description "Breaking change (x.0.0)"
+gh label create bump:minor --color FBCA04 --description "New feature (0.x.0)"
+gh label create bump:patch --color 0E8A16 --description "Bug fix (0.0.x)"
+```
+
 ## Uninstall
 
 ```bash
