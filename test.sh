@@ -2048,7 +2048,59 @@ grep -q "2020/01/01" <<< "$XLOG" \
 rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/xday.json "$OLD_DAILY"
 
 # ============================================================
-section "48. Uninstall"
+section "48. bump-version.sh (semver bump calculation)"
+# ============================================================
+
+BUMP_SCRIPT="$CONDUCTOR_HOME/scripts/bump-version.sh"
+
+# Runs bump-version.sh and captures stdout; error cases handled separately below.
+[[ "$(bash "$BUMP_SCRIPT" patch v0.0.0)" == "v0.0.1" ]] \
+    && pass "patch from v0.0.0 -> v0.0.1" || fail "patch from v0.0.0 wrong: $(bash "$BUMP_SCRIPT" patch v0.0.0)"
+[[ "$(bash "$BUMP_SCRIPT" minor v0.0.0)" == "v0.1.0" ]] \
+    && pass "minor from v0.0.0 -> v0.1.0" || fail "minor from v0.0.0 wrong: $(bash "$BUMP_SCRIPT" minor v0.0.0)"
+[[ "$(bash "$BUMP_SCRIPT" major v0.0.0)" == "v1.0.0" ]] \
+    && pass "major from v0.0.0 -> v1.0.0" || fail "major from v0.0.0 wrong: $(bash "$BUMP_SCRIPT" major v0.0.0)"
+[[ "$(bash "$BUMP_SCRIPT" patch v1.2.3)" == "v1.2.4" ]] \
+    && pass "patch from v1.2.3 -> v1.2.4" || fail "patch from v1.2.3 wrong: $(bash "$BUMP_SCRIPT" patch v1.2.3)"
+[[ "$(bash "$BUMP_SCRIPT" minor v1.2.3)" == "v1.3.0" ]] \
+    && pass "minor from v1.2.3 -> v1.3.0 (resets patch)" || fail "minor from v1.2.3 wrong: $(bash "$BUMP_SCRIPT" minor v1.2.3)"
+[[ "$(bash "$BUMP_SCRIPT" major v1.2.3)" == "v2.0.0" ]] \
+    && pass "major from v1.2.3 -> v2.0.0 (resets minor+patch)" || fail "major from v1.2.3 wrong: $(bash "$BUMP_SCRIPT" major v1.2.3)"
+
+# Accepts current version without the leading 'v'
+[[ "$(bash "$BUMP_SCRIPT" minor 1.2.3)" == "v1.3.0" ]] \
+    && pass "accepts version without leading v" || fail "no-v prefix wrong: $(bash "$BUMP_SCRIPT" minor 1.2.3)"
+
+# Empty current version is treated as the 0.0.0 seed base
+[[ "$(bash "$BUMP_SCRIPT" minor '')" == "v0.1.0" ]] \
+    && pass "empty current version seeds from 0.0.0" || fail "empty current wrong: $(bash "$BUMP_SCRIPT" minor '')"
+
+# Invalid bump type must fail (exit non-zero)
+set +e
+bash "$BUMP_SCRIPT" bogus v1.2.3 >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "invalid bump type exits non-zero" || fail "invalid bump type did not fail"
+
+# Malformed current version must fail (exit non-zero)
+set +e
+bash "$BUMP_SCRIPT" patch "1.2" >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "malformed version exits non-zero" || fail "malformed version did not fail"
+
+# ============================================================
+section "49. install.sh embeds VERSION"
+# ============================================================
+
+# install.sh (run at the top of this suite) must drop a VERSION file into
+# CONDUCTOR_HOME derived from the git tag, or the v0.0.0 fallback when untagged.
+[[ -f "$CONDUCTOR_HOME/VERSION" ]] && pass "VERSION file created" || fail "VERSION file missing"
+VER=$(cat "$CONDUCTOR_HOME/VERSION" 2>/dev/null)
+[[ -n "$VER" ]] && pass "VERSION file is non-empty" || fail "VERSION file empty"
+echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    && pass "VERSION matches semver format ($VER)" || fail "VERSION not semver: $VER"
+
+# ============================================================
+section "50. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
