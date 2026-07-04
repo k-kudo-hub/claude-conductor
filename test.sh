@@ -30,6 +30,13 @@ mkdir -p "$MOCK_BIN"
 cat > "$MOCK_BIN/zellij" << 'MOCK'
 #!/bin/bash
 echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+# Emit a fake `list-tabs` output when MOCK_TABS is set (3rd column is the tab name)
+if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
+    echo "ID X NAME"
+    for t in $MOCK_TABS; do
+        echo "1 x $t"
+    done
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
@@ -68,7 +75,15 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
+grep -q 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl defines Waiting pane" || fail "multi.kdl missing Waiting pane"
+grep -q 'waiting-loop.sh' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl launches waiting-loop.sh" || fail "multi.kdl missing waiting-loop.sh"
+MULTI_KDL="$HOME/.claude-conductor/layouts/multi.kdl"
+OPEN_BRACES=$(tr -cd '{' < "$MULTI_KDL" | wc -c | tr -d ' ')
+CLOSE_BRACES=$(tr -cd '}' < "$MULTI_KDL" | wc -c | tr -d ' ')
+[[ "$OPEN_BRACES" == "$CLOSE_BRACES" ]] && pass "multi.kdl braces balanced" || fail "multi.kdl braces unbalanced: $OPEN_BRACES open / $CLOSE_BRACES close"
 [[ -f "$HOME/.claude-conductor/layouts/dev.kdl" ]] && pass "dev.kdl installed" || fail "dev.kdl missing"
 [[ -f "$HOME/.claude-conductor/init.zsh" ]] && pass "init.zsh installed" || fail "init.zsh missing"
 [[ -x "$HOME/.claude-conductor/scripts/dashboard-loop.sh" ]] && pass "scripts are executable" || fail "scripts not executable"
@@ -138,6 +153,16 @@ echo '{"session_id":"sess-aaa","message":"Task done","hook_event_name":"Stop","c
 
 EVENT_AFTER=$(jq -r '.event' "$PENDING_DIR/sess-aaa.json")
 [[ "$EVENT_AFTER" == "Notification" ]] && pass "Stop did not overwrite Notification" || fail "Stop overwrote Notification: $EVENT_AFTER"
+
+# A Waiting pending must also survive a later Stop event
+echo '{"tab":"api-feature","session":"test-session","message":"waiting for review","event":"Waiting","time":"10:00:00"}' > "$PENDING_DIR/sess-wait.json"
+echo '{"session_id":"sess-wait","message":"Task done","hook_event_name":"Stop","cwd":"/tmp/myapp"}' \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+
+EVENT_WAIT=$(jq -r '.event' "$PENDING_DIR/sess-wait.json")
+[[ "$EVENT_WAIT" == "Waiting" ]] && pass "Stop did not overwrite Waiting" || fail "Stop overwrote Waiting: $EVENT_WAIT"
+rm -f "$PENDING_DIR/sess-wait.json"
 
 # ============================================================
 section "5. pending-notify.sh (Stop creates new entry)"
@@ -1099,7 +1124,21 @@ else
 fi
 
 # ============================================================
-section "28. fetch-news.sh (handles API failure gracefully)"
+section "28. fetch-news.sh (--force re-fetches even if today's file exists)"
+# ============================================================
+
+# File currently has title "CACHED" from previous section
+if [[ -f "$NEWS_FILE" ]]; then
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" --force
+
+    FORCED_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
+    [[ "$FORCED_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "--force re-fetches despite existing file" || fail "--force did not re-fetch: $FORCED_TITLE"
+else
+    fail "news file missing from previous test"
+fi
+
+# ============================================================
+section "29. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 
 # Replace curl mock with one that fails
@@ -1160,7 +1199,7 @@ bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 [[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
 
 # ============================================================
-section "29. news-loop.sh (displays news from file)"
+section "30. news-loop.sh (displays news from file)"
 # ============================================================
 
 # Create news file for display test
@@ -1188,9 +1227,10 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
 echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
 echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
+echo "$OUTPUT" | grep -qi "reload" && pass "reload key hint displayed" || fail "reload hint not displayed"
 
 # ============================================================
-section "30. news-loop.sh (handles missing news file)"
+section "31. news-loop.sh (handles missing news file)"
 # ============================================================
 
 rm -f "$NEWS_FILE"
@@ -1200,7 +1240,217 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
-section "31. Uninstall"
+section "32. task-create-loop.sh default name generation"
+# ============================================================
+
+CREATE_LOOP="$HOME/.claude-conductor/scripts/task-create-loop.sh"
+
+# sourceしてもメインループが起動せず関数のみ提供されること
+if source "$CREATE_LOOP" 2>/dev/null; then
+    pass "task-create-loop.sh sourced without launching main loop"
+else
+    fail "task-create-loop.sh failed to source"
+fi
+
+# generate_default_name は {dirname}-{type} を返す
+GEN_NAME=$(generate_default_name "/home/user/myapp" "dev")
+[[ "$GEN_NAME" == "myapp-dev" ]] && pass "generate_default_name returns dirname-type" || fail "generate_default_name wrong: $GEN_NAME"
+
+# 末尾スラッシュ付きディレクトリでも basename が取れる
+GEN_NAME2=$(generate_default_name "/home/user/api-server/" "k8s")
+[[ "$GEN_NAME2" == "api-server-k8s" ]] && pass "generate_default_name handles trailing slash" || fail "generate_default_name trailing slash wrong: $GEN_NAME2"
+
+# ============================================================
+section "33. task-create-loop.sh skip name input mode"
+# ============================================================
+
+SKIP_CONFIG="$HOME/.claude-conductor/config.json"
+
+# デフォルト（config.default.json）では skip_task_name_input は false
+DEFAULT_SKIP=$(jq -r '.skip_task_name_input // false' "$HOME/.claude-conductor/config.default.json")
+[[ "$DEFAULT_SKIP" == "false" ]] && pass "config.default.json skip_task_name_input defaults to false" || fail "default skip flag wrong: $DEFAULT_SKIP"
+
+# skip_task_name_input=true のとき skip_name_input_enabled が真
+BACKUP_CONFIG=$(cat "$SKIP_CONFIG")
+jq '.skip_task_name_input = true' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then pass "skip_name_input_enabled true when flag on"; else fail "skip_name_input_enabled should be true"; fi
+
+# skip_task_name_input=false のとき skip_name_input_enabled が偽
+jq '.skip_task_name_input = false' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then fail "skip_name_input_enabled should be false"; else pass "skip_name_input_enabled false when flag off"; fi
+
+# フラグ未定義でもデフォルトで偽
+jq 'del(.skip_task_name_input)' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then fail "skip_name_input_enabled should default to false"; else pass "skip_name_input_enabled defaults to false when unset"; fi
+
+# configを元に戻す
+echo "$BACKUP_CONFIG" > "$SKIP_CONFIG"
+
+# ============================================================
+section "34. task-create-loop.sh name input resolution"
+# ============================================================
+
+# 実コードの resolve_name を直接検証する（テスト用の再実装ではなく本体関数を呼ぶ）
+
+# 空入力（Enterのみ）はデフォルト候補に解決される
+RESOLVED_EMPTY=$(resolve_name "myapp-dev" "")
+[[ "$RESOLVED_EMPTY" == "myapp-dev" ]] && pass "empty input resolves to default name" || fail "empty input wrong: $RESOLVED_EMPTY"
+
+# 空入力がタイムスタンプ名（type-HHMMSS）にならない（リグレッション防止）
+[[ ! "$RESOLVED_EMPTY" =~ ^dev-[0-9]{6}$ ]] && pass "empty input does not fall back to timestamp name" || fail "empty input regressed to timestamp: $RESOLVED_EMPTY"
+
+# 手入力は入力値がそのまま採用される
+RESOLVED_TYPED=$(resolve_name "myapp-dev" "custom-name")
+[[ "$RESOLVED_TYPED" == "custom-name" ]] && pass "typed input overrides default" || fail "typed input wrong: $RESOLVED_TYPED"
+
+# ============================================================
+section "35. task-create-loop.sh unique tab name"
+# ============================================================
+
+# 既存タブ名を返すよう zellij をシャドウしてテストする
+zellij() {
+    if [[ "$1" == "action" && "$2" == "query-tab-names" ]]; then
+        printf '%s\n' "Main" "myapp-dev" "myapp-dev-2"
+        return 0
+    fi
+    return 0
+}
+
+# 重複しない名前はそのまま返る
+UNIQ_NEW=$(ensure_unique_tab_name "other-dev")
+[[ "$UNIQ_NEW" == "other-dev" ]] && pass "non-colliding name returned as-is" || fail "non-colliding wrong: $UNIQ_NEW"
+
+# 既存名と重複する場合は空いている連番まで進む（-2 も埋まっているので -3）
+UNIQ_DUP=$(ensure_unique_tab_name "myapp-dev")
+[[ "$UNIQ_DUP" == "myapp-dev-3" ]] && pass "colliding name gets next free suffix" || fail "colliding wrong: $UNIQ_DUP"
+
+# 部分一致は重複扱いしない（完全一致のみ）
+UNIQ_PARTIAL=$(ensure_unique_tab_name "myapp")
+[[ "$UNIQ_PARTIAL" == "myapp" ]] && pass "partial match is not treated as collision" || fail "partial match wrong: $UNIQ_PARTIAL"
+
+unset -f zellij
+
+# query-tab-names が失敗する場合は元の名前をそのまま返す
+zellij() { return 1; }
+UNIQ_FAIL=$(ensure_unique_tab_name "myapp-dev")
+[[ "$UNIQ_FAIL" == "myapp-dev" ]] && pass "returns base name when query fails" || fail "query-fail wrong: $UNIQ_FAIL"
+unset -f zellij
+
+# ============================================================
+section "36. waiting-toggle.sh (toggles Waiting state)"
+# ============================================================
+
+WAIT_DIR="$HOME/.claude-pending/wait-session"
+mkdir -p "$WAIT_DIR"
+
+# Existing Notification pending -> toggle to Waiting
+echo '{"tab":"pr-review","session":"wait-session","message":"review","event":"Notification","time":"10:00:00"}' > "$WAIT_DIR/sess-w1.json"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "pr-review"
+
+EVENT_W=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
+[[ "$EVENT_W" == "Waiting" ]] && pass "Notification toggled to Waiting" || fail "toggle to Waiting failed: $EVENT_W"
+
+# Toggle again -> back to Notification (prev_event restored, field removed)
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "pr-review"
+
+EVENT_W2=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
+[[ "$EVENT_W2" == "Notification" ]] && pass "Waiting toggled back to Notification" || fail "toggle back failed: $EVENT_W2"
+PREV_W2=$(jq -r '.prev_event // "absent"' "$WAIT_DIR/sess-w1.json")
+[[ "$PREV_W2" == "absent" ]] && pass "prev_event removed after resume" || fail "prev_event lingering: $PREV_W2"
+
+# A completed (Stop/done) task must return to Stop after Waiting -> resume
+echo '{"tab":"done-task","session":"wait-session","message":"review completed","event":"Stop","time":"10:00:00"}' > "$WAIT_DIR/sess-done.json"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "done-task"
+EVENT_D1=$(jq -r '.event' "$WAIT_DIR/sess-done.json")
+PREV_D1=$(jq -r '.prev_event' "$WAIT_DIR/sess-done.json")
+[[ "$EVENT_D1" == "Waiting" && "$PREV_D1" == "Stop" ]] && pass "Stop task remembers prev_event on Waiting" || fail "prev_event not saved: event=$EVENT_D1 prev=$PREV_D1"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "done-task"
+EVENT_D2=$(jq -r '.event' "$WAIT_DIR/sess-done.json")
+[[ "$EVENT_D2" == "Stop" ]] && pass "Stop task restored to Stop on resume" || fail "Stop not restored: $EVENT_D2"
+
+# No existing pending for this tab -> no-op (Waiting only applies to tasks with a pending entry)
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "fresh-task"
+
+FRESH_FOUND=""
+for f in "$WAIT_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "fresh-task" ]]; then
+        FRESH_FOUND="$f"
+        break
+    fi
+done
+[[ -z "$FRESH_FOUND" ]] && pass "no entry created when no pending exists" || fail "unexpected entry created: $FRESH_FOUND"
+
+# ============================================================
+section "37. dashboard-loop.sh (excludes Waiting tasks)"
+# ============================================================
+
+DASH_DIR="$HOME/.claude-pending/dash-session"
+mkdir -p "$DASH_DIR"
+echo '{"tab":"active-task","session":"dash-session","message":"needs permission","event":"Notification","time":"10:00:00"}' > "$DASH_DIR/d1.json"
+echo '{"tab":"waiting-task","session":"dash-session","message":"pr review","event":"Waiting","time":"10:01:00"}' > "$DASH_DIR/d2.json"
+
+DASH_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="active-task waiting-task" ZELLIJ_SESSION_NAME=dash-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+
+echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
+echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
+echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
+
+# ============================================================
+section "38. waiting-loop.sh (shows only Waiting tasks)"
+# ============================================================
+
+WL_DIR="$HOME/.claude-pending/wl-session"
+mkdir -p "$WL_DIR"
+echo '{"tab":"active-task","session":"wl-session","message":"needs permission","event":"Notification","time":"11:00:00"}' > "$WL_DIR/w1.json"
+echo '{"tab":"review-task","session":"wl-session","message":"waiting for pr review","event":"Waiting","time":"11:01:00"}' > "$WL_DIR/w2.json"
+
+WL_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-session \
+    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
+
+echo "$WL_OUT" | grep -q "review-task" && pass "Waiting task shown in waiting pane" || fail "Waiting task not shown"
+echo "$WL_OUT" | grep -q "active-task" && fail "Non-Waiting task incorrectly shown in waiting pane" || pass "Non-Waiting task excluded from waiting pane"
+echo "$WL_OUT" | grep -q "Waiting: 1" && pass "waiting count correct" || fail "waiting count wrong: $(echo "$WL_OUT" | grep Waiting)"
+
+# Empty case
+WL_EMPTY_DIR="$HOME/.claude-pending/wl-empty-session"
+mkdir -p "$WL_EMPTY_DIR"
+WL_EMPTY_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-empty-session \
+    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
+echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
+
+# ============================================================
+section "39. task-control.sh (shows Waiting indicator)"
+# ============================================================
+
+TC_DIR="$HOME/.claude-pending/tc-session"
+mkdir -p "$TC_DIR"
+
+# Not waiting -> normal bar, no indicator
+echo '{"tab":"my-task","session":"tc-session","message":"needs permission","event":"Notification","time":"12:00:00"}' > "$TC_DIR/tc1.json"
+TC_OUT=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
+    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+echo "$TC_OUT" | grep -q "w: Waiting" && pass "normal bar offers Waiting" || fail "normal bar wrong: $TC_OUT"
+echo "$TC_OUT" | grep -q "● WAITING" && fail "indicator shown when not waiting" || pass "no indicator when not waiting"
+
+# Waiting -> indicator + Resume label
+jq '.event = "Waiting"' "$TC_DIR/tc1.json" > "$TC_DIR/tc1.tmp" && mv "$TC_DIR/tc1.tmp" "$TC_DIR/tc1.json"
+TC_OUT2=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
+    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+echo "$TC_OUT2" | grep -q "● WAITING" && pass "WAITING indicator shown when waiting" || fail "no indicator when waiting: $TC_OUT2"
+echo "$TC_OUT2" | grep -q "w: Resume" && pass "bar offers Resume when waiting" || fail "no Resume label: $TC_OUT2"
+
+# ============================================================
+section "40. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
