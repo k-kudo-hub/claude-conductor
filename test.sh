@@ -941,6 +941,79 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
+section "30a. multi.kdl honors CONDUCTOR_HOME"
+# ============================================================
+
+MULTI_KDL="$HOME/.claude-conductor/layouts/multi.kdl"
+grep -q '\${CONDUCTOR_HOME' "$MULTI_KDL" \
+  && pass "multi.kdl references CONDUCTOR_HOME" || fail "multi.kdl does not reference CONDUCTOR_HOME"
+grep -q '"\$HOME/.claude-conductor/scripts' "$MULTI_KDL" \
+  && fail "multi.kdl still hardcodes \$HOME/.claude-conductor" || pass "multi.kdl has no hardcoded conductor path"
+
+# ============================================================
+section "30b. done-loop.sh honors CONDUCTOR_HOME for daily"
+# ============================================================
+
+DONE_LOOP="$HOME/.claude-conductor/scripts/done-loop.sh"
+grep -q 'CONDUCTOR_HOME' "$DONE_LOOP" \
+  && pass "done-loop.sh references CONDUCTOR_HOME" || fail "done-loop.sh does not reference CONDUCTOR_HOME"
+
+# Verify done-loop reads daily under CONDUCTOR_HOME by pointing it at an alternate home
+ALT_DAILY_HOME="$SANDBOX/alt-daily-home"
+mkdir -p "$ALT_DAILY_HOME/daily/alt-session"
+TODAY=$(date '+%Y-%m-%d')
+cat > "$ALT_DAILY_HOME/daily/alt-session/${TODAY}.jsonl" << 'DONEJSON'
+{"tab":"alt-task","status":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42},"completed_at":"2026-07-04T10:00:00Z"}
+DONEJSON
+
+OUTPUT=$(CONDUCTOR_HOME="$ALT_DAILY_HOME" CONDUCTOR_DONE_ONCE=1 bash "$HOME/.claude-conductor/scripts/done-loop.sh" 2>/dev/null)
+echo "$OUTPUT" | grep -q "alt-task" \
+  && pass "done-loop reads daily under CONDUCTOR_HOME" || fail "done-loop did not read CONDUCTOR_HOME daily: $OUTPUT"
+
+# ============================================================
+section "30c. init.zsh defines mdev-test"
+# ============================================================
+
+INIT_FILE="$HOME/.claude-conductor/init.zsh"
+FUNCS=$(zsh -c "source '$INIT_FILE' && whence -w mdev-test" 2>&1)
+echo "$FUNCS" | grep -q "mdev-test: function" && pass "mdev-test function defined" || fail "mdev-test not defined: $FUNCS"
+
+# ============================================================
+section "30d. mdev-test resolves worktree (dry-run)"
+# ============================================================
+
+FAKE_WT="$SANDBOX/fake-worktrees/my-feature"
+mkdir -p "$FAKE_WT/scripts" "$FAKE_WT/layouts"
+touch "$FAKE_WT/scripts/fetch-news.sh" "$FAKE_WT/layouts/multi.kdl"
+
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1)
+echo "$OUTPUT" | grep -q "CONDUCTOR_HOME=$FAKE_WT" \
+  && pass "dry-run exports CONDUCTOR_HOME to worktree path" || fail "wrong CONDUCTOR_HOME: $OUTPUT"
+echo "$OUTPUT" | grep -q "SESSION=test-my-feature" \
+  && pass "dry-run derives test-<basename> session name" || fail "wrong session name: $OUTPUT"
+echo "$OUTPUT" | grep -q "$FAKE_WT/layouts/multi.kdl" \
+  && pass "dry-run launch command uses worktree layout" || fail "wrong layout in command: $OUTPUT"
+
+# ============================================================
+section "30e. mdev-test errors on invalid worktree"
+# ============================================================
+
+set +e
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$SANDBOX/does-not-exist'" 2>&1)
+RC=$?
+set -e
+[[ "$RC" -ne 0 ]] && pass "mdev-test returns non-zero on missing worktree" || fail "mdev-test did not fail on missing worktree"
+
+# A directory that exists but is not a conductor worktree must also error
+NON_WT="$SANDBOX/not-a-worktree"
+mkdir -p "$NON_WT"
+set +e
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$NON_WT'" 2>&1)
+RC=$?
+set -e
+[[ "$RC" -ne 0 ]] && pass "mdev-test rejects non-conductor directory" || fail "mdev-test accepted non-conductor directory"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 

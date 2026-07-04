@@ -8,21 +8,16 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-DAILY_BASE="$HOME/.claude-conductor/daily"
+CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
+DAILY_BASE="$CONDUCTOR_HOME/daily"
 
-TMPFILE=$(mktemp)
-printf '\033[?25l'
-trap 'printf "\033[?25h"; rm -f "$TMPFILE"' EXIT
-clear
-
-while true; do
+render() {
     TODAY=$(date '+%Y-%m-%d')
     DAILY_FILES=()
     while IFS= read -r -d '' f; do
         DAILY_FILES+=("$f")
     done < <(find "$DAILY_BASE" -name "${TODAY}.jsonl" -type f -print0 2>/dev/null)
 
-    {
         echo -e "${BOLD}  Done Tasks${NC}"
         echo -e "${DIM}  ──────────────────────────${NC}"
         echo ""
@@ -61,7 +56,21 @@ while true; do
         else
             echo -e "  ${DIM}No tasks completed yet${NC}"
         fi
-    } > "$TMPFILE"
+}
+
+# Single-pass mode for testing
+if [[ "$CONDUCTOR_DONE_ONCE" == "1" ]]; then
+    render
+    exit 0
+fi
+
+TMPFILE=$(mktemp)
+printf '\033[?25l'
+trap 'printf "\033[?25h"; rm -f "$TMPFILE"' EXIT
+clear
+
+while true; do
+    render > "$TMPFILE"
 
     printf '\033[H'
     cat "$TMPFILE"
