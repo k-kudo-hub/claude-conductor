@@ -86,6 +86,22 @@ create_task() {
     apply_layout "$dir" "$type"
 }
 
+# ディレクトリ名とタスクタイプからデフォルトのタスク名候補を生成する
+# 例: /home/user/myapp, dev -> myapp-dev
+generate_default_name() {
+    local dir="$1"
+    local type="$2"
+    echo "$(basename "$dir")-$type"
+}
+
+# config.json で名前入力スキップモードが有効かどうかを判定する
+skip_name_input_enabled() {
+    local config_file
+    config_file=$(load_config)
+    [[ "$(jq -r '.skip_task_name_input // false' "$config_file" 2>/dev/null)" == "true" ]]
+}
+
+main_loop() {
 while true; do
     clear
     echo -e "${BOLD}  New Task${NC}  ${DIM}[$SESSION_NAME]${NC}"
@@ -125,10 +141,15 @@ while true; do
                 | fzf --prompt="Task type: " | awk '{print $1}')
             [[ -z "$type" ]] && continue
 
-            # Step 3: タスク名入力
-            echo -ne "  ${BOLD}Task name: ${NC}"
-            read -r name
-            [[ -z "$name" ]] && name="$type-$(date +%H%M%S)"
+            # Step 3: タスク名入力（デフォルト候補を初期値として提示）
+            default_name=$(generate_default_name "$dir" "$type")
+            if skip_name_input_enabled; then
+                name="$default_name"
+            else
+                echo -ne "  ${BOLD}Task name: ${NC}"
+                read -e -i "$default_name" -r name
+                [[ -z "$name" ]] && name="$type-$(date +%H%M%S)"
+            fi
 
             # タスク作成
             echo -e "  ${GREEN}Creating ${type} task '${name}' in ${dir}...${NC}"
@@ -136,3 +157,9 @@ while true; do
             ;;
     esac
 done
+}
+
+# スクリプトが直接実行された場合のみメインループを起動する（source時はテスト用に関数のみ提供）
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main_loop
+fi

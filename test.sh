@@ -941,6 +941,53 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
+section "32. task-create-loop.sh default name generation"
+# ============================================================
+
+CREATE_LOOP="$HOME/.claude-conductor/scripts/task-create-loop.sh"
+
+# sourceしてもメインループが起動せず関数のみ提供されること
+if source "$CREATE_LOOP" 2>/dev/null; then
+    pass "task-create-loop.sh sourced without launching main loop"
+else
+    fail "task-create-loop.sh failed to source"
+fi
+
+# generate_default_name は {dirname}-{type} を返す
+GEN_NAME=$(generate_default_name "/home/user/myapp" "dev")
+[[ "$GEN_NAME" == "myapp-dev" ]] && pass "generate_default_name returns dirname-type" || fail "generate_default_name wrong: $GEN_NAME"
+
+# 末尾スラッシュ付きディレクトリでも basename が取れる
+GEN_NAME2=$(generate_default_name "/home/user/api-server/" "k8s")
+[[ "$GEN_NAME2" == "api-server-k8s" ]] && pass "generate_default_name handles trailing slash" || fail "generate_default_name trailing slash wrong: $GEN_NAME2"
+
+# ============================================================
+section "33. task-create-loop.sh skip name input mode"
+# ============================================================
+
+SKIP_CONFIG="$HOME/.claude-conductor/config.json"
+
+# デフォルト（config.default.json）では skip_task_name_input は false
+DEFAULT_SKIP=$(jq -r '.skip_task_name_input // false' "$HOME/.claude-conductor/config.default.json")
+[[ "$DEFAULT_SKIP" == "false" ]] && pass "config.default.json skip_task_name_input defaults to false" || fail "default skip flag wrong: $DEFAULT_SKIP"
+
+# skip_task_name_input=true のとき skip_name_input_enabled が真
+BACKUP_CONFIG=$(cat "$SKIP_CONFIG")
+jq '.skip_task_name_input = true' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then pass "skip_name_input_enabled true when flag on"; else fail "skip_name_input_enabled should be true"; fi
+
+# skip_task_name_input=false のとき skip_name_input_enabled が偽
+jq '.skip_task_name_input = false' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then fail "skip_name_input_enabled should be false"; else pass "skip_name_input_enabled false when flag off"; fi
+
+# フラグ未定義でもデフォルトで偽
+jq 'del(.skip_task_name_input)' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
+if skip_name_input_enabled; then fail "skip_name_input_enabled should default to false"; else pass "skip_name_input_enabled defaults to false when unset"; fi
+
+# configを元に戻す
+echo "$BACKUP_CONFIG" > "$SKIP_CONFIG"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
