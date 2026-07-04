@@ -73,6 +73,8 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/pending-resolve.sh" ]] && pass "pending-resolve.sh installed" || fail "pending-resolve.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 [[ -f "$HOME/.claude-conductor/layouts/dev.kdl" ]] && pass "dev.kdl installed" || fail "dev.kdl missing"
 [[ -f "$HOME/.claude-conductor/init.zsh" ]] && pass "init.zsh installed" || fail "init.zsh missing"
@@ -1005,7 +1007,30 @@ echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly show
 echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
 
 # ============================================================
-section "33. Uninstall"
+section "33. waiting-loop.sh (shows only Waiting tasks)"
+# ============================================================
+
+WL_DIR="$HOME/.claude-pending/wl-session"
+mkdir -p "$WL_DIR"
+echo '{"tab":"active-task","session":"wl-session","message":"needs permission","event":"Notification","time":"11:00:00"}' > "$WL_DIR/w1.json"
+echo '{"tab":"review-task","session":"wl-session","message":"waiting for pr review","event":"Waiting","time":"11:01:00"}' > "$WL_DIR/w2.json"
+
+WL_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-session \
+    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
+
+echo "$WL_OUT" | grep -q "review-task" && pass "Waiting task shown in waiting pane" || fail "Waiting task not shown"
+echo "$WL_OUT" | grep -q "active-task" && fail "Non-Waiting task incorrectly shown in waiting pane" || pass "Non-Waiting task excluded from waiting pane"
+echo "$WL_OUT" | grep -q "Waiting: 1" && pass "waiting count correct" || fail "waiting count wrong: $(echo "$WL_OUT" | grep Waiting)"
+
+# Empty case
+WL_EMPTY_DIR="$HOME/.claude-pending/wl-empty-session"
+mkdir -p "$WL_EMPTY_DIR"
+WL_EMPTY_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-empty-session \
+    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
+echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
+
+# ============================================================
+section "34. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
