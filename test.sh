@@ -1621,7 +1621,434 @@ echo "$TC_OUT2" | grep -q "● WAITING" && pass "WAITING indicator shown when wa
 echo "$TC_OUT2" | grep -q "w: Resume" && pass "bar offers Resume when waiting" || fail "no Resume label: $TC_OUT2"
 
 # ============================================================
-section "40. Uninstall"
+section "40. upload-log.sh (skipped when upload disabled)"
+# ============================================================
+
+UPLOAD_SCRIPT="$HOME/.claude-conductor/scripts/upload-log.sh"
+UPLOAD_CONFIG="$HOME/.claude-conductor/config.json"
+
+[[ -f "$UPLOAD_SCRIPT" ]] && pass "upload-log.sh installed" || fail "upload-log.sh not installed"
+
+# Default config ships with upload.enabled=false -> must exit 0 and do nothing
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "some-tab" \
+    && pass "exits 0 when upload disabled" || fail "non-zero exit when upload disabled"
+
+# enabled=true but repo empty -> still skipped (exit 0)
+jq '.upload.enabled = true | .upload.repo = ""' "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "some-tab" \
+    && pass "exits 0 when repo unset" || fail "non-zero exit when repo unset"
+rm -f "$UPLOAD_CONFIG"
+
+# ============================================================
+section "41. upload-log.sh filter_secrets (masks known tokens)"
+# ============================================================
+
+# Run filter_secrets from the installed lib against a single line of input.
+# These helpers feed bare `X=$(...)` assignments, so force exit 0 to keep a
+# future helper failure from aborting the whole suite under `set -e`
+# (correctness is still checked by the content assertions on the output).
+run_filter() {
+    printf '%s' "$1" | ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; filter_secrets )
+    return 0
+}
+
+OUT=$(run_filter "auth key=sk-ant-api03-abcDEF123456789ghijklmnop_qrstuvwxyz")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "abcDEF123456789" \
+    && pass "anthropic API key masked" || fail "anthropic key not masked: $OUT"
+
+OUT=$(run_filter "token ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "ghp_abcdef" \
+    && pass "github token masked" || fail "github token not masked: $OUT"
+
+OUT=$(run_filter "aws AKIAIOSFODNN7EXAMPLE here")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "AKIAIOSFODNN7EXAMPLE" \
+    && pass "aws access key masked" || fail "aws key not masked: $OUT"
+
+OUT=$(run_filter "slack xoxb-EXAMPLESLACKtokenplaceholder")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "xoxb-EXAMPLESLACK" \
+    && pass "slack token masked" || fail "slack token not masked: $OUT"
+
+OUT=$(run_filter "Authorization: Bearer aBcDeF1234567890xyzTOKEN")
+echo "$OUT" | grep -q "Bearer ..REDACTED\|Bearer \*" && ! echo "$OUT" | grep -q "aBcDeF1234567890" \
+    && pass "bearer token masked" || fail "bearer token not masked: $OUT"
+
+# Non-secret text must pass through untouched
+OUT=$(run_filter "just a normal log line about task completion")
+[[ "$OUT" == "just a normal log line about task completion" ]] \
+    && pass "normal text unchanged" || fail "normal text altered: $OUT"
+
+# Multi-line PEM private key block must be masked, INCLUDING a short (<40 char)
+# trailing base64 line (the wrapped remainder of the key body).
+PEM=$'before\n-----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6\nAgEAAoGBAKsecretkeymaterialxyz0123456789\nk7QmShortTailLine24charsZ=\n-----END PRIVATE KEY-----\nafter'
+OUT=$(run_filter "$PEM")
+! echo "$OUT" | grep -q "MIIBVAIBADANBgkqhkiG" && ! echo "$OUT" | grep -q "secretkeymaterial" \
+    && pass "PEM private key block masked" || fail "PEM key leaked: $OUT"
+! echo "$OUT" | grep -q "k7QmShortTailLine24charsZ" \
+    && pass "PEM short trailing line masked" || fail "PEM tail line leaked: $OUT"
+echo "$OUT" | grep -q "REDACTED" && pass "PEM masked with REDACTED marker" || fail "no REDACTED for PEM: $OUT"
+echo "$OUT" | grep -q "^before$" && echo "$OUT" | grep -q "^after$" \
+    && pass "text around PEM block preserved" || fail "surrounding text lost: $OUT"
+
+# An unterminated BEGIN marker over-masks to end-of-input (security-first):
+# it must never leak the following lines as potential key material.
+STRAY=$'head line\n-----BEGIN PRIVATE KEY-----\nMIIBstraykeymaterialthatmustnotleak12345\ntail secret line'
+OUT=$(run_filter "$STRAY")
+echo "$OUT" | grep -q "^head line$" && pass "content before stray marker preserved" || fail "head lost: $OUT"
+echo "$OUT" | grep -q "REDACTED PRIVATE KEY" && pass "unterminated PEM emits key marker" || fail "no key marker: $OUT"
+! echo "$OUT" | grep -q "MIIBstraykeymaterial" && ! echo "$OUT" | grep -q "tail secret line" \
+    && pass "unterminated PEM over-masks following lines (no leak)" || fail "leaked after stray marker: $OUT"
+
+# ============================================================
+section "42. upload-log.sh generate_summary (via claude CLI)"
+# ============================================================
+
+run_summary() {
+    ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; generate_summary "$1" )
+}
+
+# Mock claude CLI that echoes a canned summary
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null   # drain the conversation on stdin
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+if SUM=$(run_summary "$MOCK_TRANSCRIPT"); then
+    echo "$SUM" | grep -q "モックの作業要約" \
+        && pass "summary generated via claude" || fail "summary content wrong: $SUM"
+else
+    fail "generate_summary returned non-zero on success path"
+fi
+
+# Missing transcript -> failure
+if run_summary "/nonexistent/transcript.jsonl" >/dev/null 2>&1; then
+    fail "generate_summary should fail on missing transcript"
+else
+    pass "generate_summary fails on missing transcript"
+fi
+
+# claude CLI error -> failure (so caller can abort dd)
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+exit 1
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+if run_summary "$MOCK_TRANSCRIPT" >/dev/null 2>&1; then
+    fail "generate_summary should fail when claude errors"
+else
+    pass "generate_summary fails when claude errors"
+fi
+
+# Restore working mock claude for later sections
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+# ============================================================
+section "43. upload-log.sh build_log_path / build_markdown"
+# ============================================================
+
+# Force exit 0 (fed into bare X=$(...) assignments under set -e; see run_filter).
+run_path() { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_log_path "$1" "$2" "$3" ); return 0; }
+run_md()   { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_markdown "$1" "$2" ); return 0; }
+
+# Path: base_dir/YYYY/MM/DD/HHMMSS_taskname.md, with taskname sanitized
+P=$(run_path "work-log" "2026-07-04T15:30:12+0900" "my task/name")
+[[ "$P" == "work-log/2026/07/04/153012_my-task-name.md" ]] \
+    && pass "log path built correctly" || fail "wrong log path: $P"
+
+# Markdown: contains title / summary text / cost; upload is limited to summary +
+# conversation summary (the raw record message must NOT be included), and a
+# secret echoed by the LLM into the summary must be masked.
+REC='{"tab":"demo-task","session":"s1","completed_at":"2026-07-04T15:30:12+0900","message":"RAWMESSAGEMARKER should not appear","summary":{"model":"claude-opus-4-6","total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42,"tools_used":["Edit","Bash"]},"markers":{"merged":true,"slack":false,"doc":true}}'
+MD=$(run_md "$REC" "- 要約テスト行 leaked ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+echo "$MD" | grep -q "demo-task"     && pass "markdown has task title" || fail "no title: $MD"
+echo "$MD" | grep -q "要約テスト行"   && pass "markdown has conversation summary" || fail "no summary: $MD"
+echo "$MD" | grep -q "0.42"          && pass "markdown has cost" || fail "no cost: $MD"
+! echo "$MD" | grep -q "RAWMESSAGEMARKER" && pass "raw record message excluded from upload" || fail "raw message leaked: $MD"
+! echo "$MD" | grep -q "ghp_abcdef"  && pass "markdown masks secret echoed in summary" || fail "secret leaked: $MD"
+
+# ============================================================
+section "44. upload-log.sh (end-to-end push to log repo)"
+# ============================================================
+
+# Local bare repo acts as the remote log repository
+REMOTE="$SANDBOX/remote-log.git"
+git init --bare -q "$REMOTE"
+SEED="$SANDBOX/seed-log"
+git clone -q "$REMOTE" "$SEED" 2>/dev/null
+git -C "$SEED" checkout -q -b main
+echo "# work logs" > "$SEED/README.md"
+git -C "$SEED" add .
+git -C "$SEED" -c user.email=seed@local -c user.name=seed commit -q -m init
+git -C "$SEED" push -q origin main 2>/dev/null
+
+# Enable upload, pointing at the local bare repo
+jq --arg repo "$REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
+    "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+
+E2E_TRANSCRIPT="$SANDBOX/e2e-transcript.jsonl"
+cat > "$E2E_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"do the thing"},"uuid":"u1","timestamp":"2026-07-04T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-07-04T10:00:01Z"}
+TRANSCRIPT
+
+# Pending message uses a marker to verify it is NOT included in the upload
+cat > "$PENDING_DIR/e2e.json" << EOF
+{
+  "tab": "upload-e2e",
+  "session": "test-session",
+  "message": "RAWMESSAGEMARKER should not appear",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$E2E_TRANSCRIPT"
+}
+EOF
+
+# Mock claude echoes a secret in its summary to verify the final filter masks it
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- 作業を実施。誤って ghp_abcdefghijklmnopqrstuvwxyz0123456789 を含む要約"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e"
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e" >/dev/null 2>&1 \
+    && pass "upload-log.sh exits 0 on success" || fail "upload-log.sh failed on success path"
+
+# Verify the log file landed in the remote
+VERIFY="$SANDBOX/verify-log"
+git clone -q "$REMOTE" "$VERIFY" 2>/dev/null
+LOGFILE=$(find "$VERIFY/work-log" -name '*_upload-e2e.md' 2>/dev/null | head -1)
+[[ -n "$LOGFILE" ]] && pass "log file pushed to repo" || fail "log file not found in repo"
+if [[ -n "$LOGFILE" ]]; then
+    grep -q "upload-e2e" "$LOGFILE" && pass "pushed log has task title" || fail "pushed log missing title"
+    grep -q "2026/07/04" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE"
+    ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks LLM-echoed secret" || fail "secret leaked in pushed log"
+    ! grep -q "RAWMESSAGEMARKER" "$LOGFILE" && pass "pushed log excludes raw message" || fail "raw message leaked in pushed log"
+fi
+
+# Failure path: summary generation fails -> upload aborts (non-zero) so dd is cancelled
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+exit 1
+MOCK
+chmod +x "$MOCK_BIN/claude"
+cat > "$PENDING_DIR/e2e-fail.json" << EOF
+{ "tab":"upload-e2e-fail","session":"test-session","message":"m","event":"Stop","time":"10:00:02","transcript_path":"$E2E_TRANSCRIPT" }
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e-fail"
+if ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e-fail" >/dev/null 2>&1; then
+    fail "upload-log.sh should exit non-zero when summary fails"
+else
+    pass "upload-log.sh aborts (non-zero) when summary fails"
+fi
+# Restore working mock claude
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/e2e*.json
+
+# ============================================================
+section "45. dd deletion integrates upload-log.sh"
+# ============================================================
+
+TC="$HOME/.claude-conductor/scripts/task-control.sh"
+DL="$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+
+grep -q 'upload-log.sh' "$TC" && pass "task-control.sh calls upload-log.sh" || fail "task-control.sh missing upload call"
+grep -q 'Deletion cancelled' "$TC" && pass "task-control.sh cancels dd on upload failure" || fail "task-control.sh missing guard"
+grep -q 'upload-log.sh' "$DL" && pass "dashboard-loop.sh calls upload-log.sh" || fail "dashboard-loop.sh missing upload call"
+grep -q 'Deletion cancelled' "$DL" && pass "dashboard-loop.sh cancels dd on upload failure" || fail "dashboard-loop.sh missing guard"
+
+# Functional: with upload disabled (default), dd still deletes the tab (no regression)
+cat > "$PENDING_DIR/tc-del.json" << 'EOF'
+{ "tab":"tc-del","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+CALLS="$HOME/.claude-pending/zellij-calls.log"
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del" >/dev/null 2>&1
+[[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "dd removes pending when upload disabled" || fail "pending not removed"
+grep -q 'close-tab' "$CALLS" && pass "dd closes tab when upload disabled" || fail "close-tab not called"
+
+# dd must close ITS OWN tab by id (not the active tab): a mid-upload focus change
+# must not let it close the wrong tab. Mock zellij returns list-tabs data here.
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n7  2  tc-del-id\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+cat > "$PENDING_DIR/tc-del-id.json" << 'EOF'
+{ "tab":"tc-del-id","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del-id" >/dev/null 2>&1
+grep -q 'close-tab-by-id 7' "$CALLS" && pass "dd closes its own tab by id" || fail "close-tab-by-id not called with correct id: $(cat "$CALLS")"
+
+# A tab name containing spaces must still resolve to the correct tab id.
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n3  1  My Task dev\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+cat > "$PENDING_DIR/my-space.json" << 'EOF'
+{ "tab":"My Task dev","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "My Task dev" >/dev/null 2>&1
+grep -q 'close-tab-by-id 3' "$CALLS" && pass "dd resolves a spaced tab name to its id" || fail "spaced tab name not resolved: $(cat "$CALLS")"
+
+# Restore the plain mock zellij for later sections
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+
+# On a real (non-empty) upload success, the confirmation is shown but the tab
+# is still deleted and closed afterwards.
+UPLOAD_REAL="$HOME/.claude-conductor/scripts/upload-log.sh"
+mv "$UPLOAD_REAL" "$UPLOAD_REAL.real"
+cat > "$UPLOAD_REAL" << 'STUB'
+#!/bin/bash
+echo "upload-log: アップロードしました -> https://example/log.md"
+exit 0
+STUB
+chmod +x "$UPLOAD_REAL"
+cat > "$PENDING_DIR/tc-ok.json" << 'EOF'
+{ "tab":"tc-ok","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-ok" >/dev/null 2>&1
+[[ ! -f "$PENDING_DIR/tc-ok.json" ]] && pass "dd deletes pending after a confirmed upload" || fail "pending not removed after upload"
+grep -q 'close-tab' "$CALLS" && pass "dd closes tab after a confirmed upload" || fail "tab not closed after upload"
+mv "$UPLOAD_REAL.real" "$UPLOAD_REAL"
+
+# ============================================================
+section "46. upload-log.sh push_log (bootstrap + idempotent)"
+# ============================================================
+
+run_push() {
+    ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; push_log "$1" "$2" "$3" "$4" )
+}
+
+# A self-contained populated repo (seeded 'main') for this section's C/D cases,
+# so it does not depend on state created in the end-to-end push section (44).
+POP_REMOTE="$SANDBOX/pop-log.git"
+git init --bare -q "$POP_REMOTE"
+POP_SEED="$SANDBOX/pop-seed"
+git clone -q "$POP_REMOTE" "$POP_SEED" 2>/dev/null
+git -C "$POP_SEED" checkout -q -b main
+echo "# logs" > "$POP_SEED/README.md"
+git -C "$POP_SEED" add .
+git -C "$POP_SEED" -c user.email=s@s -c user.name=s commit -q -m init
+git -C "$POP_SEED" push -q origin main 2>/dev/null
+
+# A) Bootstrap: push to a brand-new EMPTY bare repo (no branch exists yet)
+EMPTY_REMOTE="$SANDBOX/empty-log.git"
+git init --bare -q "$EMPTY_REMOTE"
+rm -rf "$HOME/.claude-conductor/upload-cache"
+if run_push "$EMPTY_REMOTE" "main" "work-log/2026/07/04/120000_boot.md" "hello world" >/dev/null 2>&1; then
+    pass "push_log bootstraps an empty repo"
+else
+    fail "push_log failed to bootstrap empty repo"
+fi
+BOOT_VERIFY="$SANDBOX/boot-verify"
+git clone -q "$EMPTY_REMOTE" "$BOOT_VERIFY" 2>/dev/null
+[[ -f "$BOOT_VERIFY/work-log/2026/07/04/120000_boot.md" ]] \
+    && pass "bootstrapped log present in remote" || fail "log not found after bootstrap"
+
+# B) Idempotent: pushing identical content to the same path must not fail (nothing-to-commit)
+if run_push "$EMPTY_REMOTE" "main" "work-log/2026/07/04/120000_boot.md" "hello world" >/dev/null 2>&1; then
+    pass "push_log succeeds on identical re-upload (no nothing-to-commit abort)"
+else
+    fail "push_log aborted on identical re-upload"
+fi
+
+# C) Branch that does not exist yet on a populated repo is created
+if run_push "$POP_REMOTE" "logs-2026" "work-log/x.md" "content x" >/dev/null 2>&1; then
+    pass "push_log creates a non-existent branch"
+else
+    fail "push_log failed to create new branch"
+fi
+
+# D) Reusing the same cache to push to yet another new branch must still work
+#    (regression guard for basing the branch off a stale FETCH_HEAD).
+if run_push "$POP_REMOTE" "logs-2027" "work-log/y.md" "content y" >/dev/null 2>&1; then
+    pass "push_log switches branch on a reused cache"
+else
+    fail "push_log failed to switch branch on reused cache"
+fi
+D_VERIFY="$SANDBOX/d-verify"
+git clone -q --branch logs-2027 "$POP_REMOTE" "$D_VERIFY" 2>/dev/null
+[[ -f "$D_VERIFY/work-log/y.md" ]] && pass "reused-cache branch pushed correctly" || fail "reused-cache push missing file"
+
+# ============================================================
+section "47. upload-log.sh uses record from any daily file (cross-day)"
+# ============================================================
+
+# The summary record lives ONLY in a non-today daily file; upload must still use
+# its real stats and store the log under the record's date (not today's).
+# Self-contained: own transcript, own mock claude, own populated repo ($POP_REMOTE).
+OLD_DAILY="$HOME/.claude-conductor/daily/test-session/2020-01-01.jsonl"
+cat > "$OLD_DAILY" << 'EOF'
+{"tab":"xday-task","session":"test-session","completed_at":"2020-01-01T09:00:00+0900","message":"m","summary":{"model":"claude-opus-4-6","total_turns":7,"total_tool_calls":9,"tools_used":["Bash"],"total_cost_usd":1.23},"markers":{"merged":false,"slack":false,"doc":false}}
+EOF
+
+XDAY_TRANSCRIPT="$SANDBOX/xday-transcript.jsonl"
+cat > "$XDAY_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"x"},"uuid":"u1","timestamp":"2020-01-01T09:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"y"}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"a1","timestamp":"2020-01-01T09:00:01Z"}
+TRANSCRIPT
+
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- 要約"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+jq --arg repo "$POP_REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
+    "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+
+cat > "$PENDING_DIR/xday.json" << EOF
+{ "tab":"xday-task","session":"test-session","message":"m","event":"Stop","time":"09:00:00","transcript_path":"$XDAY_TRANSCRIPT" }
+EOF
+
+# record-output.sh is intentionally NOT run, so today's file has no xday-task record
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "xday-task" >/dev/null 2>&1 \
+    && pass "upload succeeds using a cross-day record" || fail "cross-day upload failed"
+
+XV="$SANDBOX/xday-verify"
+git clone -q "$POP_REMOTE" "$XV" 2>/dev/null
+XLOG=$(find "$XV/work-log" -name '*_xday-task.md' 2>/dev/null | head -1)
+[[ -n "$XLOG" ]] && grep -q "1.23" "$XLOG" \
+    && pass "cross-day log carries real stats (cost)" || fail "stats missing/zeroed: $XLOG"
+grep -q "2020/01/01" <<< "$XLOG" \
+    && pass "cross-day log stored under the record's date" || fail "wrong date path: $XLOG"
+rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/xday.json "$OLD_DAILY"
+
+# ============================================================
+section "48. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

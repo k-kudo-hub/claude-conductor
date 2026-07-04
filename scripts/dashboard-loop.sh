@@ -102,13 +102,31 @@ while true; do
             if [[ "$key2" =~ [1-9] ]] && [[ $key2 -le $count ]]; then
                 target_tab="${tabs[$((key2-1))]}"
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$target_tab"
+                # Upload the work log synchronously. If it fails, cancel deletion.
+                echo -ne "\r  ${DIM}Uploading log...${NC}  "
+                if upload_out=$(bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$target_tab"); then
+                    # Show the upload result (URL) briefly so it is confirmable
+                    # before the tab closes. Empty output means nothing was
+                    # uploaded (disabled / no pending) -> close immediately.
+                    if [[ -n "$upload_out" ]]; then
+                        echo -ne "\r\033[K  ${GREEN}${BOLD}${upload_out#upload-log: }${NC}"
+                        sleep 2
+                    fi
+                else
+                    echo -ne "\r  ${RED}${BOLD}Upload failed. Deletion cancelled.${NC}  "
+                    sleep 2
+                    continue
+                fi
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$target_tab" ]]; then
                         rm -f "$f"
                     fi
                 done
-                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" '$3 == name {print $1}')
+                # Match the tab name as everything past the id/position columns,
+                # so names containing spaces still resolve to the right tab id.
+                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
+                    'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
                 if [[ -n "$tab_id" ]]; then
                     zellij action close-tab-by-id "$tab_id" 2>/dev/null
                 fi

@@ -1,6 +1,12 @@
 {
   "search_dirs": ["~/projects", "~/works"],
   "search_depth": 1,
+  "upload": {
+    "enabled": false,
+    "repo": "",
+    "base_dir": "work-log",
+    "branch": "main"
+  },
   "skip_task_name_input": false,
   "pricing": {
     "claude-opus-4-7": {

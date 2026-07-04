@@ -12,6 +12,7 @@ PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 DIM='\033[2m'
 BOLD='\033[1m'
 RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
@@ -61,13 +62,41 @@ while true; do
             read -t 2 -n 1 -s key2
             if [[ "$key2" == "d" ]]; then
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$TAB_NAME"
+                # Upload the work log synchronously. If it fails, cancel deletion.
+                echo -ne "\r${DIM}  Uploading log...${NC}  "
+                if upload_out=$(bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$TAB_NAME"); then
+                    # Show the upload result (URL) briefly so it is confirmable
+                    # before the tab closes. Empty output means nothing was
+                    # uploaded (disabled / no pending) -> close immediately.
+                    if [[ -n "$upload_out" ]]; then
+                        echo -ne "\r\033[K${GREEN}${BOLD}  ${upload_out#upload-log: }${NC}"
+                        sleep 2
+                    fi
+                else
+                    echo -ne "\r${RED}${BOLD}  Upload failed. Deletion cancelled.${NC}  "
+                    sleep 2
+                    continue
+                fi
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$TAB_NAME" ]]; then
                         rm -f "$f"
                     fi
                 done
-                zellij action close-tab 2>/dev/null
+                # Close this task's own tab by id, not the active tab: the
+                # synchronous upload can take seconds, during which the active
+                # tab may have switched (e.g. auto-routing to Main), so
+                # `close-tab` could close the wrong tab. Fall back to close-tab
+                # only if the id lookup fails. The tab name (NAME column) may
+                # contain spaces, so match it as everything past the id/position
+                # columns rather than just $3.
+                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$TAB_NAME" \
+                    'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
+                if [[ -n "$tab_id" ]]; then
+                    zellij action close-tab-by-id "$tab_id" 2>/dev/null
+                else
+                    zellij action close-tab 2>/dev/null
+                fi
                 exit 0
             fi
             ;;
