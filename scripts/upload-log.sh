@@ -14,15 +14,10 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
-# Fail loudly if the shared lib is missing rather than silently degrading
-# (a missing lib.sh would leave load_config undefined and skip the upload).
-LIB="$CONDUCTOR_HOME/scripts/lib.sh"
-if [ ! -f "$LIB" ]; then
-    echo "upload-log: missing $LIB" >&2
-    exit 1
-fi
-# shellcheck source=lib.sh
-. "$LIB"
+# Note: lib.sh (load_config / find_pending_file) is sourced later in main, only
+# once we know the upload is actually enabled — a missing lib.sh must not block
+# tab deletion for users who never enabled uploading. The helpers below are
+# self-contained and need no lib.
 
 # ------------------------------------------------------------------
 # Helper functions (unit-tested by test.sh via UPLOAD_LOG_LIB=1)
@@ -240,7 +235,11 @@ SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 DAILY_DIR="$CONDUCTOR_HOME/daily/$SESSION_NAME"
 
-CONFIG_FILE=$(load_config)
+# Resolve the config path inline (config.json > config.default.json) so the
+# enabled/repo gate below never depends on lib.sh — a missing lib must not block
+# dd for users who never enabled uploading.
+CONFIG_FILE="$CONDUCTOR_HOME/config.json"
+[ -f "$CONFIG_FILE" ] || CONFIG_FILE="$CONDUCTOR_HOME/config.default.json"
 UPLOAD_ENABLED=$(jq -r '.upload.enabled // false' "$CONFIG_FILE" 2>/dev/null)
 UPLOAD_REPO=$(jq -r '.upload.repo // ""' "$CONFIG_FILE" 2>/dev/null)
 UPLOAD_BASE_DIR=$(jq -r '.upload.base_dir // "work-log"' "$CONFIG_FILE" 2>/dev/null)
@@ -250,6 +249,16 @@ UPLOAD_BRANCH=$(jq -r '.upload.branch // "main"' "$CONFIG_FILE" 2>/dev/null)
 if [ "$UPLOAD_ENABLED" != "true" ] || [ -z "$UPLOAD_REPO" ]; then
     exit 0
 fi
+
+# Upload is enabled: the shared lib is now required. Fail loudly if it is missing
+# rather than silently losing the log.
+LIB="$CONDUCTOR_HOME/scripts/lib.sh"
+if [ ! -f "$LIB" ]; then
+    echo "upload-log: missing $LIB" >&2
+    exit 1
+fi
+# shellcheck source=lib.sh
+. "$LIB"
 
 # Locate the pending file for this tab to get its transcript path.
 # No pending file -> nothing to upload (not an error).

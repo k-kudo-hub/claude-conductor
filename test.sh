@@ -1309,6 +1309,30 @@ grep -q "2020/01/01" <<< "$XLOG" \
 rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/xday.json "$OLD_DAILY"
 
 # ============================================================
+section "40. upload-log.sh lib.sh guard (disabled tolerates, enabled fails)"
+# ============================================================
+
+LIBFILE="$HOME/.claude-conductor/scripts/lib.sh"
+rm -f "$UPLOAD_CONFIG"          # ensure default (upload disabled)
+mv "$LIBFILE" "$LIBFILE.bak"
+
+# Disabled upload: a missing lib.sh must NOT block dd (exit 0)
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "any-tab" \
+    && pass "disabled upload tolerates missing lib.sh (dd proceeds)" \
+    || fail "missing lib.sh blocked a disabled upload"
+
+# Enabled upload: a missing lib.sh must fail loudly (exit 1) so the log is not lost
+jq '.upload.enabled = true | .upload.repo = "x/y"' \
+    "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+if ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "any-tab" >/dev/null 2>&1; then
+    fail "enabled upload should fail when lib.sh is missing"
+else
+    pass "enabled upload fails loudly when lib.sh is missing"
+fi
+rm -f "$UPLOAD_CONFIG"
+mv "$LIBFILE.bak" "$LIBFILE"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
