@@ -146,6 +146,16 @@ echo '{"session_id":"sess-aaa","message":"Task done","hook_event_name":"Stop","c
 EVENT_AFTER=$(jq -r '.event' "$PENDING_DIR/sess-aaa.json")
 [[ "$EVENT_AFTER" == "Notification" ]] && pass "Stop did not overwrite Notification" || fail "Stop overwrote Notification: $EVENT_AFTER"
 
+# A Waiting pending must also survive a later Stop event
+echo '{"tab":"api-feature","session":"test-session","message":"waiting for review","event":"Waiting","time":"10:00:00"}' > "$PENDING_DIR/sess-wait.json"
+echo '{"session_id":"sess-wait","message":"Task done","hook_event_name":"Stop","cwd":"/tmp/myapp"}' \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+
+EVENT_WAIT=$(jq -r '.event' "$PENDING_DIR/sess-wait.json")
+[[ "$EVENT_WAIT" == "Waiting" ]] && pass "Stop did not overwrite Waiting" || fail "Stop overwrote Waiting: $EVENT_WAIT"
+rm -f "$PENDING_DIR/sess-wait.json"
+
 # ============================================================
 section "5. pending-notify.sh (Stop creates new entry)"
 # ============================================================
@@ -978,23 +988,19 @@ ZELLIJ_SESSION_NAME=wait-session \
 EVENT_W2=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
 [[ "$EVENT_W2" == "Notification" ]] && pass "Waiting toggled back to Notification" || fail "toggle back failed: $EVENT_W2"
 
-# No existing pending -> create a new Waiting entry
+# No existing pending for this tab -> no-op (Waiting only applies to tasks with a pending entry)
 ZELLIJ_SESSION_NAME=wait-session \
   bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "fresh-task"
 
-NEW_WAIT=""
+FRESH_FOUND=""
 for f in "$WAIT_DIR"/*.json; do
     [[ -f "$f" ]] || continue
     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "fresh-task" ]]; then
-        NEW_WAIT="$f"
+        FRESH_FOUND="$f"
         break
     fi
 done
-[[ -n "$NEW_WAIT" ]] && pass "new Waiting entry created when no pending exists" || fail "new Waiting entry not created"
-if [[ -n "$NEW_WAIT" ]]; then
-    EVENT_NEW=$(jq -r '.event' "$NEW_WAIT")
-    [[ "$EVENT_NEW" == "Waiting" ]] && pass "new entry has Waiting event" || fail "new entry event wrong: $EVENT_NEW"
-fi
+[[ -z "$FRESH_FOUND" ]] && pass "no entry created when no pending exists" || fail "unexpected entry created: $FRESH_FOUND"
 
 # ============================================================
 section "32. dashboard-loop.sh (excludes Waiting tasks)"
