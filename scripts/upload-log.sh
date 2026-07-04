@@ -239,7 +239,6 @@ fi
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 DAILY_DIR="$CONDUCTOR_HOME/daily/$SESSION_NAME"
-DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 
 CONFIG_FILE=$(load_config)
 UPLOAD_ENABLED=$(jq -r '.upload.enabled // false' "$CONFIG_FILE" 2>/dev/null)
