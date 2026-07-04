@@ -1240,6 +1240,177 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
+section "30. scripts are executable (mdev-test runs them directly)"
+# ============================================================
+
+# Layout panes run their script directly (bash -c "<path>/x.sh"), which needs the
+# execute bit. mdev-test runs the worktree copy in place (install.sh's chmod does
+# not apply), so those scripts must carry the bit in the repo itself. (Libraries
+# that are sourced, and scripts invoked via `bash <script>`, do not need it.)
+LAYOUT_SCRIPTS=$(grep -ohE 'scripts/[a-z0-9-]+\.sh' "$REPO_DIR"/layouts/*.kdl | sort -u)
+NON_EXEC=""
+for s in $LAYOUT_SCRIPTS; do
+    f="$REPO_DIR/$s"
+    [[ -f "$f" && ! -x "$f" ]] && NON_EXEC="$NON_EXEC $(basename "$f")"
+done
+[[ -z "$NON_EXEC" ]] && pass "layout pane scripts are executable" || fail "non-executable pane scripts:$NON_EXEC"
+
+# ============================================================
+section "30a. multi.kdl honors CONDUCTOR_HOME"
+# ============================================================
+
+MULTI_KDL="$HOME/.claude-conductor/layouts/multi.kdl"
+grep -q '\${CONDUCTOR_HOME' "$MULTI_KDL" \
+  && pass "multi.kdl references CONDUCTOR_HOME" || fail "multi.kdl does not reference CONDUCTOR_HOME"
+grep -q '"\$HOME/.claude-conductor/scripts' "$MULTI_KDL" \
+  && fail "multi.kdl still hardcodes \$HOME/.claude-conductor" || pass "multi.kdl has no hardcoded conductor path"
+
+# ============================================================
+section "30b. done-loop.sh honors CONDUCTOR_HOME for daily"
+# ============================================================
+
+DONE_LOOP="$HOME/.claude-conductor/scripts/done-loop.sh"
+grep -q 'CONDUCTOR_HOME' "$DONE_LOOP" \
+  && pass "done-loop.sh references CONDUCTOR_HOME" || fail "done-loop.sh does not reference CONDUCTOR_HOME"
+
+# Verify done-loop reads daily under CONDUCTOR_HOME by pointing it at an alternate home
+ALT_DAILY_HOME="$SANDBOX/alt-daily-home"
+mkdir -p "$ALT_DAILY_HOME/daily/alt-session"
+TODAY=$(date '+%Y-%m-%d')
+cat > "$ALT_DAILY_HOME/daily/alt-session/${TODAY}.jsonl" << 'DONEJSON'
+{"tab":"alt-task","status":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42},"completed_at":"2026-07-04T10:00:00Z"}
+DONEJSON
+
+OUTPUT=$(CONDUCTOR_HOME="$ALT_DAILY_HOME" CONDUCTOR_DONE_ONCE=1 bash "$HOME/.claude-conductor/scripts/done-loop.sh" 2>/dev/null)
+echo "$OUTPUT" | grep -q "alt-task" \
+  && pass "done-loop reads daily under CONDUCTOR_HOME" || fail "done-loop did not read CONDUCTOR_HOME daily: $OUTPUT"
+
+# ============================================================
+section "30c. init.zsh defines mdev-test"
+# ============================================================
+
+INIT_FILE="$HOME/.claude-conductor/init.zsh"
+FUNCS=$(zsh -c "source '$INIT_FILE' && whence -w mdev-test" 2>&1)
+echo "$FUNCS" | grep -q "mdev-test: function" && pass "mdev-test function defined" || fail "mdev-test not defined: $FUNCS"
+
+# ============================================================
+section "30d. mdev-test resolves worktree (dry-run)"
+# ============================================================
+
+FAKE_WT="$SANDBOX/fake-worktrees/my-feature"
+mkdir -p "$FAKE_WT/scripts" "$FAKE_WT/layouts"
+touch "$FAKE_WT/scripts/fetch-news.sh" "$FAKE_WT/layouts/multi.kdl"
+
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1)
+echo "$OUTPUT" | grep -q "CONDUCTOR_HOME=$FAKE_WT" \
+  && pass "dry-run exports CONDUCTOR_HOME to worktree path" || fail "wrong CONDUCTOR_HOME: $OUTPUT"
+echo "$OUTPUT" | grep -q "SESSION=test-my-feature" \
+  && pass "dry-run derives test-<basename> session name" || fail "wrong session name: $OUTPUT"
+echo "$OUTPUT" | grep -q "$FAKE_WT/layouts/multi.kdl" \
+  && pass "dry-run launch command uses worktree layout" || fail "wrong layout in command: $OUTPUT"
+echo "$OUTPUT" | grep -q "zellij delete-session '.*' --force" \
+  && pass "launch command deletes stale session before recreating (re-run fresh)" || fail "no delete-session in command: $OUTPUT"
+echo "$OUTPUT" | grep -q "zellij --new-session-with-layout" \
+  && pass "launch command creates a new session" || fail "no new-session in command: $OUTPUT"
+
+# Distinct long worktrees sharing a name prefix must get distinct session names
+WT_A="$SANDBOX/fake-worktrees/dashboard-redesign-alpha"
+WT_B="$SANDBOX/fake-worktrees/dashboard-redesign-beta"
+for d in "$WT_A" "$WT_B"; do
+  mkdir -p "$d/scripts" "$d/layouts"
+  touch "$d/scripts/fetch-news.sh" "$d/layouts/multi.kdl"
+done
+SESS_A=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$WT_A'" 2>/dev/null | grep '^SESSION=' | cut -d= -f2)
+SESS_B=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$WT_B'" 2>/dev/null | grep '^SESSION=' | cut -d= -f2)
+[[ -n "$SESS_A" && "$SESS_A" != "$SESS_B" && "${#SESS_A}" -le 24 && "${#SESS_B}" -le 24 ]] \
+  && pass "prefix-sharing worktrees get distinct sessions ($SESS_A / $SESS_B)" \
+  || fail "session name collision: '$SESS_A' vs '$SESS_B'"
+
+# Long worktree names must be truncated to zellij's 24-char session-name limit
+LONG_WT="$SANDBOX/fake-worktrees/add-isolated-test-launcher"
+mkdir -p "$LONG_WT/scripts" "$LONG_WT/layouts"
+touch "$LONG_WT/scripts/fetch-news.sh" "$LONG_WT/layouts/multi.kdl"
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$LONG_WT'" 2>/dev/null)
+SESSION_LINE=$(echo "$OUTPUT" | grep '^SESSION=' | cut -d= -f2)
+[[ "${#SESSION_LINE}" -le 24 && -n "$SESSION_LINE" ]] \
+  && pass "long worktree name truncated to <=24 chars ($SESSION_LINE)" \
+  || fail "session name not truncated: '$SESSION_LINE' (${#SESSION_LINE} chars)"
+
+# A worktree with an env-aware multi.kdl must NOT warn about partial isolation
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
+echo "$STDERR" | grep -q "partial isolation" \
+  && fail "unexpected partial-isolation warning for env-aware layout" \
+  || pass "no warning when layout references CONDUCTOR_HOME"
+
+# A worktree whose multi.kdl hardcodes the install path must warn
+echo 'layout { pane { command "bash"; args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
+echo "$STDERR" | grep -q "partial isolation" \
+  && pass "warns about partial isolation for legacy hardcoded layout" \
+  || fail "missing partial-isolation warning: $STDERR"
+
+# ============================================================
+section "30e. mdev-test errors on invalid worktree"
+# ============================================================
+
+set +e
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$SANDBOX/does-not-exist'" 2>&1)
+RC=$?
+set -e
+[[ "$RC" -ne 0 ]] && pass "mdev-test returns non-zero on missing worktree" || fail "mdev-test did not fail on missing worktree"
+
+# A directory that exists but is not a conductor worktree must also error
+NON_WT="$SANDBOX/not-a-worktree"
+mkdir -p "$NON_WT"
+set +e
+OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$NON_WT'" 2>&1)
+RC=$?
+set -e
+[[ "$RC" -ne 0 ]] && pass "mdev-test rejects non-conductor directory" || fail "mdev-test accepted non-conductor directory"
+
+# ============================================================
+section "30f. mdev-test Warp launch (Launch Configuration)"
+# ============================================================
+
+# Mock `open` to record invocations without opening anything
+mkdir -p "$HOME/.claude-pending"
+cat > "$MOCK_BIN/open" << 'MOCKOPEN'
+#!/bin/bash
+echo "mock-open: $*" >> "$HOME/.claude-pending/open-calls.log"
+MOCKOPEN
+chmod +x "$MOCK_BIN/open"
+: > "$HOME/.claude-pending/open-calls.log"
+
+WARP_WT="$SANDBOX/fake-worktrees/warp-feature"
+mkdir -p "$WARP_WT/scripts" "$WARP_WT/layouts"
+touch "$WARP_WT/scripts/fetch-news.sh"
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$WARP_WT/layouts/multi.kdl"
+
+TERM_PROGRAM=WarpTerminal zsh -c "source '$INIT_FILE' && mdev-test '$WARP_WT'" >/dev/null 2>&1
+
+LC_YAML=$(ls "$HOME/.warp/launch_configurations/"mdev-test-*.yaml 2>/dev/null | head -1)
+[[ -f "$LC_YAML" ]] && pass "Warp launch config written" || fail "no launch config created"
+grep -q "cwd:.*warp-feature" "$LC_YAML" 2>/dev/null \
+  && pass "launch config cwd is the worktree" || fail "wrong cwd in launch config"
+grep -q "exec:.*CONDUCTOR_HOME=" "$LC_YAML" 2>/dev/null \
+  && pass "launch config exec exports CONDUCTOR_HOME" || fail "exec missing CONDUCTOR_HOME: $(cat "$LC_YAML" 2>/dev/null)"
+grep -q "warp://launch/mdev-test-" "$HOME/.claude-pending/open-calls.log" \
+  && pass "open invoked with warp://launch URI" || fail "open not called with warp URI: $(cat "$HOME/.claude-pending/open-calls.log")"
+
+# Re-running cleans up the previous run's config (only one mdev-test-*.yaml remains)
+WARP_WT2="$SANDBOX/fake-worktrees/warp-other"
+mkdir -p "$WARP_WT2/scripts" "$WARP_WT2/layouts"
+touch "$WARP_WT2/scripts/fetch-news.sh"
+echo 'layout { pane { args "-c" "${CONDUCTOR_HOME:-x}/scripts/x.sh" } }' > "$WARP_WT2/layouts/multi.kdl"
+TERM_PROGRAM=WarpTerminal zsh -c "source '$INIT_FILE' && mdev-test '$WARP_WT2'" >/dev/null 2>&1
+YAML_COUNT=$(ls "$HOME/.warp/launch_configurations/"mdev-test-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+[[ "$YAML_COUNT" -eq 1 ]] && pass "previous launch config cleaned up on re-run" || fail "stale configs remain: $YAML_COUNT"
+
+# Restore real `open` for any later sections
+rm -f "$MOCK_BIN/open"
+
+# ============================================================
 section "32. task-create-loop.sh default name generation"
 # ============================================================
 

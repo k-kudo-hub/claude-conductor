@@ -7,6 +7,18 @@ description: worktreeの修正をインストール済み環境にデプロイ�
 
 worktreeで修正したスクリプトを `~/.claude-conductor/` にデプロイして実機検証し、検証後に元に戻す。
 
+## `mdev-test` による非破壊検証（推奨）
+
+`scripts/`, `layouts/`, `init.zsh` の変更（フックの**スクリプト内容**の変更を含む）は、インストール済み環境を上書きせずに検証できる:
+
+```bash
+mdev-test <worktree>
+```
+
+`CONDUCTOR_HOME` をworktreeに向けた `test-<worktree>` セッションが別ターミナルウィンドウで起動する。実データ（pending/daily）とも分離される。この場合、本スキルのデプロイ/ロールバック手順は不要。
+
+ただし `hooks.json` の**構造**（イベント追加・コマンド差し替え）の変更は、グローバルな `~/.claude/settings.json` 依存のため `mdev-test` ではテストできない。その場合は以下の手順で settings.json にマージして検証する。
+
 ## 前提条件
 
 - claude-conductor リポジトリの worktree 内で作業していること
