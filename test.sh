@@ -981,6 +981,18 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
+section "30. scripts are executable (mdev-test runs them directly)"
+# ============================================================
+
+# mdev-test runs the worktree's scripts in place (install.sh's chmod does not
+# apply), so every script must carry the execute bit in the repo itself.
+NON_EXEC=""
+for f in "$REPO_DIR/scripts/"*.sh; do
+    [[ -x "$f" ]] || NON_EXEC="$NON_EXEC $(basename "$f")"
+done
+[[ -z "$NON_EXEC" ]] && pass "all scripts/*.sh are executable" || fail "non-executable scripts:$NON_EXEC"
+
+# ============================================================
 section "30a. multi.kdl honors CONDUCTOR_HOME"
 # ============================================================
 
@@ -1093,6 +1105,47 @@ OUTPUT=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '
 RC=$?
 set -e
 [[ "$RC" -ne 0 ]] && pass "mdev-test rejects non-conductor directory" || fail "mdev-test accepted non-conductor directory"
+
+# ============================================================
+section "30f. mdev-test Warp launch (Launch Configuration)"
+# ============================================================
+
+# Mock `open` to record invocations without opening anything
+mkdir -p "$HOME/.claude-pending"
+cat > "$MOCK_BIN/open" << 'MOCKOPEN'
+#!/bin/bash
+echo "mock-open: $*" >> "$HOME/.claude-pending/open-calls.log"
+MOCKOPEN
+chmod +x "$MOCK_BIN/open"
+: > "$HOME/.claude-pending/open-calls.log"
+
+WARP_WT="$SANDBOX/fake-worktrees/warp-feature"
+mkdir -p "$WARP_WT/scripts" "$WARP_WT/layouts"
+touch "$WARP_WT/scripts/fetch-news.sh"
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$WARP_WT/layouts/multi.kdl"
+
+TERM_PROGRAM=WarpTerminal zsh -c "source '$INIT_FILE' && mdev-test '$WARP_WT'" >/dev/null 2>&1
+
+LC_YAML=$(ls "$HOME/.warp/launch_configurations/"mdev-test-*.yaml 2>/dev/null | head -1)
+[[ -f "$LC_YAML" ]] && pass "Warp launch config written" || fail "no launch config created"
+grep -q "cwd:.*warp-feature" "$LC_YAML" 2>/dev/null \
+  && pass "launch config cwd is the worktree" || fail "wrong cwd in launch config"
+grep -q "exec:.*CONDUCTOR_HOME=" "$LC_YAML" 2>/dev/null \
+  && pass "launch config exec exports CONDUCTOR_HOME" || fail "exec missing CONDUCTOR_HOME: $(cat "$LC_YAML" 2>/dev/null)"
+grep -q "warp://launch/mdev-test-" "$HOME/.claude-pending/open-calls.log" \
+  && pass "open invoked with warp://launch URI" || fail "open not called with warp URI: $(cat "$HOME/.claude-pending/open-calls.log")"
+
+# Re-running cleans up the previous run's config (only one mdev-test-*.yaml remains)
+WARP_WT2="$SANDBOX/fake-worktrees/warp-other"
+mkdir -p "$WARP_WT2/scripts" "$WARP_WT2/layouts"
+touch "$WARP_WT2/scripts/fetch-news.sh"
+echo 'layout { pane { args "-c" "${CONDUCTOR_HOME:-x}/scripts/x.sh" } }' > "$WARP_WT2/layouts/multi.kdl"
+TERM_PROGRAM=WarpTerminal zsh -c "source '$INIT_FILE' && mdev-test '$WARP_WT2'" >/dev/null 2>&1
+YAML_COUNT=$(ls "$HOME/.warp/launch_configurations/"mdev-test-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+[[ "$YAML_COUNT" -eq 1 ]] && pass "previous launch config cleaned up on re-run" || fail "stale configs remain: $YAML_COUNT"
+
+# Restore real `open` for any later sections
+rm -f "$MOCK_BIN/open"
 
 # ============================================================
 section "32. task-create-loop.sh default name generation"

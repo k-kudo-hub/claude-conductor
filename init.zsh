@@ -105,6 +105,30 @@ mdev-test() {
     echo "Launching fresh isolated test session '$session' from $wt_path"
     echo "mdev-test: any existing session named '$session' is replaced." >&2
 
+    # Warp: launch natively via a temporary Launch Configuration, which opens a new
+    # tab already in the worktree with the command auto-running (no separate app,
+    # no Automation permission). The exec runs after .zshrc, so its CONDUCTOR_HOME
+    # export overrides the installed default.
+    if [[ "$TERM_PROGRAM" == "WarpTerminal" ]]; then
+        local lc_dir="$HOME/.warp/launch_configurations"
+        mkdir -p "$lc_dir"
+        rm -f "$lc_dir"/mdev-test-*.yaml(N)        # clean up previous runs (N: no error if none)
+        local lc_name="mdev-test-$session"
+        {
+            echo "---"
+            echo "name: $lc_name"
+            echo "windows:"
+            echo "  - tabs:"
+            echo "      - title: $session"
+            echo "        layout:"
+            echo "          cwd: \"$wt_path\""
+            echo "          commands:"
+            echo "            - exec: \"$run_cmd\""
+        } > "$lc_dir/$lc_name.yaml"
+        open "warp://launch/$lc_name"
+        return 0
+    fi
+
     # Write the launch command to a temp .command script.
     # macOS mktemp rejects a suffix after the X's, so create then rename;
     # Terminal.app runs *.command files directly.
