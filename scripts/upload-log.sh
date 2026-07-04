@@ -136,6 +136,57 @@ $summary_text
 EOF
 }
 
+# resolve_repo_url <repo>: turn "owner/name" into an SSH URL; pass through
+# full URLs (https/ssh) and local paths unchanged.
+resolve_repo_url() {
+    local repo="$1"
+    case "$repo" in
+        *://*|git@*|/*|./*|../*) printf '%s' "$repo" ;;
+        *) printf 'git@github.com:%s.git' "$repo" ;;
+    esac
+}
+
+# push_log <repo> <branch> <rel_path> <content>: write the log into a cached
+# clone of the repo and push it. Prints a reference to the pushed log.
+# Returns non-zero on any git failure.
+push_log() {
+    local repo="$1" branch="$2" rel_path="$3" content="$4"
+    command -v git >/dev/null 2>&1 || return 1
+
+    local url slug cache
+    url=$(resolve_repo_url "$repo")
+    slug=$(printf '%s' "$repo" | sed -E 's#[^A-Za-z0-9._-]+#_#g')
+    cache="$CONDUCTOR_HOME/upload-cache/$slug"
+
+    if [ -d "$cache/.git" ]; then
+        git -C "$cache" fetch --quiet origin "$branch" 2>/dev/null || return 1
+        git -C "$cache" checkout --quiet "$branch" 2>/dev/null || return 1
+        git -C "$cache" reset --hard --quiet "origin/$branch" 2>/dev/null || return 1
+    else
+        rm -rf "$cache"
+        mkdir -p "$(dirname "$cache")"
+        git clone --quiet --depth 1 --branch "$branch" "$url" "$cache" 2>/dev/null || return 1
+    fi
+
+    local target="$cache/$rel_path"
+    mkdir -p "$(dirname "$target")" || return 1
+    printf '%s\n' "$content" > "$target" || return 1
+
+    git -C "$cache" add "$rel_path" 2>/dev/null || return 1
+    git -C "$cache" \
+        -c user.email="conductor@local" -c user.name="claude-conductor" \
+        commit --quiet -m "chore: add work log $rel_path" 2>/dev/null || return 1
+    git -C "$cache" push --quiet origin "$branch" 2>/dev/null || return 1
+
+    local sha
+    sha=$(git -C "$cache" rev-parse HEAD 2>/dev/null)
+    case "$repo" in
+        *://*|git@*|/*|./*|../*) printf '%s @ %s\n' "$rel_path" "$sha" ;;
+        *) printf 'https://github.com/%s/blob/%s/%s\n' "$repo" "$branch" "$rel_path" ;;
+    esac
+    return 0
+}
+
 # ------------------------------------------------------------------
 # When sourced for tests, stop here (only expose the functions above).
 # ------------------------------------------------------------------
@@ -167,5 +218,53 @@ if [ "$UPLOAD_ENABLED" != "true" ] || [ -z "$UPLOAD_REPO" ]; then
     exit 0
 fi
 
-# (subsequent tasks: locate pending, generate summary, build markdown, push)
+# Locate the pending file for this tab (transcript path + message).
+TRANSCRIPT_PATH=""
+MESSAGE=""
+FOUND=false
+for f in "$PENDING_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r '.tab' "$f" 2>/dev/null)" = "$TAB_NAME" ] || continue
+    TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
+    MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
+    FOUND=true
+    break
+done
+
+# No pending file -> nothing to upload (not an error).
+if [ "$FOUND" != "true" ]; then
+    exit 0
+fi
+
+# Use the summary record just written by record-output.sh (last matching line).
+RECORD=""
+if [ -f "$DAILY_FILE" ]; then
+    RECORD=$(jq -c --arg tab "$TAB_NAME" 'select(.tab == $tab)' "$DAILY_FILE" 2>/dev/null | tail -1)
+fi
+if [ -z "$RECORD" ]; then
+    RECORD=$(jq -n --arg tab "$TAB_NAME" --arg session "$SESSION_NAME" --arg msg "$MESSAGE" \
+        '{tab:$tab, session:$session, completed_at:"", message:$msg, summary:null, markers:{}}')
+fi
+
+COMPLETED_AT=$(printf '%s' "$RECORD" | jq -r '.completed_at // empty')
+[ -n "$COMPLETED_AT" ] || COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
+
+# Generate the conversation summary. Failure MUST abort dd (exit non-zero).
+SUMMARY_TEXT=$(generate_summary "$TRANSCRIPT_PATH")
+if [ $? -ne 0 ] || [ -z "$SUMMARY_TEXT" ]; then
+    echo "upload-log: 会話要約の生成に失敗しました（ddを中止します）" >&2
+    exit 1
+fi
+
+REL_PATH=$(build_log_path "$UPLOAD_BASE_DIR" "$COMPLETED_AT" "$TAB_NAME")
+MARKDOWN=$(build_markdown "$RECORD" "$SUMMARY_TEXT")
+
+# Push to the log repository. Failure MUST abort dd (exit non-zero).
+REF=$(push_log "$UPLOAD_REPO" "$UPLOAD_BRANCH" "$REL_PATH" "$MARKDOWN")
+if [ $? -ne 0 ]; then
+    echo "upload-log: ログリポジトリへのpushに失敗しました（ddを中止します）" >&2
+    exit 1
+fi
+
+echo "upload-log: アップロードしました -> $REF"
 exit 0

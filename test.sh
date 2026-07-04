@@ -1068,6 +1068,83 @@ echo "$MD" | grep -q "0.42"          && pass "markdown has cost" || fail "no cos
 ! echo "$MD" | grep -q "ghp_abcdef"  && pass "markdown masks secret in message" || fail "secret leaked: $MD"
 
 # ============================================================
+section "36. upload-log.sh (end-to-end push to log repo)"
+# ============================================================
+
+# Local bare repo acts as the remote log repository
+REMOTE="$SANDBOX/remote-log.git"
+git init --bare -q "$REMOTE"
+SEED="$SANDBOX/seed-log"
+git clone -q "$REMOTE" "$SEED" 2>/dev/null
+git -C "$SEED" checkout -q -b main
+echo "# work logs" > "$SEED/README.md"
+git -C "$SEED" add .
+git -C "$SEED" -c user.email=seed@local -c user.name=seed commit -q -m init
+git -C "$SEED" push -q origin main 2>/dev/null
+
+# Enable upload, pointing at the local bare repo
+jq --arg repo "$REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
+    "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+
+E2E_TRANSCRIPT="$SANDBOX/e2e-transcript.jsonl"
+cat > "$E2E_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"do the thing"},"uuid":"u1","timestamp":"2026-07-04T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-07-04T10:00:01Z"}
+TRANSCRIPT
+
+# Pending message intentionally carries a secret to verify masking end-to-end
+cat > "$PENDING_DIR/e2e.json" << EOF
+{
+  "tab": "upload-e2e",
+  "session": "test-session",
+  "message": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  "event": "Stop",
+  "time": "10:00:01",
+  "transcript_path": "$E2E_TRANSCRIPT"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e"
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e" >/dev/null 2>&1 \
+    && pass "upload-log.sh exits 0 on success" || fail "upload-log.sh failed on success path"
+
+# Verify the log file landed in the remote
+VERIFY="$SANDBOX/verify-log"
+git clone -q "$REMOTE" "$VERIFY" 2>/dev/null
+LOGFILE=$(find "$VERIFY/work-log" -name '*_upload-e2e.md' 2>/dev/null | head -1)
+[[ -n "$LOGFILE" ]] && pass "log file pushed to repo" || fail "log file not found in repo"
+if [[ -n "$LOGFILE" ]]; then
+    grep -q "upload-e2e" "$LOGFILE" && pass "pushed log has task title" || fail "pushed log missing title"
+    grep -q "2026/07/04" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE"
+    ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks secret" || fail "secret leaked in pushed log"
+fi
+
+# Failure path: summary generation fails -> upload aborts (non-zero) so dd is cancelled
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+exit 1
+MOCK
+chmod +x "$MOCK_BIN/claude"
+cat > "$PENDING_DIR/e2e-fail.json" << EOF
+{ "tab":"upload-e2e-fail","session":"test-session","message":"m","event":"Stop","time":"10:00:02","transcript_path":"$E2E_TRANSCRIPT" }
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e-fail"
+if ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e-fail" >/dev/null 2>&1; then
+    fail "upload-log.sh should exit non-zero when summary fails"
+else
+    pass "upload-log.sh aborts (non-zero) when summary fails"
+fi
+# Restore working mock claude
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/e2e*.json
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
