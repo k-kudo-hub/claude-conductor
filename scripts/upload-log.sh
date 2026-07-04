@@ -76,14 +76,64 @@ generate_summary() {
     printf '%s' "$summary"
 }
 
-# build_log_path <base_dir> <completed_at> <taskname>: print the relative log path.
+# build_log_path <base_dir> <completed_at> <taskname>:
+# print "base_dir/YYYY/MM/DD/HHMMSS_taskname.md" (taskname sanitized).
 build_log_path() {
-    return 0
+    local base_dir="$1" completed_at="$2" taskname="$3"
+    local yyyy="${completed_at:0:4}" mm="${completed_at:5:2}" dd="${completed_at:8:2}"
+    local hh="${completed_at:11:2}" mi="${completed_at:14:2}" ss="${completed_at:17:2}"
+    local ts="${hh}${mi}${ss}"
+    local safe
+    safe=$(printf '%s' "$taskname" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')
+    [ -n "$safe" ] || safe="task"
+    printf '%s/%s/%s/%s/%s_%s.md' "$base_dir" "$yyyy" "$mm" "$dd" "$ts" "$safe"
 }
 
-# build_markdown <daily_record_json> <summary_text>: print the log markdown.
+# build_markdown <daily_record_json> <summary_text>: print the log markdown
+# (secrets stripped from the final output).
 build_markdown() {
-    return 0
+    local record="$1" summary_text="$2"
+    local tab session completed_at message model turns calls cost tools merged slack doc
+    tab=$(printf '%s' "$record" | jq -r '.tab // "unknown"')
+    session=$(printf '%s' "$record" | jq -r '.session // "unknown"')
+    completed_at=$(printf '%s' "$record" | jq -r '.completed_at // ""')
+    message=$(printf '%s' "$record" | jq -r '.message // ""')
+    model=$(printf '%s' "$record" | jq -r '.summary.model // "unknown"')
+    turns=$(printf '%s' "$record" | jq -r '.summary.total_turns // 0')
+    calls=$(printf '%s' "$record" | jq -r '.summary.total_tool_calls // 0')
+    cost=$(printf '%s' "$record" | jq -r '.summary.total_cost_usd // 0')
+    tools=$(printf '%s' "$record" | jq -r '(.summary.tools_used // []) | join(", ")')
+    merged=$(printf '%s' "$record" | jq -r 'if .markers.merged then "✅" else "-" end')
+    slack=$(printf '%s' "$record" | jq -r 'if .markers.slack then "✅" else "-" end')
+    doc=$(printf '%s' "$record" | jq -r 'if .markers.doc then "✅" else "-" end')
+
+    cat <<EOF | filter_secrets
+# $tab
+
+- **Session**: $session
+- **Completed**: $completed_at
+- **Model**: $model
+
+## メッセージ
+
+$message
+
+## サマリ
+
+| 項目 | 値 |
+|---|---|
+| ターン数 | $turns |
+| ツール呼び出し | $calls |
+| コスト(USD) | $cost |
+| 使用ツール | $tools |
+| マージ | $merged |
+| Slack | $slack |
+| ドキュメント | $doc |
+
+## 会話要約
+
+$summary_text
+EOF
 }
 
 # ------------------------------------------------------------------

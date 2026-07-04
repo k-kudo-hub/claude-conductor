@@ -1048,6 +1048,26 @@ MOCK
 chmod +x "$MOCK_BIN/claude"
 
 # ============================================================
+section "35. upload-log.sh build_log_path / build_markdown"
+# ============================================================
+
+run_path() { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_log_path "$1" "$2" "$3" ); }
+run_md()   { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_markdown "$1" "$2" ); }
+
+# Path: base_dir/YYYY/MM/DD/HHMMSS_taskname.md, with taskname sanitized
+P=$(run_path "work-log" "2026-07-04T15:30:12+0900" "my task/name")
+[[ "$P" == "work-log/2026/07/04/153012_my-task-name.md" ]] \
+    && pass "log path built correctly" || fail "wrong log path: $P"
+
+# Markdown: contains title / summary text / cost, secrets masked
+REC='{"tab":"demo-task","session":"s1","completed_at":"2026-07-04T15:30:12+0900","message":"leaked ghp_abcdefghijklmnopqrstuvwxyz0123456789","summary":{"model":"claude-opus-4-6","total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42,"tools_used":["Edit","Bash"]},"markers":{"merged":true,"slack":false,"doc":true}}'
+MD=$(run_md "$REC" "- 要約テスト行")
+echo "$MD" | grep -q "demo-task"     && pass "markdown has task title" || fail "no title: $MD"
+echo "$MD" | grep -q "要約テスト行"   && pass "markdown has conversation summary" || fail "no summary: $MD"
+echo "$MD" | grep -q "0.42"          && pass "markdown has cost" || fail "no cost: $MD"
+! echo "$MD" | grep -q "ghp_abcdef"  && pass "markdown masks secret in message" || fail "secret leaked: $MD"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
