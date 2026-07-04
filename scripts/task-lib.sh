@@ -71,6 +71,12 @@ create_task() {
     else
         zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude
     fi
+    # Report tab-creation success to the caller (restore relies on this).
+    # Bail out before building panes if the tab itself could not be created.
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        return "$rc"
+    fi
     sleep 0.3
 
     zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
@@ -80,5 +86,7 @@ create_task() {
     done
     zellij action focus-previous-pane
 
+    # Layout is cosmetic; its status must not mask tab-creation success.
     apply_layout "$dir" "$type"
+    return 0
 }

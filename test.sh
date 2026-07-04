@@ -818,34 +818,45 @@ RESTORE_DAILY_FILE="$RESTORE_DAILY_DIR/$RESTORE_TODAY.jsonl"
 RESTORE_AT="${RESTORE_TODAY}T10:00:00+0900"
 OLD_AT="${RESTORE_TODAY}T09:00:00+0900"
 STALE_AT="${RESTORE_TODAY}T08:00:00+0900"
+GONE_AT="${RESTORE_TODAY}T07:00:00+0900"
+NT_AT="${RESTORE_TODAY}T06:00:00+0900"
+
+# Working directories that still exist (restore requires the dir to be present)
+PROJ_DIR="$SANDBOX/proj"
+PROJ2_DIR="$SANDBOX/proj2"
+mkdir -p "$PROJ_DIR" "$PROJ2_DIR"
 
 # A transcript file that still exists (session resumable)
 RESTORE_TRANSCRIPT="$SANDBOX/restore-transcript.jsonl"
 echo '{}' > "$RESTORE_TRANSCRIPT"
 
 # Entries:
-#  - restore-me : dir/task_type + resumable session (transcript exists)  -> claude --resume
-#  - legacy-task: no dir                                                  -> not restorable (exit 2)
-#  - stale-task : dir/task_type + session id but transcript is gone       -> fresh claude
+#  - restore-me : dir + resumable session (transcript exists)     -> claude --resume
+#  - legacy-task: no dir                                          -> not restorable (exit 2)
+#  - stale-task : dir + session id but transcript is gone         -> fresh claude
+#  - gone-task  : dir no longer exists on disk                    -> not restorable (exit 3)
+#  - notrans    : dir + session id but no transcript_path field   -> fresh claude
 cat > "$RESTORE_DAILY_FILE" << JSONL
-{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj","task_type":"dev","claude_session_id":"sess-restore","transcript_path":"$RESTORE_TRANSCRIPT"}
+{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ_DIR","task_type":"dev","claude_session_id":"sess-restore","transcript_path":"$RESTORE_TRANSCRIPT"}
 {"tab":"legacy-task","session":"$RESTORE_SESSION","completed_at":"$OLD_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false}}
-{"tab":"stale-task","session":"$RESTORE_SESSION","completed_at":"$STALE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj2","task_type":"dev","claude_session_id":"sess-stale","transcript_path":"$SANDBOX/gone.jsonl"}
+{"tab":"stale-task","session":"$RESTORE_SESSION","completed_at":"$STALE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ2_DIR","task_type":"dev","claude_session_id":"sess-stale","transcript_path":"$SANDBOX/gone.jsonl"}
+{"tab":"gone-task","session":"$RESTORE_SESSION","completed_at":"$GONE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$SANDBOX/removed","task_type":"dev","claude_session_id":"sess-gone","transcript_path":"$RESTORE_TRANSCRIPT"}
+{"tab":"notrans","session":"$RESTORE_SESSION","completed_at":"$NT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ2_DIR","task_type":"dev","claude_session_id":"sess-notrans"}
 JSONL
 
-# Restore the entry that has dir/task_type and a resumable session
+# Restore the entry that has dir and a resumable session
 : > "$HOME/.claude-pending/zellij-calls.log"
 RESTORE_RC=0
 ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "restore-me" "$RESTORE_SESSION" "$RESTORE_AT" || RESTORE_RC=$?
 [[ $RESTORE_RC -eq 0 ]] && pass "restore-task.sh exits 0 on restorable entry" || fail "restore-task.sh exit wrong: $RESTORE_RC"
 
-grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude --resume sess-restore' "$HOME/.claude-pending/zellij-calls.log" \
+grep -q "action new-tab -n restore-me --cwd $PROJ_DIR -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude --resume sess-restore" "$HOME/.claude-pending/zellij-calls.log" \
   && pass "restore recreates tab and resumes session" || fail "restore did not resume session correctly"
 
 RESTORED_FLAG=$(jq -r 'select(.tab=="restore-me") | .restored' "$RESTORE_DAILY_FILE")
 [[ "$RESTORED_FLAG" == "true" ]] && pass "restored entry marked restored:true" || fail "restored flag wrong: $RESTORED_FLAG"
 
-# The other entry must stay untouched
+# The other entries must stay untouched
 LEGACY_FLAG=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
 [[ "$LEGACY_FLAG" == "absent" ]] && pass "unrelated entry untouched" || fail "unrelated entry changed: $LEGACY_FLAG"
 
@@ -863,8 +874,25 @@ LEGACY_FLAG2=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RES
 STALE_RC=0
 ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "stale-task" "$RESTORE_SESSION" "$STALE_AT" || STALE_RC=$?
 [[ $STALE_RC -eq 0 ]] && pass "stale-session entry still restores" || fail "stale restore exit wrong: $STALE_RC"
-grep -q 'action new-tab -n stale-task --cwd /tmp/proj2 -- env TASK_TAB_NAME=stale-task TASK_TYPE=dev claude$' "$HOME/.claude-pending/zellij-calls.log" \
+grep -q "action new-tab -n stale-task --cwd $PROJ2_DIR -- env TASK_TAB_NAME=stale-task TASK_TYPE=dev claude\$" "$HOME/.claude-pending/zellij-calls.log" \
   && pass "stale session falls back to fresh claude (no --resume)" || fail "stale session did not fall back correctly"
+
+# Session id but no transcript_path recorded: falls back to a fresh claude
+: > "$HOME/.claude-pending/zellij-calls.log"
+NT_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "notrans" "$RESTORE_SESSION" "$NT_AT" || NT_RC=$?
+[[ $NT_RC -eq 0 ]] && pass "no-transcript entry still restores" || fail "no-transcript exit wrong: $NT_RC"
+grep -q "action new-tab -n notrans --cwd $PROJ2_DIR -- env TASK_TAB_NAME=notrans TASK_TYPE=dev claude\$" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "no-transcript entry starts a fresh claude (no --resume)" || fail "no-transcript did not fall back correctly"
+
+# Recorded dir no longer exists: not restorable, entry left in Done
+: > "$HOME/.claude-pending/zellij-calls.log"
+GONE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "gone-task" "$RESTORE_SESSION" "$GONE_AT" || GONE_RC=$?
+[[ $GONE_RC -eq 3 ]] && pass "restore-task.sh exits 3 when dir is gone" || fail "gone-dir exit wrong: $GONE_RC"
+[[ ! -s "$HOME/.claude-pending/zellij-calls.log" ]] && pass "no tab created for gone-dir entry" || fail "tab wrongly created for gone-dir entry"
+GONE_FLAG=$(jq -r 'select(.tab=="gone-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$GONE_FLAG" == "absent" ]] && pass "gone-dir entry left in Done (not marked)" || fail "gone-dir entry wrongly marked: $GONE_FLAG"
 
 # ============================================================
 section "26f. done-loop.sh (r+number triggers restore)"
@@ -875,11 +903,13 @@ rm -rf "$HOME/.claude-conductor/daily"
 INT_SESSION="int-restore"
 INT_DIR="$HOME/.claude-conductor/daily/$INT_SESSION"
 mkdir -p "$INT_DIR"
+INT_PROJ="$SANDBOX/intproj"
+mkdir -p "$INT_PROJ"
 INT_TODAY=$(date '+%Y-%m-%d')
 INT_FILE="$INT_DIR/$INT_TODAY.jsonl"
 INT_AT="${INT_TODAY}T10:00:00+0900"
 cat > "$INT_FILE" << JSONL
-{"tab":"int-task","session":"$INT_SESSION","completed_at":"$INT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/intproj","task_type":"dev"}
+{"tab":"int-task","session":"$INT_SESSION","completed_at":"$INT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$INT_PROJ","task_type":"dev"}
 JSONL
 
 # Drive the interactive loop: feed 'r' then '1', keep stdin open briefly, then kill it.
@@ -890,11 +920,39 @@ sleep 2
 kill "$DL_PID" 2>/dev/null || true
 wait "$DL_PID" 2>/dev/null || true
 
-grep -q 'action new-tab -n int-task --cwd /tmp/intproj -- env TASK_TAB_NAME=int-task TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
+grep -q "action new-tab -n int-task --cwd $INT_PROJ -- env TASK_TAB_NAME=int-task TASK_TYPE=dev claude" "$HOME/.claude-pending/zellij-calls.log" \
   && pass "done-loop r+num recreates the tab" || fail "done-loop r+num did not recreate tab"
 
 INT_FLAG=$(jq -r 'select(.tab=="int-task") | .restored' "$INT_FILE")
 [[ "$INT_FLAG" == "true" ]] && pass "done-loop r+num marks entry restored" || fail "done-loop restored flag wrong: $INT_FLAG"
+
+# ============================================================
+section "26g. restore-task.sh (duplicate tab+completed_at marks only one)"
+# ============================================================
+
+# Two entries sharing the same tab AND completed_at: restoring must flip exactly
+# one of them, leaving the sibling available in the Done pane.
+DUP_SESSION="dup-sess"
+DUP_DIR_DAILY="$HOME/.claude-conductor/daily/$DUP_SESSION"
+mkdir -p "$DUP_DIR_DAILY"
+DUP_TODAY=$(date '+%Y-%m-%d')
+DUP_FILE="$DUP_DIR_DAILY/$DUP_TODAY.jsonl"
+DUP_AT="${DUP_TODAY}T12:00:00+0900"
+DUP_PROJ="$SANDBOX/dupproj"
+mkdir -p "$DUP_PROJ"
+cat > "$DUP_FILE" << JSONL
+{"tab":"dup-task","session":"$DUP_SESSION","completed_at":"$DUP_AT","message":"first","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$DUP_PROJ","task_type":"dev"}
+{"tab":"dup-task","session":"$DUP_SESSION","completed_at":"$DUP_AT","message":"second","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$DUP_PROJ","task_type":"dev"}
+JSONL
+
+DUP_RC=0
+ZELLIJ_SESSION_NAME="$DUP_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "dup-task" "$DUP_SESSION" "$DUP_AT" || DUP_RC=$?
+[[ $DUP_RC -eq 0 ]] && pass "duplicate restore exits 0" || fail "duplicate restore exit wrong: $DUP_RC"
+
+DUP_RESTORED=$(jq -s '[.[] | select(.restored == true)] | length' "$DUP_FILE")
+[[ "$DUP_RESTORED" == "1" ]] && pass "exactly one duplicate marked restored" || fail "wrong restored count: $DUP_RESTORED"
+DUP_REMAIN=$(jq -s '[.[] | select((.restored // false) != true)] | length' "$DUP_FILE")
+[[ "$DUP_REMAIN" == "1" ]] && pass "sibling entry still available in Done" || fail "sibling count wrong: $DUP_REMAIN"
 
 # ============================================================
 section "26. fetch-news.sh (successful fetch)"

@@ -8,6 +8,8 @@
 #   0  restored (tab recreated, daily entry marked)
 #   1  invalid arguments / entry not found
 #   2  entry has no recorded dir (older entry, cannot recreate the tab)
+#   3  recorded dir no longer exists (e.g. the worktree was removed)
+#   4  tab recreation failed (entry left in Done for retry)
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
@@ -49,20 +51,33 @@ if [ -z "$DIR" ]; then
     exit 2
 fi
 
-# Resume the previous conversation when its session is still available.
-# Fall back to a fresh session if the id is unknown or its transcript is gone.
+# The working directory may have been removed since completion (e.g. a closed
+# worktree). Don't mark the task restored when there is nowhere to recreate it.
+if [ ! -d "$DIR" ]; then
+    exit 3
+fi
+
+# Resume the previous conversation only when its transcript is still on disk.
+# An unknown or missing transcript means a fresh session (no broken --resume).
 RESUME_ID=""
-if [ -n "$CLAUDE_SESSION_ID" ]; then
-    if [ -z "$TRANSCRIPT_PATH" ] || [ -f "$TRANSCRIPT_PATH" ]; then
-        RESUME_ID="$CLAUDE_SESSION_ID"
-    fi
+if [ -n "$CLAUDE_SESSION_ID" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    RESUME_ID="$CLAUDE_SESSION_ID"
 fi
 
 # Recreate the tab. A missing task_type falls back to no special layout.
-create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID"
+# Only mark the entry restored if the tab was actually created, otherwise the
+# task would vanish from the Done pane with no working tab to show for it.
+if ! create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID"; then
+    exit 4
+fi
 
 # Mark the entry restored (temp file + move, per repo convention).
+# Flip only the first not-yet-restored match — (tab, completed_at) is not a
+# unique key, and only one tab was recreated above.
 TMP=$(mktemp)
-jq -c --arg t "$TAB" --arg c "$COMPLETED_AT" \
-    'if (.tab == $t and .completed_at == $c) then .restored = true else . end' \
+trap 'rm -f "$TMP"' EXIT
+jq -s -c --arg t "$TAB" --arg c "$COMPLETED_AT" \
+    '(map(.tab == $t and .completed_at == $c and (.restored // false) != true) | index(true)) as $i
+     | if $i == null then . else (.[$i] += {restored: true}) end
+     | .[]' \
     "$DAILY_FILE" > "$TMP" && mv "$TMP" "$DAILY_FILE"

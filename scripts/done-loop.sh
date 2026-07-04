@@ -12,7 +12,7 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-DAILY_BASE="$HOME/.claude-conductor/daily"
+DAILY_BASE="$CONDUCTOR_HOME/daily"
 
 TMPFILE=$(mktemp)
 printf '\033[?25l'

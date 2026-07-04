@@ -88,7 +88,7 @@ The Done pane lists today's completed tasks. Restore one back to the dashboard t
 |-----|--------|
 | `r` + `1`–`9` | Restore a Done task (recreates its Claude Code tab) |
 
-A restored task is recreated in its original directory and task type, resuming its previous Claude Code conversation (`claude --resume`) when the session is still available — otherwise a fresh session starts. Its daily-log entry is marked `restored` so it no longer appears in the Done pane.
+A restored task is recreated in its original directory and task type, resuming its previous Claude Code conversation (`claude --resume`) when the session is still available — otherwise a fresh session starts. Once the tab is recreated, its daily-log entry is marked `restored` so it no longer appears in the Done pane. If the original directory no longer exists (e.g. the worktree was removed), the task stays in the Done pane instead of being lost.
 
 ## How it works
 
