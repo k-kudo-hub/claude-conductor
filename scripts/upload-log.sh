@@ -14,10 +14,8 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
-# Note: lib.sh (load_config / find_pending_file) is sourced later in main, only
-# once we know the upload is actually enabled — a missing lib.sh must not block
-# tab deletion for users who never enabled uploading. The helpers below are
-# self-contained and need no lib.
+# This script is self-contained (no external lib): the helpers below define
+# everything the upload flow needs.
 
 # ------------------------------------------------------------------
 # Helper functions (unit-tested by test.sh via UPLOAD_LOG_LIB=1)
@@ -235,9 +233,7 @@ SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 DAILY_DIR="$CONDUCTOR_HOME/daily/$SESSION_NAME"
 
-# Resolve the config path inline (config.json > config.default.json) so the
-# enabled/repo gate below never depends on lib.sh — a missing lib must not block
-# dd for users who never enabled uploading.
+# Resolve the config path (config.json > config.default.json).
 CONFIG_FILE="$CONDUCTOR_HOME/config.json"
 [ -f "$CONFIG_FILE" ] || CONFIG_FILE="$CONDUCTOR_HOME/config.default.json"
 UPLOAD_ENABLED=$(jq -r '.upload.enabled // false' "$CONFIG_FILE" 2>/dev/null)
@@ -250,19 +246,16 @@ if [ "$UPLOAD_ENABLED" != "true" ] || [ -z "$UPLOAD_REPO" ]; then
     exit 0
 fi
 
-# Upload is enabled: the shared lib is now required. Fail loudly if it is missing
-# rather than silently losing the log.
-LIB="$CONDUCTOR_HOME/scripts/lib.sh"
-if [ ! -f "$LIB" ]; then
-    echo "upload-log: missing $LIB" >&2
-    exit 1
-fi
-# shellcheck source=lib.sh
-. "$LIB"
-
 # Locate the pending file for this tab to get its transcript path.
 # No pending file -> nothing to upload (not an error).
-PENDING_FILE=$(find_pending_file "$PENDING_DIR" "$TAB_NAME") || exit 0
+PENDING_FILE=""
+for f in "$PENDING_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(jq -r '.tab' "$f" 2>/dev/null)" = "$TAB_NAME" ] || continue
+    PENDING_FILE="$f"
+    break
+done
+[ -n "$PENDING_FILE" ] || exit 0
 TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$PENDING_FILE" 2>/dev/null)
 
 # Use the summary record for this tab. record-output.sh normally wrote it to

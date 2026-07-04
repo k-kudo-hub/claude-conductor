@@ -2,6 +2,7 @@
 # Claude Conductor - Interactive Dashboard (Current Tasks)
 # Pending tasks are displayed in Zellij tab order.
 # Number keys to jump, d+number to delete.
+# Waiting tasks are excluded here and shown in the Waiting pane instead.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
@@ -15,58 +16,74 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+tabs=()
+count=0
+
+render() {
+    tabs=()
+    local i=1
+
+    # Display pending items sorted by Zellij tab position
+    local tab_order
+    tab_order=$(zellij action list-tabs 2>/dev/null | tail -n +2 | awk '{print $3}')
+
+    echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
+    echo -e "${DIM}  ──────────────────────────${NC}"
+    echo ""
+
+    local tab_name f ftab msg time event
+    for tab_name in $tab_order; do
+        for f in "$PENDING_DIR"/*.json; do
+            [[ -f "$f" ]] || continue
+            ftab=$(jq -r '.tab' "$f" 2>/dev/null)
+            [[ "$ftab" == "$tab_name" ]] || continue
+
+            event=$(jq -r '.event' "$f" 2>/dev/null)
+            # Waiting tasks belong to the Waiting pane, skip them here
+            [[ "$event" == "Waiting" ]] && continue
+
+            msg=$(jq -r '.message' "$f" 2>/dev/null | head -c 60)
+            time=$(jq -r '.time' "$f" 2>/dev/null)
+
+            if [[ "$event" == "Stop" ]]; then
+                echo -e "  ${YELLOW}[$i]${NC} ${GREEN}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC} done"
+            else
+                echo -e "  ${YELLOW}[$i]${NC} ${RED}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC}"
+            fi
+            echo -e "      $msg"
+            echo ""
+
+            tabs+=("$ftab")
+            i=$((i + 1))
+        done
+    done
+
+    count=${#tabs[@]}
+
+    if [[ $count -eq 0 ]]; then
+        echo -e "  ${GREEN}All tasks running${NC}"
+        echo ""
+        echo -e "${DIM}  ──────────────────────────${NC}"
+    else
+        echo -e "${DIM}  ──────────────────────────${NC}"
+        echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
+        echo -e "${DIM}  ──────────────────────────${NC}"
+    fi
+}
+
+# Single-pass mode for testing
+if [[ "$CONDUCTOR_DASHBOARD_ONCE" == "1" ]]; then
+    render
+    exit 0
+fi
+
 TMPFILE=$(mktemp)
 printf '\033[?25l'
 trap 'printf "\033[?25h"; rm -f "$TMPFILE"' EXIT
 clear
 
 while true; do
-    tabs=()
-    i=1
-
-    # Display pending items sorted by Zellij tab position
-    tab_order=$(zellij action list-tabs 2>/dev/null | tail -n +2 | awk '{print $3}')
-
-    {
-        echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
-        echo -e "${DIM}  ──────────────────────────${NC}"
-        echo ""
-
-        for tab_name in $tab_order; do
-            for f in "$PENDING_DIR"/*.json; do
-                [[ -f "$f" ]] || continue
-                ftab=$(jq -r '.tab' "$f" 2>/dev/null)
-                [[ "$ftab" == "$tab_name" ]] || continue
-
-                msg=$(jq -r '.message' "$f" 2>/dev/null | head -c 60)
-                time=$(jq -r '.time' "$f" 2>/dev/null)
-                event=$(jq -r '.event' "$f" 2>/dev/null)
-
-                if [[ "$event" == "Stop" ]]; then
-                    echo -e "  ${YELLOW}[$i]${NC} ${GREEN}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC} done"
-                else
-                    echo -e "  ${YELLOW}[$i]${NC} ${RED}■${NC} ${BOLD}$ftab${NC} ${DIM}[$time]${NC}"
-                fi
-                echo -e "      $msg"
-                echo ""
-
-                tabs+=("$ftab")
-                i=$((i + 1))
-            done
-        done
-
-        count=${#tabs[@]}
-
-        if [[ $count -eq 0 ]]; then
-            echo -e "  ${GREEN}All tasks running${NC}"
-            echo ""
-            echo -e "${DIM}  ──────────────────────────${NC}"
-        else
-            echo -e "${DIM}  ──────────────────────────${NC}"
-            echo -e "  ${BOLD}Pending: ${count}${NC}  ${DIM}[num]: jump / d+[num]: delete${NC}"
-            echo -e "${DIM}  ──────────────────────────${NC}"
-        fi
-    } > "$TMPFILE"
+    render > "$TMPFILE"
 
     printf '\033[H'
     cat "$TMPFILE"

@@ -22,12 +22,16 @@ MESSAGE=$(echo "$STDIN_DATA" | jq -r '.message // "Needs attention"' 2>/dev/null
 HOOK_EVENT=$(echo "$STDIN_DATA" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 TRANSCRIPT_PATH=$(echo "$STDIN_DATA" | jq -r '.transcript_path // empty' 2>/dev/null)
 
+# Working directory and task type, used to restore a Done task back to the dashboard.
+DIR=$(echo "$STDIN_DATA" | jq -r '.cwd // empty' 2>/dev/null)
+TASK_TYPE="${TASK_TYPE:-}"
+
 PENDING_FILE="$PENDING_DIR/${CLAUDE_SESSION_ID}.json"
 
-# Don't overwrite a Notification pending with a Stop event
+# Don't overwrite a Notification or Waiting pending with a Stop event
 if [ -f "$PENDING_FILE" ] && [ "$HOOK_EVENT" = "Stop" ]; then
     EXISTING_EVENT=$(jq -r '.event' "$PENDING_FILE" 2>/dev/null)
-    if [ "$EXISTING_EVENT" = "Notification" ]; then
+    if [ "$EXISTING_EVENT" = "Notification" ] || [ "$EXISTING_EVENT" = "Waiting" ]; then
         exit 0
     fi
 fi
@@ -40,6 +44,10 @@ jq -n \
     --arg event "$HOOK_EVENT" \
     --arg time "$(date '+%H:%M:%S')" \
     --arg transcript_path "$TRANSCRIPT_PATH" \
+    --arg dir "$DIR" \
+    --arg task_type "$TASK_TYPE" \
     '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time}
-     + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' \
+     + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+     + (if $dir != "" then {dir: $dir} else {} end)
+     + (if $task_type != "" then {task_type: $task_type} else {} end)' \
     > "$PENDING_FILE"
