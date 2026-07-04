@@ -14,14 +14,8 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
-# load_config: echo the effective config file path (config.json > config.default.json)
-load_config() {
-    local config_file="$CONDUCTOR_HOME/config.json"
-    if [ ! -f "$config_file" ]; then
-        config_file="$CONDUCTOR_HOME/config.default.json"
-    fi
-    echo "$config_file"
-}
+# shellcheck source=lib.sh
+. "$CONDUCTOR_HOME/scripts/lib.sh"
 
 # ------------------------------------------------------------------
 # Helper functions (filled in by later tasks)
@@ -240,20 +234,9 @@ if [ "$UPLOAD_ENABLED" != "true" ] || [ -z "$UPLOAD_REPO" ]; then
 fi
 
 # Locate the pending file for this tab to get its transcript path.
-TRANSCRIPT_PATH=""
-FOUND=false
-for f in "$PENDING_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    [ "$(jq -r '.tab' "$f" 2>/dev/null)" = "$TAB_NAME" ] || continue
-    TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
-    FOUND=true
-    break
-done
-
 # No pending file -> nothing to upload (not an error).
-if [ "$FOUND" != "true" ]; then
-    exit 0
-fi
+PENDING_FILE=$(find_pending_file "$PENDING_DIR" "$TAB_NAME") || exit 0
+TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$PENDING_FILE" 2>/dev/null)
 
 # Use the summary record for this tab. record-output.sh normally wrote it to
 # today's file just before this runs, but scan every daily file (they are named

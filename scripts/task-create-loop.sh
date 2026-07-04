@@ -5,6 +5,9 @@
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 
+# shellcheck source=lib.sh
+. "$CONDUCTOR_HOME/scripts/lib.sh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -12,14 +15,6 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
-
-load_config() {
-    local config_file="$CONDUCTOR_HOME/config.json"
-    if [[ ! -f "$config_file" ]]; then
-        config_file="$CONDUCTOR_HOME/config.default.json"
-    fi
-    echo "$config_file"
-}
 
 apply_layout() {
     local dir="$1"

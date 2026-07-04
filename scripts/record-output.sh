@@ -16,6 +16,9 @@ DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 CONFIG_FILE="$CONDUCTOR_HOME/config.json"
 CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
+# shellcheck source=lib.sh
+. "$CONDUCTOR_HOME/scripts/lib.sh"
+
 mkdir -p "$DAILY_DIR"
 
 # Load pricing from config (fallback to config.default.json)
@@ -28,24 +31,9 @@ if [ -z "$PRICING_JSON" ] && [ -f "$CONFIG_DEFAULT" ]; then
 fi
 PRICING_JSON="${PRICING_JSON:-"{}"}"
 
-TRANSCRIPT_PATH=""
-MESSAGE=""
-FOUND=false
-
-for f in "$PENDING_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    ftab=$(jq -r '.tab' "$f" 2>/dev/null)
-    [ "$ftab" = "$TAB_NAME" ] || continue
-
-    TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
-    MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
-    FOUND=true
-    break
-done
-
-if [ "$FOUND" = "false" ]; then
-    exit 0
-fi
+PENDING_FILE=$(find_pending_file "$PENDING_DIR" "$TAB_NAME") || exit 0
+TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$PENDING_FILE" 2>/dev/null)
+MESSAGE=$(jq -r '.message // empty' "$PENDING_FILE" 2>/dev/null)
 
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
