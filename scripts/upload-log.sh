@@ -25,7 +25,7 @@ fi
 . "$LIB"
 
 # ------------------------------------------------------------------
-# Helper functions (filled in by later tasks)
+# Helper functions (unit-tested by test.sh via UPLOAD_LOG_LIB=1)
 # ------------------------------------------------------------------
 
 # filter_secrets: read stdin, mask known secret patterns, write stdout.
