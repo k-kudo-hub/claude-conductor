@@ -57,6 +57,10 @@ cp "$REPO_DIR"/layouts/*.kdl "$CONDUCTOR_HOME/layouts/"
 cp "$REPO_DIR"/init.zsh "$CONDUCTOR_HOME/init.zsh"
 cp "$REPO_DIR"/hooks.json "$CONDUCTOR_HOME/hooks.json"
 
+# バージョンを Git タグから取得して記録（.git が無い/タグ未作成時は v0.0.0）
+VERSION=$(git -C "$REPO_DIR" describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+echo "$VERSION" > "$CONDUCTOR_HOME/VERSION"
+
 # config.default.json は常に最新版で上書き
 cp "$REPO_DIR"/config.default.json "$CONDUCTOR_HOME/config.default.json"
 
