@@ -2,10 +2,12 @@
 # Claude Conductor - AI Tech News Pane
 # Displays AI tech news fetched from TechCrunch.
 # Reads from ~/.claude-conductor/news/YYYY-MM-DD.json
-# Press [1-5] to open article in browser.
+# Press [1-5] to open article in browser, [r] to reload news.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 NEWS_DIR="$CONDUCTOR_HOME/news"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FETCH_SCRIPT="$SCRIPT_DIR/fetch-news.sh"
 
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -21,7 +23,7 @@ render() {
     NEWS_FILE="$NEWS_DIR/$TODAY.json"
 
     if [[ ! -f "$NEWS_FILE" ]]; then
-        echo -e "  ${DIM}No news yet. Run mdev to fetch.${NC}"
+        echo -e "  ${DIM}No news yet. Press [r] to reload.${NC}"
         return
     fi
 
@@ -29,7 +31,7 @@ render() {
     count=$(jq -r '.items | length' "$NEWS_FILE" 2>/dev/null)
 
     if [[ "$count" == "0" ]] || [[ -z "$count" ]]; then
-        echo -e "  ${DIM}No news yet. Run mdev to fetch.${NC}"
+        echo -e "  ${DIM}No news yet. Press [r] to reload.${NC}"
         return
     fi
 
@@ -51,7 +53,18 @@ render() {
     done
 
     echo -e "${DIM}  ──────────────────────${NC}"
-    echo -e "  ${DIM}[1-${count}]: open in browser${NC}"
+    echo -e "  ${DIM}[1-${count}]: open  ·  [r]: reload${NC}"
+}
+
+# Re-fetch today's news (forced) with a loading indicator, then let the loop redraw.
+reload_news() {
+    printf '\033[H'
+    echo -e "${BOLD}  AI Tech News${NC} ${DIM}[$(date '+%Y-%m-%d')]${NC}"
+    echo -e "${DIM}  ──────────────────────${NC}"
+    echo ""
+    echo -e "  ${YELLOW}⟳ Fetching news...${NC}"
+    printf '\033[J'
+    bash "$FETCH_SCRIPT" --force 2>/dev/null
 }
 
 # Single-pass mode for testing
@@ -75,6 +88,11 @@ while true; do
 
     key=""
     read -t 5 -n 1 -s key || true
+
+    if [[ "$key" == "r" ]] || [[ "$key" == "R" ]]; then
+        reload_news
+        continue
+    fi
 
     if [[ "$key" =~ [1-9] ]] && [[ $key -le ${ITEM_COUNT:-0} ]]; then
         TODAY=$(date '+%Y-%m-%d')

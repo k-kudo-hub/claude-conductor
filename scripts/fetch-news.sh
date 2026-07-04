@@ -1,15 +1,21 @@
 #!/bin/bash
 # Claude Conductor - Fetch AI Tech News
 # Fetches AI-related news from TechCrunch AI RSS feed and saves to a daily JSON file.
-# Skips if today's file already exists.
+# Skips if today's file already exists, unless --force is given.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 NEWS_DIR="$CONDUCTOR_HOME/news"
 TODAY=$(date '+%Y-%m-%d')
 NEWS_FILE="$NEWS_DIR/$TODAY.json"
 
-# Skip if today's news already fetched
-if [[ -f "$NEWS_FILE" ]]; then
+# Parse arguments (--force re-fetches even if today's file exists)
+FORCE=0
+if [[ "$1" == "--force" ]]; then
+    FORCE=1
+fi
+
+# Skip if today's news already fetched (unless forced)
+if [[ "$FORCE" -eq 0 ]] && [[ -f "$NEWS_FILE" ]]; then
     exit 0
 fi
 
