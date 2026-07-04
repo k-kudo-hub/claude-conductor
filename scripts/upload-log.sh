@@ -174,10 +174,11 @@ push_log() {
         git clone --quiet --depth 1 "$url" "$cache" 2>/dev/null || return 1
     fi
 
-    # Check out the target branch: base it on origin/$branch if that branch
-    # exists remotely, otherwise create it (bootstraps empty repos / new branches).
-    git -C "$cache" fetch --quiet --depth 1 origin "$branch" 2>/dev/null
-    if git -C "$cache" rev-parse --verify --quiet FETCH_HEAD >/dev/null 2>&1; then
+    # Check out the target branch: base it on origin/$branch only when the fetch
+    # actually succeeded (branch exists remotely). Keying off the fetch exit code
+    # instead of a possibly-stale FETCH_HEAD avoids basing the branch on an old
+    # ref when the fetch fails (network blip / branch removed / config change).
+    if git -C "$cache" fetch --quiet --depth 1 origin "$branch" 2>/dev/null; then
         git -C "$cache" checkout --quiet -B "$branch" FETCH_HEAD 2>/dev/null || return 1
     else
         git -C "$cache" checkout --quiet -B "$branch" 2>/dev/null || return 1

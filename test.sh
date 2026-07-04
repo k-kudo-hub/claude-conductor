@@ -1223,6 +1223,17 @@ else
     fail "push_log failed to create new branch"
 fi
 
+# D) Reusing the same cache to push to yet another new branch must still work
+#    (regression guard for basing the branch off a stale FETCH_HEAD).
+if run_push "$REMOTE" "logs-2027" "work-log/y.md" "content y" >/dev/null 2>&1; then
+    pass "push_log switches branch on a reused cache"
+else
+    fail "push_log failed to switch branch on reused cache"
+fi
+D_VERIFY="$SANDBOX/d-verify"
+git clone -q --branch logs-2027 "$REMOTE" "$D_VERIFY" 2>/dev/null
+[[ -f "$D_VERIFY/work-log/y.md" ]] && pass "reused-cache branch pushed correctly" || fail "reused-cache push missing file"
+
 # ============================================================
 section "31. Uninstall"
 # ============================================================
