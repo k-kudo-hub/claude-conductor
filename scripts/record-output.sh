@@ -32,6 +32,7 @@ TRANSCRIPT_PATH=""
 MESSAGE=""
 DIR=""
 TASK_TYPE=""
+CLAUDE_SESSION_ID=""
 FOUND=false
 
 for f in "$PENDING_DIR"/*.json; do
@@ -43,6 +44,7 @@ for f in "$PENDING_DIR"/*.json; do
     MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
     DIR=$(jq -r '.dir // empty' "$f" 2>/dev/null)
     TASK_TYPE=$(jq -r '.task_type // empty' "$f" 2>/dev/null)
+    CLAUDE_SESSION_ID=$(jq -r '.claude_session_id // empty' "$f" 2>/dev/null)
     FOUND=true
     break
 done
@@ -55,7 +57,7 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary, markers, and cost in a single jq pass
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --argjson pricing "$PRICING_JSON" '. as $all |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --argjson pricing "$PRICING_JSON" '. as $all |
         ([.[] | select(.type == "user")] | length) as $turns |
         [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
         ($tools | length) as $calls |
@@ -110,6 +112,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         }
         + (if $dir != "" then {dir: $dir} else {} end)
         + (if $task_type != "" then {task_type: $task_type} else {} end)
+        + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     if [ -n "$RECORD" ]; then
@@ -122,6 +126,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             --arg message "${MESSAGE:-Parse failed}" \
             --arg dir "$DIR" \
             --arg task_type "$TASK_TYPE" \
+            --arg claude_session_id "$CLAUDE_SESSION_ID" \
+            --arg transcript_path "$TRANSCRIPT_PATH" \
             '{
                 tab: $tab,
                 session: $session,
@@ -131,7 +137,9 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 markers: { merged: false, slack: false, doc: false }
             }
             + (if $dir != "" then {dir: $dir} else {} end)
-            + (if $task_type != "" then {task_type: $task_type} else {} end)' >> "$DAILY_FILE"
+            + (if $task_type != "" then {task_type: $task_type} else {} end)
+            + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' >> "$DAILY_FILE"
     fi
 else
     jq -n -c \
@@ -141,6 +149,8 @@ else
         --arg message "${MESSAGE:-No summary available}" \
         --arg dir "$DIR" \
         --arg task_type "$TASK_TYPE" \
+        --arg claude_session_id "$CLAUDE_SESSION_ID" \
+        --arg transcript_path "$TRANSCRIPT_PATH" \
         '{
             tab: $tab,
             session: $session,
@@ -150,5 +160,7 @@ else
             markers: { merged: false, slack: false, doc: false }
         }
         + (if $dir != "" then {dir: $dir} else {} end)
-        + (if $task_type != "" then {task_type: $task_type} else {} end)' >> "$DAILY_FILE"
+        + (if $task_type != "" then {task_type: $task_type} else {} end)
+        + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' >> "$DAILY_FILE"
 fi

@@ -22,7 +22,7 @@ Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zell
 ## Features
 
 - **Dashboard** — Real-time view of all Claude Code sessions. Jump to a tab by pressing its number. Delete a tab with `d` + number.
-- **Done pane** — Today's completed tasks. Restore one back to the dashboard with `r` + number to keep working on it.
+- **Done pane** — Today's completed tasks. Restore one back to the dashboard with `r` + number, resuming its previous Claude Code conversation, to keep working on it.
 - **Task tabs** — Each task runs Claude Code with a small control bar (`m`: go to Main, `dd`: delete tab).
 - **Auto-routing** — When you respond to Claude, you're automatically returned to the dashboard. Permission approvals also auto-return.
 - **Hooks integration** — Notification, Stop, PostToolUse, and UserPromptSubmit hooks keep the dashboard in sync.
@@ -88,7 +88,7 @@ The Done pane lists today's completed tasks. Restore one back to the dashboard t
 |-----|--------|
 | `r` + `1`–`9` | Restore a Done task (recreates its Claude Code tab) |
 
-A restored task is recreated in its original directory and task type, and its daily-log entry is marked `restored` so it no longer appears in the Done pane.
+A restored task is recreated in its original directory and task type, resuming its previous Claude Code conversation (`claude --resume`) when the session is still available — otherwise a fresh session starts. Its daily-log entry is marked `restored` so it no longer appears in the Done pane.
 
 ## How it works
 

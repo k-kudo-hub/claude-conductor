@@ -394,6 +394,12 @@ section "17b. task-lib.sh create_task passes TASK_TYPE"
 grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "create_task passes TASK_TAB_NAME and TASK_TYPE" || fail "create_task missing TASK_TYPE"
 
+# create_task with a resume id should launch claude --resume <id>
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "resume-me" "sess-xyz" ) >/dev/null 2>&1
+grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume-me TASK_TYPE=dev claude --resume sess-xyz' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task resumes session with claude --resume" || fail "create_task did not pass --resume"
+
 # ============================================================
 section "18. init.zsh loads without errors"
 # ============================================================
@@ -485,6 +491,12 @@ if [[ -f "$DAILY_FILE" ]]; then
 
     TYPE_REC=$(echo "$RECORD" | jq -r '.task_type')
     [[ "$TYPE_REC" == "dev" ]] && pass "task_type carried into daily log" || fail "task_type not carried: $TYPE_REC"
+
+    SID_REC=$(echo "$RECORD" | jq -r '.claude_session_id')
+    [[ "$SID_REC" == "sess-rec" ]] && pass "claude_session_id carried into daily log" || fail "claude_session_id not carried: $SID_REC"
+
+    TP_REC=$(echo "$RECORD" | jq -r '.transcript_path')
+    [[ "$TP_REC" == "$MOCK_TRANSCRIPT" ]] && pass "transcript_path carried into daily log" || fail "transcript_path not carried: $TP_REC"
 fi
 
 # ============================================================
@@ -805,21 +817,30 @@ RESTORE_TODAY=$(date '+%Y-%m-%d')
 RESTORE_DAILY_FILE="$RESTORE_DAILY_DIR/$RESTORE_TODAY.jsonl"
 RESTORE_AT="${RESTORE_TODAY}T10:00:00+0900"
 OLD_AT="${RESTORE_TODAY}T09:00:00+0900"
+STALE_AT="${RESTORE_TODAY}T08:00:00+0900"
 
-# Two entries: one with dir/task_type (restorable), one without dir (legacy, not restorable)
+# A transcript file that still exists (session resumable)
+RESTORE_TRANSCRIPT="$SANDBOX/restore-transcript.jsonl"
+echo '{}' > "$RESTORE_TRANSCRIPT"
+
+# Entries:
+#  - restore-me : dir/task_type + resumable session (transcript exists)  -> claude --resume
+#  - legacy-task: no dir                                                  -> not restorable (exit 2)
+#  - stale-task : dir/task_type + session id but transcript is gone       -> fresh claude
 cat > "$RESTORE_DAILY_FILE" << JSONL
-{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj","task_type":"dev"}
+{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj","task_type":"dev","claude_session_id":"sess-restore","transcript_path":"$RESTORE_TRANSCRIPT"}
 {"tab":"legacy-task","session":"$RESTORE_SESSION","completed_at":"$OLD_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false}}
+{"tab":"stale-task","session":"$RESTORE_SESSION","completed_at":"$STALE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj2","task_type":"dev","claude_session_id":"sess-stale","transcript_path":"$SANDBOX/gone.jsonl"}
 JSONL
 
-# Restore the entry that has dir/task_type
+# Restore the entry that has dir/task_type and a resumable session
 : > "$HOME/.claude-pending/zellij-calls.log"
 RESTORE_RC=0
 ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "restore-me" "$RESTORE_SESSION" "$RESTORE_AT" || RESTORE_RC=$?
 [[ $RESTORE_RC -eq 0 ]] && pass "restore-task.sh exits 0 on restorable entry" || fail "restore-task.sh exit wrong: $RESTORE_RC"
 
-grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "restore recreates tab with dir/type" || fail "restore did not recreate tab correctly"
+grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude --resume sess-restore' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "restore recreates tab and resumes session" || fail "restore did not resume session correctly"
 
 RESTORED_FLAG=$(jq -r 'select(.tab=="restore-me") | .restored' "$RESTORE_DAILY_FILE")
 [[ "$RESTORED_FLAG" == "true" ]] && pass "restored entry marked restored:true" || fail "restored flag wrong: $RESTORED_FLAG"
@@ -836,6 +857,14 @@ ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/res
 [[ ! -s "$HOME/.claude-pending/zellij-calls.log" ]] && pass "no tab created for legacy entry" || fail "tab wrongly created for legacy entry"
 LEGACY_FLAG2=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
 [[ "$LEGACY_FLAG2" == "absent" ]] && pass "legacy entry not marked restored" || fail "legacy entry wrongly marked: $LEGACY_FLAG2"
+
+# Stale session (transcript gone): still restorable, but falls back to a fresh claude
+: > "$HOME/.claude-pending/zellij-calls.log"
+STALE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "stale-task" "$RESTORE_SESSION" "$STALE_AT" || STALE_RC=$?
+[[ $STALE_RC -eq 0 ]] && pass "stale-session entry still restores" || fail "stale restore exit wrong: $STALE_RC"
+grep -q 'action new-tab -n stale-task --cwd /tmp/proj2 -- env TASK_TAB_NAME=stale-task TASK_TYPE=dev claude$' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "stale session falls back to fresh claude (no --resume)" || fail "stale session did not fall back correctly"
 
 # ============================================================
 section "26f. done-loop.sh (r+number triggers restore)"

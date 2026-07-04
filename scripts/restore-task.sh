@@ -1,6 +1,7 @@
 #!/bin/bash
 # Claude Conductor - Restore a Done task back to the dashboard.
-# Recreates the task's tab (claude session) and marks the daily-log entry restored.
+# Recreates the task's tab (resuming the previous Claude session when available)
+# and marks the daily-log entry restored.
 # Usage: restore-task.sh <tab> <session> <completed_at>
 #
 # Exit codes:
@@ -40,14 +41,25 @@ fi
 
 DIR=$(echo "$ENTRY" | jq -r '.dir // empty')
 TASK_TYPE=$(echo "$ENTRY" | jq -r '.task_type // empty')
+CLAUDE_SESSION_ID=$(echo "$ENTRY" | jq -r '.claude_session_id // empty')
+TRANSCRIPT_PATH=$(echo "$ENTRY" | jq -r '.transcript_path // empty')
 
 # Without a working directory the tab cannot be recreated (entry predates dir recording).
 if [ -z "$DIR" ]; then
     exit 2
 fi
 
+# Resume the previous conversation when its session is still available.
+# Fall back to a fresh session if the id is unknown or its transcript is gone.
+RESUME_ID=""
+if [ -n "$CLAUDE_SESSION_ID" ]; then
+    if [ -z "$TRANSCRIPT_PATH" ] || [ -f "$TRANSCRIPT_PATH" ]; then
+        RESUME_ID="$CLAUDE_SESSION_ID"
+    fi
+fi
+
 # Recreate the tab. A missing task_type falls back to no special layout.
-create_task "$DIR" "$TASK_TYPE" "$TAB"
+create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID"
 
 # Mark the entry restored (temp file + move, per repo convention).
 TMP=$(mktemp)

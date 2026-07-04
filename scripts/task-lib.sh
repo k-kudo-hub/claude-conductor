@@ -64,8 +64,13 @@ create_task() {
     local dir="$1"
     local type="$2"
     local name="$3"
+    local resume="$4"   # optional: Claude session id to resume
 
-    zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude
+    if [[ -n "$resume" ]]; then
+        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude --resume "$resume"
+    else
+        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude
+    fi
     sleep 0.3
 
     zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
