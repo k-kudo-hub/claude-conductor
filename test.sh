@@ -30,6 +30,13 @@ mkdir -p "$MOCK_BIN"
 cat > "$MOCK_BIN/zellij" << 'MOCK'
 #!/bin/bash
 echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+# Emit a fake `list-tabs` output when MOCK_TABS is set (3rd column is the tab name)
+if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
+    echo "ID X NAME"
+    for t in $MOCK_TABS; do
+        echo "1 x $t"
+    done
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
@@ -982,7 +989,23 @@ if [[ -n "$NEW_WAIT" ]]; then
 fi
 
 # ============================================================
-section "32. Uninstall"
+section "32. dashboard-loop.sh (excludes Waiting tasks)"
+# ============================================================
+
+DASH_DIR="$HOME/.claude-pending/dash-session"
+mkdir -p "$DASH_DIR"
+echo '{"tab":"active-task","session":"dash-session","message":"needs permission","event":"Notification","time":"10:00:00"}' > "$DASH_DIR/d1.json"
+echo '{"tab":"waiting-task","session":"dash-session","message":"pr review","event":"Waiting","time":"10:01:00"}' > "$DASH_DIR/d2.json"
+
+DASH_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="active-task waiting-task" ZELLIJ_SESSION_NAME=dash-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+
+echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
+echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
+echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
+
+# ============================================================
+section "33. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
