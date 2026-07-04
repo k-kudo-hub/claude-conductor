@@ -1,6 +1,7 @@
 {
   "search_dirs": ["~/projects", "~/works"],
   "search_depth": 1,
+  "skip_task_name_input": false,
   "pricing": {
     "claude-opus-4-7": {
       "input": 5.0,
