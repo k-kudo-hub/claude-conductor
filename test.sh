@@ -769,17 +769,23 @@ cat > "$TEST_DAILY_FILE" << 'JSONL'
 {"tab":"task-a","session":"s1","completed_at":"2026-04-19T10:05:00+0900","message":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":1.85},"markers":{"merged":true,"slack":false,"doc":false}}
 {"tab":"task-b","session":"s1","completed_at":"2026-04-19T11:30:00+0900","message":"done","summary":{"total_turns":10,"total_tool_calls":20,"total_cost_usd":2.67},"markers":{"merged":false,"slack":true,"doc":true}}
 {"tab":"old-task","session":"s1","completed_at":"2026-04-19T09:00:00+0900","message":"done","summary":{"total_turns":5,"total_tool_calls":3},"markers":{"merged":false,"slack":false,"doc":false}}
+{"tab":"restored-task","session":"s1","completed_at":"2026-04-19T08:00:00+0900","message":"done","summary":{"total_turns":2,"total_tool_calls":2,"total_cost_usd":9.99},"markers":{"merged":false,"slack":false,"doc":false},"restored":true}
 JSONL
 
-# Test summary stats
-STATS=$(cat "$TEST_DAILY_FILE" | jq -s '{
+# Test summary stats (restored entries are excluded, as done-loop.sh does)
+STATS=$(cat "$TEST_DAILY_FILE" | jq -s 'map(select((.restored // false) != true)) | {
     count: length,
     cost: ([.[].summary.total_cost_usd // 0] | add)
 }' 2>/dev/null)
 STAT_COUNT=$(echo "$STATS" | jq -r '.count')
 STAT_COST=$(echo "$STATS" | jq -r '.cost')
-[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3" || fail "stats count wrong: $STAT_COUNT"
-[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52" || fail "stats total cost wrong: $STAT_COST"
+[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3 (restored excluded)" || fail "stats count wrong: $STAT_COUNT"
+[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52 (restored excluded)" || fail "stats total cost wrong: $STAT_COST"
+
+# Restored entries must not appear in the displayed list
+LIST_TABS=$(cat "$TEST_DAILY_FILE" | jq -s -r 'map(select((.restored // false) != true)) | sort_by(.completed_at) | .[].tab')
+echo "$LIST_TABS" | grep -q "restored-task" && fail "restored task wrongly listed" || pass "restored task excluded from list"
+echo "$LIST_TABS" | grep -q "task-a" && pass "active task listed" || fail "active task missing from list"
 
 # Test per-task cost formatting
 COST_A=$(head -1 "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
