@@ -88,9 +88,11 @@ mdev-test() {
         echo "mdev-test: session name truncated to '$session' (zellij 24-char limit)" >&2
     fi
 
-    # Command executed inside the new terminal window. Attach to the session if it
-    # already exists (re-run of the same worktree) instead of failing to recreate it.
-    local run_cmd="export CONDUCTOR_HOME='$wt_path'; cd '$wt_path'; bash '$wt_path/scripts/fetch-news.sh'; zellij attach '$session' 2>/dev/null || zellij --new-session-with-layout '$wt_path/layouts/multi.kdl' --session '$session'"
+    # Command executed inside the new terminal window. Delete any existing session
+    # of this name first so a re-run always starts fresh from the worktree's current
+    # layout/scripts (zellij would otherwise error, or `attach` would resurrect the
+    # stale serialized layout). delete-session is a no-op if the session is absent.
+    local run_cmd="export CONDUCTOR_HOME='$wt_path'; cd '$wt_path'; bash '$wt_path/scripts/fetch-news.sh'; zellij delete-session '$session' --force 2>/dev/null; zellij --new-session-with-layout '$wt_path/layouts/multi.kdl' --session '$session'"
 
     # Dry-run mode for testing: print the resolved launch spec and exit
     if [[ -n "$CONDUCTOR_MDEV_TEST_DRYRUN" ]]; then
@@ -100,12 +102,8 @@ mdev-test() {
         return 0
     fi
 
-    if zellij list-sessions -s 2>/dev/null | grep -qx "$session"; then
-        echo "mdev-test: session '$session' already exists; the new window will attach to it." >&2
-        echo "mdev-test:   run 'zellij delete-session $session' first for a fresh start." >&2
-    fi
-
-    echo "Launching isolated test session '$session' from $wt_path"
+    echo "Launching fresh isolated test session '$session' from $wt_path"
+    echo "mdev-test: any existing session named '$session' is replaced." >&2
 
     # Write the launch command to a temp .command script.
     # macOS mktemp rejects a suffix after the X's, so create then rename;
@@ -131,11 +129,9 @@ mdev-test() {
     # if that is blocked (e.g. Automation permission denied).
     case "$TERM_PROGRAM" in
         iTerm.app)
-            osascript \
-                -e 'tell application "iTerm"' \
-                -e '    create window with default profile' \
-                -e "    tell current session of current window to write text \"bash '$launch_script'\"" \
-                -e 'end tell' >/dev/null 2>&1 \
+            # Create the window and run the command in a single statement so a
+            # partial failure can't leave an empty window plus a Terminal fallback.
+            osascript -e "tell application \"iTerm\" to create window with default profile command \"bash '$launch_script'\"" >/dev/null 2>&1 \
                 || open -a Terminal "$launch_script"
             ;;
         *)

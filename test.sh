@@ -1018,8 +1018,10 @@ echo "$OUTPUT" | grep -q "SESSION=test-my-feature" \
   && pass "dry-run derives test-<basename> session name" || fail "wrong session name: $OUTPUT"
 echo "$OUTPUT" | grep -q "$FAKE_WT/layouts/multi.kdl" \
   && pass "dry-run launch command uses worktree layout" || fail "wrong layout in command: $OUTPUT"
-echo "$OUTPUT" | grep -q "zellij attach" \
-  && pass "launch command attaches to existing session (re-run safe)" || fail "no attach fallback in command: $OUTPUT"
+echo "$OUTPUT" | grep -q "zellij delete-session '.*' --force" \
+  && pass "launch command deletes stale session before recreating (re-run fresh)" || fail "no delete-session in command: $OUTPUT"
+echo "$OUTPUT" | grep -q "zellij --new-session-with-layout" \
+  && pass "launch command creates a new session" || fail "no new-session in command: $OUTPUT"
 
 # Distinct long worktrees sharing a name prefix must get distinct session names
 WT_A="$SANDBOX/fake-worktrees/dashboard-redesign-alpha"
