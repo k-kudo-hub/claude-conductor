@@ -991,31 +991,51 @@ echo "$BACKUP_CONFIG" > "$SKIP_CONFIG"
 section "34. task-create-loop.sh name input resolution"
 # ============================================================
 
-# Step 3 の入力解決ロジックを再現する（read -i は bash 3.2 で非対応のため
-# バージョン分岐で必ずデフォルト候補に解決されることを保証する）
-resolve_name() {
-    local default_name="$1"
-    local name
-    if (( BASH_VERSINFO[0] >= 4 )); then
-        read -e -i "$default_name" -r name
-        [[ -z "$name" ]] && name="$default_name"
-    else
-        read -r name
-        [[ -z "$name" ]] && name="$default_name"
-    fi
-    echo "$name"
-}
+# 実コードの resolve_name を直接検証する（テスト用の再実装ではなく本体関数を呼ぶ）
 
-# 空入力（Enterのみ）はデフォルト候補に解決される（bashバージョン非依存）
-RESOLVED_EMPTY=$(resolve_name "myapp-dev" <<< "")
+# 空入力（Enterのみ）はデフォルト候補に解決される
+RESOLVED_EMPTY=$(resolve_name "myapp-dev" "")
 [[ "$RESOLVED_EMPTY" == "myapp-dev" ]] && pass "empty input resolves to default name" || fail "empty input wrong: $RESOLVED_EMPTY"
 
 # 空入力がタイムスタンプ名（type-HHMMSS）にならない（リグレッション防止）
 [[ ! "$RESOLVED_EMPTY" =~ ^dev-[0-9]{6}$ ]] && pass "empty input does not fall back to timestamp name" || fail "empty input regressed to timestamp: $RESOLVED_EMPTY"
 
 # 手入力は入力値がそのまま採用される
-RESOLVED_TYPED=$(resolve_name "myapp-dev" <<< "custom-name")
+RESOLVED_TYPED=$(resolve_name "myapp-dev" "custom-name")
 [[ "$RESOLVED_TYPED" == "custom-name" ]] && pass "typed input overrides default" || fail "typed input wrong: $RESOLVED_TYPED"
+
+# ============================================================
+section "35. task-create-loop.sh unique tab name"
+# ============================================================
+
+# 既存タブ名を返すよう zellij をシャドウしてテストする
+zellij() {
+    if [[ "$1" == "action" && "$2" == "query-tab-names" ]]; then
+        printf '%s\n' "Main" "myapp-dev" "myapp-dev-2"
+        return 0
+    fi
+    return 0
+}
+
+# 重複しない名前はそのまま返る
+UNIQ_NEW=$(ensure_unique_tab_name "other-dev")
+[[ "$UNIQ_NEW" == "other-dev" ]] && pass "non-colliding name returned as-is" || fail "non-colliding wrong: $UNIQ_NEW"
+
+# 既存名と重複する場合は空いている連番まで進む（-2 も埋まっているので -3）
+UNIQ_DUP=$(ensure_unique_tab_name "myapp-dev")
+[[ "$UNIQ_DUP" == "myapp-dev-3" ]] && pass "colliding name gets next free suffix" || fail "colliding wrong: $UNIQ_DUP"
+
+# 部分一致は重複扱いしない（完全一致のみ）
+UNIQ_PARTIAL=$(ensure_unique_tab_name "myapp")
+[[ "$UNIQ_PARTIAL" == "myapp" ]] && pass "partial match is not treated as collision" || fail "partial match wrong: $UNIQ_PARTIAL"
+
+unset -f zellij
+
+# query-tab-names が失敗する場合は元の名前をそのまま返す
+zellij() { return 1; }
+UNIQ_FAIL=$(ensure_unique_tab_name "myapp-dev")
+[[ "$UNIQ_FAIL" == "myapp-dev" ]] && pass "returns base name when query fails" || fail "query-fail wrong: $UNIQ_FAIL"
+unset -f zellij
 
 # ============================================================
 section "31. Uninstall"

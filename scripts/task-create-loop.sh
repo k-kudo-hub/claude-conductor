@@ -101,6 +101,33 @@ skip_name_input_enabled() {
     [[ "$(jq -r '.skip_task_name_input // false' "$config_file" 2>/dev/null)" == "true" ]]
 }
 
+# 入力値を解決する。空ならデフォルト候補を採用する（Step 3 の実処理を関数化しテスト可能にする）
+resolve_name() {
+    local default_name="$1"
+    local input="$2"
+    if [[ -z "$input" ]]; then
+        echo "$default_name"
+    else
+        echo "$input"
+    fi
+}
+
+# 既存タブ名と重複しないよう一意なタブ名を返す。
+# 重複時は -2, -3... を付与する。Zellij外やコマンド失敗時は元の名前をそのまま返す。
+ensure_unique_tab_name() {
+    local base="$1"
+    local existing
+    existing=$(zellij action query-tab-names 2>/dev/null) || { echo "$base"; return; }
+
+    local candidate="$base"
+    local n=2
+    while grep -Fxq "$candidate" <<< "$existing"; do
+        candidate="${base}-${n}"
+        n=$((n + 1))
+    done
+    echo "$candidate"
+}
+
 main_loop() {
 while true; do
     clear
@@ -147,14 +174,17 @@ while true; do
                 name="$default_name"
             elif (( BASH_VERSINFO[0] >= 4 )); then
                 # bash 4以降: 初期値を編集可能な状態で提示（read -i は 4.0 以降）
-                read -e -i "$default_name" -r -p "  Task name: " name
-                [[ -z "$name" ]] && name="$default_name"
+                read -e -i "$default_name" -r -p "  Task name: " raw_name
+                name=$(resolve_name "$default_name" "$raw_name")
             else
                 # bash 3.x（macOSデフォルト）: [候補] を提示し Enter で確定、入力で上書き
                 echo -ne "  ${BOLD}Task name ${NC}${DIM}[${default_name}]${NC}: "
-                read -r name
-                [[ -z "$name" ]] && name="$default_name"
+                read -r raw_name
+                name=$(resolve_name "$default_name" "$raw_name")
             fi
+
+            # 既存タブと名前が重複しないよう一意化する（旧: timestampで担保していた一意性を維持）
+            name=$(ensure_unique_tab_name "$name")
 
             # タスク作成
             echo -e "  ${GREEN}Creating ${type} task '${name}' in ${dir}...${NC}"
