@@ -110,7 +110,7 @@ section "3. pending-notify.sh (Notification event)"
 PENDING_DIR="$HOME/.claude-pending/test-session"
 
 echo '{"session_id":"sess-aaa","message":"Permission needed","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
-  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature TASK_TYPE=dev \
     bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
 
 [[ -f "$PENDING_DIR/sess-aaa.json" ]] && pass "pending file created" || fail "pending file not created"
@@ -120,6 +120,12 @@ TAB=$(jq -r '.tab' "$PENDING_DIR/sess-aaa.json")
 
 EVENT=$(jq -r '.event' "$PENDING_DIR/sess-aaa.json")
 [[ "$EVENT" == "Notification" ]] && pass "event is Notification" || fail "event wrong: $EVENT"
+
+DIR=$(jq -r '.dir' "$PENDING_DIR/sess-aaa.json")
+[[ "$DIR" == "/tmp/myapp" ]] && pass "dir recorded from cwd" || fail "dir wrong: $DIR"
+
+PTYPE=$(jq -r '.task_type' "$PENDING_DIR/sess-aaa.json")
+[[ "$PTYPE" == "dev" ]] && pass "task_type recorded from TASK_TYPE" || fail "task_type wrong: $PTYPE"
 
 # ============================================================
 section "4. pending-notify.sh (Stop does not overwrite Notification)"
@@ -447,7 +453,9 @@ cat > "$PENDING_DIR/sess-rec.json" << EOF
   "message": "Task complete",
   "event": "Stop",
   "time": "10:00:05",
-  "transcript_path": "$MOCK_TRANSCRIPT"
+  "transcript_path": "$MOCK_TRANSCRIPT",
+  "dir": "/tmp/myapp",
+  "task_type": "dev"
 }
 EOF
 
@@ -471,6 +479,12 @@ if [[ -f "$DAILY_FILE" ]]; then
 
     DOC=$(echo "$RECORD" | jq -r '.markers.doc')
     [[ "$DOC" == "true" ]] && pass "doc marker detected" || fail "doc marker not detected: $DOC"
+
+    DIR_REC=$(echo "$RECORD" | jq -r '.dir')
+    [[ "$DIR_REC" == "/tmp/myapp" ]] && pass "dir carried into daily log" || fail "dir not carried: $DIR_REC"
+
+    TYPE_REC=$(echo "$RECORD" | jq -r '.task_type')
+    [[ "$TYPE_REC" == "dev" ]] && pass "task_type carried into daily log" || fail "task_type not carried: $TYPE_REC"
 fi
 
 # ============================================================

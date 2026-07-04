@@ -30,6 +30,8 @@ PRICING_JSON="${PRICING_JSON:-"{}"}"
 
 TRANSCRIPT_PATH=""
 MESSAGE=""
+DIR=""
+TASK_TYPE=""
 FOUND=false
 
 for f in "$PENDING_DIR"/*.json; do
@@ -39,6 +41,8 @@ for f in "$PENDING_DIR"/*.json; do
 
     TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
     MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
+    DIR=$(jq -r '.dir // empty' "$f" 2>/dev/null)
+    TASK_TYPE=$(jq -r '.task_type // empty' "$f" 2>/dev/null)
     FOUND=true
     break
 done
@@ -51,7 +55,7 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary, markers, and cost in a single jq pass
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --argjson pricing "$PRICING_JSON" '. as $all |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --argjson pricing "$PRICING_JSON" '. as $all |
         ([.[] | select(.type == "user")] | length) as $turns |
         [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
         ($tools | length) as $calls |
@@ -104,6 +108,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 doc: $has_doc
             }
         }
+        + (if $dir != "" then {dir: $dir} else {} end)
+        + (if $task_type != "" then {task_type: $task_type} else {} end)
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     if [ -n "$RECORD" ]; then
@@ -114,6 +120,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             --arg session "$SESSION_NAME" \
             --arg completed_at "$COMPLETED_AT" \
             --arg message "${MESSAGE:-Parse failed}" \
+            --arg dir "$DIR" \
+            --arg task_type "$TASK_TYPE" \
             '{
                 tab: $tab,
                 session: $session,
@@ -121,7 +129,9 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 message: $message,
                 summary: null,
                 markers: { merged: false, slack: false, doc: false }
-            }' >> "$DAILY_FILE"
+            }
+            + (if $dir != "" then {dir: $dir} else {} end)
+            + (if $task_type != "" then {task_type: $task_type} else {} end)' >> "$DAILY_FILE"
     fi
 else
     jq -n -c \
@@ -129,6 +139,8 @@ else
         --arg session "$SESSION_NAME" \
         --arg completed_at "$COMPLETED_AT" \
         --arg message "${MESSAGE:-No summary available}" \
+        --arg dir "$DIR" \
+        --arg task_type "$TASK_TYPE" \
         '{
             tab: $tab,
             session: $session,
@@ -136,5 +148,7 @@ else
             message: $message,
             summary: null,
             markers: { merged: false, slack: false, doc: false }
-        }' >> "$DAILY_FILE"
+        }
+        + (if $dir != "" then {dir: $dir} else {} end)
+        + (if $task_type != "" then {task_type: $task_type} else {} end)' >> "$DAILY_FILE"
 fi
