@@ -963,9 +963,13 @@ rm -f "$UPLOAD_CONFIG"
 section "33. upload-log.sh filter_secrets (masks known tokens)"
 # ============================================================
 
-# Run filter_secrets from the installed lib against a single line of input
+# Run filter_secrets from the installed lib against a single line of input.
+# These helpers feed bare `X=$(...)` assignments, so force exit 0 to keep a
+# future helper failure from aborting the whole suite under `set -e`
+# (correctness is still checked by the content assertions on the output).
 run_filter() {
     printf '%s' "$1" | ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; filter_secrets )
+    return 0
 }
 
 OUT=$(run_filter "auth key=sk-ant-api03-abcDEF123456789ghijklmnop_qrstuvwxyz")
@@ -1067,8 +1071,9 @@ chmod +x "$MOCK_BIN/claude"
 section "35. upload-log.sh build_log_path / build_markdown"
 # ============================================================
 
-run_path() { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_log_path "$1" "$2" "$3" ); }
-run_md()   { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_markdown "$1" "$2" ); }
+# Force exit 0 (fed into bare X=$(...) assignments under set -e; see run_filter).
+run_path() { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_log_path "$1" "$2" "$3" ); return 0; }
+run_md()   { ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; build_markdown "$1" "$2" ); return 0; }
 
 # Path: base_dir/YYYY/MM/DD/HHMMSS_taskname.md, with taskname sanitized
 P=$(run_path "work-log" "2026-07-04T15:30:12+0900" "my task/name")
@@ -1202,6 +1207,18 @@ run_push() {
     ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; push_log "$1" "$2" "$3" "$4" )
 }
 
+# A self-contained populated repo (seeded 'main') for this section's C/D cases,
+# so it does not depend on state created in section 36.
+POP_REMOTE="$SANDBOX/pop-log.git"
+git init --bare -q "$POP_REMOTE"
+POP_SEED="$SANDBOX/pop-seed"
+git clone -q "$POP_REMOTE" "$POP_SEED" 2>/dev/null
+git -C "$POP_SEED" checkout -q -b main
+echo "# logs" > "$POP_SEED/README.md"
+git -C "$POP_SEED" add .
+git -C "$POP_SEED" -c user.email=s@s -c user.name=s commit -q -m init
+git -C "$POP_SEED" push -q origin main 2>/dev/null
+
 # A) Bootstrap: push to a brand-new EMPTY bare repo (no branch exists yet)
 EMPTY_REMOTE="$SANDBOX/empty-log.git"
 git init --bare -q "$EMPTY_REMOTE"
@@ -1224,7 +1241,7 @@ else
 fi
 
 # C) Branch that does not exist yet on a populated repo is created
-if run_push "$REMOTE" "logs-2026" "work-log/x.md" "content x" >/dev/null 2>&1; then
+if run_push "$POP_REMOTE" "logs-2026" "work-log/x.md" "content x" >/dev/null 2>&1; then
     pass "push_log creates a non-existent branch"
 else
     fail "push_log failed to create new branch"
@@ -1232,13 +1249,13 @@ fi
 
 # D) Reusing the same cache to push to yet another new branch must still work
 #    (regression guard for basing the branch off a stale FETCH_HEAD).
-if run_push "$REMOTE" "logs-2027" "work-log/y.md" "content y" >/dev/null 2>&1; then
+if run_push "$POP_REMOTE" "logs-2027" "work-log/y.md" "content y" >/dev/null 2>&1; then
     pass "push_log switches branch on a reused cache"
 else
     fail "push_log failed to switch branch on reused cache"
 fi
 D_VERIFY="$SANDBOX/d-verify"
-git clone -q --branch logs-2027 "$REMOTE" "$D_VERIFY" 2>/dev/null
+git clone -q --branch logs-2027 "$POP_REMOTE" "$D_VERIFY" 2>/dev/null
 [[ -f "$D_VERIFY/work-log/y.md" ]] && pass "reused-cache branch pushed correctly" || fail "reused-cache push missing file"
 
 # ============================================================
@@ -1247,16 +1264,30 @@ section "39. upload-log.sh uses record from any daily file (cross-day)"
 
 # The summary record lives ONLY in a non-today daily file; upload must still use
 # its real stats and store the log under the record's date (not today's).
+# Self-contained: own transcript, own mock claude, own populated repo ($POP_REMOTE).
 OLD_DAILY="$HOME/.claude-conductor/daily/test-session/2020-01-01.jsonl"
 cat > "$OLD_DAILY" << 'EOF'
 {"tab":"xday-task","session":"test-session","completed_at":"2020-01-01T09:00:00+0900","message":"m","summary":{"model":"claude-opus-4-6","total_turns":7,"total_tool_calls":9,"tools_used":["Bash"],"total_cost_usd":1.23},"markers":{"merged":false,"slack":false,"doc":false}}
 EOF
 
-jq --arg repo "$REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
+XDAY_TRANSCRIPT="$SANDBOX/xday-transcript.jsonl"
+cat > "$XDAY_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"x"},"uuid":"u1","timestamp":"2020-01-01T09:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"y"}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"a1","timestamp":"2020-01-01T09:00:01Z"}
+TRANSCRIPT
+
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- 要約"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+jq --arg repo "$POP_REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
     "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
 
 cat > "$PENDING_DIR/xday.json" << EOF
-{ "tab":"xday-task","session":"test-session","message":"m","event":"Stop","time":"09:00:00","transcript_path":"$E2E_TRANSCRIPT" }
+{ "tab":"xday-task","session":"test-session","message":"m","event":"Stop","time":"09:00:00","transcript_path":"$XDAY_TRANSCRIPT" }
 EOF
 
 # record-output.sh is intentionally NOT run, so today's file has no xday-task record
@@ -1264,7 +1295,7 @@ ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "xday-task" >/dev/null 2>
     && pass "upload succeeds using a cross-day record" || fail "cross-day upload failed"
 
 XV="$SANDBOX/xday-verify"
-git clone -q "$REMOTE" "$XV" 2>/dev/null
+git clone -q "$POP_REMOTE" "$XV" 2>/dev/null
 XLOG=$(find "$XV/work-log" -name '*_xday-task.md' 2>/dev/null | head -1)
 [[ -n "$XLOG" ]] && grep -q "1.23" "$XLOG" \
     && pass "cross-day log carries real stats (cost)" || fail "stats missing/zeroed: $XLOG"
