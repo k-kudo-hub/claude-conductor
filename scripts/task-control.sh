@@ -87,8 +87,11 @@ while true; do
                 # synchronous upload can take seconds, during which the active
                 # tab may have switched (e.g. auto-routing to Main), so
                 # `close-tab` could close the wrong tab. Fall back to close-tab
-                # only if the id lookup fails.
-                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$TAB_NAME" '$3 == name {print $1}')
+                # only if the id lookup fails. The tab name (NAME column) may
+                # contain spaces, so match it as everything past the id/position
+                # columns rather than just $3.
+                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$TAB_NAME" \
+                    'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
                 if [[ -n "$tab_id" ]]; then
                     zellij action close-tab-by-id "$tab_id" 2>/dev/null
                 else

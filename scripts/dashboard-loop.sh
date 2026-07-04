@@ -123,7 +123,10 @@ while true; do
                         rm -f "$f"
                     fi
                 done
-                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" '$3 == name {print $1}')
+                # Match the tab name as everything past the id/position columns,
+                # so names containing spaces still resolve to the right tab id.
+                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
+                    'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
                 if [[ -n "$tab_id" ]]; then
                     zellij action close-tab-by-id "$tab_id" 2>/dev/null
                 fi

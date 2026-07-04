@@ -1900,6 +1900,23 @@ EOF
 : > "$CALLS"
 printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del-id" >/dev/null 2>&1
 grep -q 'close-tab-by-id 7' "$CALLS" && pass "dd closes its own tab by id" || fail "close-tab-by-id not called with correct id: $(cat "$CALLS")"
+
+# A tab name containing spaces must still resolve to the correct tab id.
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n3  1  My Task dev\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+cat > "$PENDING_DIR/my-space.json" << 'EOF'
+{ "tab":"My Task dev","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "My Task dev" >/dev/null 2>&1
+grep -q 'close-tab-by-id 3' "$CALLS" && pass "dd resolves a spaced tab name to its id" || fail "spaced tab name not resolved: $(cat "$CALLS")"
+
 # Restore the plain mock zellij for later sections
 cat > "$MOCK_BIN/zellij" << 'MOCK'
 #!/bin/bash
