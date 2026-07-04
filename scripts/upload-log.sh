@@ -106,11 +106,10 @@ build_log_path() {
 # (secrets stripped from the final output).
 build_markdown() {
     local record="$1" summary_text="$2"
-    local tab session completed_at message model turns calls cost tools merged slack doc
+    local tab session completed_at model turns calls cost tools merged slack doc
     tab=$(printf '%s' "$record" | jq -r '.tab // "unknown"')
     session=$(printf '%s' "$record" | jq -r '.session // "unknown"')
     completed_at=$(printf '%s' "$record" | jq -r '.completed_at // ""')
-    message=$(printf '%s' "$record" | jq -r '.message // ""')
     model=$(printf '%s' "$record" | jq -r '.summary.model // "unknown"')
     turns=$(printf '%s' "$record" | jq -r '.summary.total_turns // 0')
     calls=$(printf '%s' "$record" | jq -r '.summary.total_tool_calls // 0')
@@ -126,10 +125,6 @@ build_markdown() {
 - **Session**: $session
 - **Completed**: $completed_at
 - **Model**: $model
-
-## メッセージ
-
-$message
 
 ## サマリ
 

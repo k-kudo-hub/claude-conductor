@@ -1068,13 +1068,16 @@ P=$(run_path "work-log" "2026-07-04T15:30:12+0900" "my task/name")
 [[ "$P" == "work-log/2026/07/04/153012_my-task-name.md" ]] \
     && pass "log path built correctly" || fail "wrong log path: $P"
 
-# Markdown: contains title / summary text / cost, secrets masked
-REC='{"tab":"demo-task","session":"s1","completed_at":"2026-07-04T15:30:12+0900","message":"leaked ghp_abcdefghijklmnopqrstuvwxyz0123456789","summary":{"model":"claude-opus-4-6","total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42,"tools_used":["Edit","Bash"]},"markers":{"merged":true,"slack":false,"doc":true}}'
-MD=$(run_md "$REC" "- 要約テスト行")
+# Markdown: contains title / summary text / cost; upload is limited to summary +
+# conversation summary (the raw record message must NOT be included), and a
+# secret echoed by the LLM into the summary must be masked.
+REC='{"tab":"demo-task","session":"s1","completed_at":"2026-07-04T15:30:12+0900","message":"RAWMESSAGEMARKER should not appear","summary":{"model":"claude-opus-4-6","total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42,"tools_used":["Edit","Bash"]},"markers":{"merged":true,"slack":false,"doc":true}}'
+MD=$(run_md "$REC" "- 要約テスト行 leaked ghp_abcdefghijklmnopqrstuvwxyz0123456789")
 echo "$MD" | grep -q "demo-task"     && pass "markdown has task title" || fail "no title: $MD"
 echo "$MD" | grep -q "要約テスト行"   && pass "markdown has conversation summary" || fail "no summary: $MD"
 echo "$MD" | grep -q "0.42"          && pass "markdown has cost" || fail "no cost: $MD"
-! echo "$MD" | grep -q "ghp_abcdef"  && pass "markdown masks secret in message" || fail "secret leaked: $MD"
+! echo "$MD" | grep -q "RAWMESSAGEMARKER" && pass "raw record message excluded from upload" || fail "raw message leaked: $MD"
+! echo "$MD" | grep -q "ghp_abcdef"  && pass "markdown masks secret echoed in summary" || fail "secret leaked: $MD"
 
 # ============================================================
 section "36. upload-log.sh (end-to-end push to log repo)"
@@ -1101,17 +1104,25 @@ cat > "$E2E_TRANSCRIPT" << 'TRANSCRIPT'
 {"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","timestamp":"2026-07-04T10:00:01Z"}
 TRANSCRIPT
 
-# Pending message intentionally carries a secret to verify masking end-to-end
+# Pending message uses a marker to verify it is NOT included in the upload
 cat > "$PENDING_DIR/e2e.json" << EOF
 {
   "tab": "upload-e2e",
   "session": "test-session",
-  "message": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  "message": "RAWMESSAGEMARKER should not appear",
   "event": "Stop",
   "time": "10:00:01",
   "transcript_path": "$E2E_TRANSCRIPT"
 }
 EOF
+
+# Mock claude echoes a secret in its summary to verify the final filter masks it
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- 作業を実施。誤って ghp_abcdefghijklmnopqrstuvwxyz0123456789 を含む要約"
+MOCK
+chmod +x "$MOCK_BIN/claude"
 
 ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e"
 ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e" >/dev/null 2>&1 \
@@ -1125,7 +1136,8 @@ LOGFILE=$(find "$VERIFY/work-log" -name '*_upload-e2e.md' 2>/dev/null | head -1)
 if [[ -n "$LOGFILE" ]]; then
     grep -q "upload-e2e" "$LOGFILE" && pass "pushed log has task title" || fail "pushed log missing title"
     grep -q "2026/07/04" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE"
-    ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks secret" || fail "secret leaked in pushed log"
+    ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks LLM-echoed secret" || fail "secret leaked in pushed log"
+    ! grep -q "RAWMESSAGEMARKER" "$LOGFILE" && pass "pushed log excludes raw message" || fail "raw message leaked in pushed log"
 fi
 
 # Failure path: summary generation fails -> upload aborts (non-zero) so dd is cancelled
