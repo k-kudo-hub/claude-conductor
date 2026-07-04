@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Conductor - Task Tab Control Bar
-# m: Go to Main tab / dd: Delete this tab
+# m: Go to Main tab / w: Toggle Waiting / dd: Delete this tab
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 TAB_NAME="${1:-unknown}"
@@ -14,7 +14,7 @@ NC='\033[0m'
 
 while true; do
     clear
-    echo -e "${DIM}  m: Main  |  dd: Delete tab${NC}"
+    echo -e "${DIM}  m: Main  |  w: Waiting  |  dd: Delete tab${NC}"
 
     key=""
     read -n 1 -s key
@@ -22,6 +22,9 @@ while true; do
     case "$key" in
         m)
             zellij action go-to-tab-name "Main" 2>/dev/null
+            ;;
+        w)
+            bash "$CONDUCTOR_HOME/scripts/waiting-toggle.sh" "$TAB_NAME"
             ;;
         d)
             echo -ne "\r${RED}${BOLD}  Press d to confirm delete...${NC}  "

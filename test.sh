@@ -941,7 +941,48 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
-section "31. Uninstall"
+section "31. waiting-toggle.sh (toggles Waiting state)"
+# ============================================================
+
+WAIT_DIR="$HOME/.claude-pending/wait-session"
+mkdir -p "$WAIT_DIR"
+
+# Existing Notification pending -> toggle to Waiting
+echo '{"tab":"pr-review","session":"wait-session","message":"review","event":"Notification","time":"10:00:00"}' > "$WAIT_DIR/sess-w1.json"
+
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "pr-review"
+
+EVENT_W=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
+[[ "$EVENT_W" == "Waiting" ]] && pass "Notification toggled to Waiting" || fail "toggle to Waiting failed: $EVENT_W"
+
+# Toggle again -> back to Notification
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "pr-review"
+
+EVENT_W2=$(jq -r '.event' "$WAIT_DIR/sess-w1.json")
+[[ "$EVENT_W2" == "Notification" ]] && pass "Waiting toggled back to Notification" || fail "toggle back failed: $EVENT_W2"
+
+# No existing pending -> create a new Waiting entry
+ZELLIJ_SESSION_NAME=wait-session \
+  bash "$HOME/.claude-conductor/scripts/waiting-toggle.sh" "fresh-task"
+
+NEW_WAIT=""
+for f in "$WAIT_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "fresh-task" ]]; then
+        NEW_WAIT="$f"
+        break
+    fi
+done
+[[ -n "$NEW_WAIT" ]] && pass "new Waiting entry created when no pending exists" || fail "new Waiting entry not created"
+if [[ -n "$NEW_WAIT" ]]; then
+    EVENT_NEW=$(jq -r '.event' "$NEW_WAIT")
+    [[ "$EVENT_NEW" == "Waiting" ]] && pass "new entry has Waiting event" || fail "new entry event wrong: $EVENT_NEW"
+fi
+
+# ============================================================
+section "32. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
