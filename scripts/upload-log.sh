@@ -28,8 +28,17 @@ load_config() {
 # ------------------------------------------------------------------
 
 # filter_secrets: read stdin, mask known secret patterns, write stdout.
+# Uses ERE (sed -E) patterns that work on both BSD (macOS) and GNU sed.
+# Over-masking is preferred over leaking a credential.
 filter_secrets() {
-    cat
+    sed -E \
+        -e 's/sk-ant-[A-Za-z0-9_-]{10,}/***REDACTED***/g' \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/***REDACTED***/g' \
+        -e 's/gh[posur]_[A-Za-z0-9]{20,}/***REDACTED***/g' \
+        -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED***/g' \
+        -e 's/AKIA[0-9A-Z]{16}/***REDACTED***/g' \
+        -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***REDACTED***/g' \
+        -e 's/([Bb]earer )[A-Za-z0-9._-]{10,}/\1***REDACTED***/g'
 }
 
 # generate_summary <transcript_path>: print a conversation summary, non-zero on failure.

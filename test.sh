@@ -960,6 +960,40 @@ ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "some-tab" \
 rm -f "$UPLOAD_CONFIG"
 
 # ============================================================
+section "33. upload-log.sh filter_secrets (masks known tokens)"
+# ============================================================
+
+# Run filter_secrets from the installed lib against a single line of input
+run_filter() {
+    printf '%s' "$1" | ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; filter_secrets )
+}
+
+OUT=$(run_filter "auth key=sk-ant-api03-abcDEF123456789ghijklmnop_qrstuvwxyz")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "abcDEF123456789" \
+    && pass "anthropic API key masked" || fail "anthropic key not masked: $OUT"
+
+OUT=$(run_filter "token ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "ghp_abcdef" \
+    && pass "github token masked" || fail "github token not masked: $OUT"
+
+OUT=$(run_filter "aws AKIAIOSFODNN7EXAMPLE here")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "AKIAIOSFODNN7EXAMPLE" \
+    && pass "aws access key masked" || fail "aws key not masked: $OUT"
+
+OUT=$(run_filter "slack xoxb-EXAMPLESLACKtokenplaceholder")
+echo "$OUT" | grep -q "REDACTED" && ! echo "$OUT" | grep -q "xoxb-EXAMPLESLACK" \
+    && pass "slack token masked" || fail "slack token not masked: $OUT"
+
+OUT=$(run_filter "Authorization: Bearer aBcDeF1234567890xyzTOKEN")
+echo "$OUT" | grep -q "Bearer ..REDACTED\|Bearer \*" && ! echo "$OUT" | grep -q "aBcDeF1234567890" \
+    && pass "bearer token masked" || fail "bearer token not masked: $OUT"
+
+# Non-secret text must pass through untouched
+OUT=$(run_filter "just a normal log line about task completion")
+[[ "$OUT" == "just a normal log line about task completion" ]] \
+    && pass "normal text unchanged" || fail "normal text altered: $OUT"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 
