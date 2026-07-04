@@ -16,8 +16,13 @@ DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 CONFIG_FILE="$CONDUCTOR_HOME/config.json"
 CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
+LIB="$CONDUCTOR_HOME/scripts/lib.sh"
+if [ ! -f "$LIB" ]; then
+    echo "record-output: missing $LIB" >&2
+    exit 1
+fi
 # shellcheck source=lib.sh
-. "$CONDUCTOR_HOME/scripts/lib.sh"
+. "$LIB"
 
 mkdir -p "$DAILY_DIR"
 

@@ -14,8 +14,15 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
+# Fail loudly if the shared lib is missing rather than silently degrading
+# (a missing lib.sh would leave load_config undefined and skip the upload).
+LIB="$CONDUCTOR_HOME/scripts/lib.sh"
+if [ ! -f "$LIB" ]; then
+    echo "upload-log: missing $LIB" >&2
+    exit 1
+fi
 # shellcheck source=lib.sh
-. "$CONDUCTOR_HOME/scripts/lib.sh"
+. "$LIB"
 
 # ------------------------------------------------------------------
 # Helper functions (filled in by later tasks)

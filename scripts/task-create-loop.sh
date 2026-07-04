@@ -5,8 +5,13 @@
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 
+LIB="$CONDUCTOR_HOME/scripts/lib.sh"
+if [ ! -f "$LIB" ]; then
+    echo "task-create-loop: missing $LIB" >&2
+    exit 1
+fi
 # shellcheck source=lib.sh
-. "$CONDUCTOR_HOME/scripts/lib.sh"
+. "$LIB"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
