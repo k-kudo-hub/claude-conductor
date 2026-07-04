@@ -865,7 +865,21 @@ else
 fi
 
 # ============================================================
-section "28. fetch-news.sh (handles API failure gracefully)"
+section "28. fetch-news.sh (--force re-fetches even if today's file exists)"
+# ============================================================
+
+# File currently has title "CACHED" from previous section
+if [[ -f "$NEWS_FILE" ]]; then
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" --force
+
+    FORCED_TITLE=$(jq -r '.items[0].title' "$NEWS_FILE")
+    [[ "$FORCED_TITLE" == "GPT-5 Released with Major Improvements" ]] && pass "--force re-fetches despite existing file" || fail "--force did not re-fetch: $FORCED_TITLE"
+else
+    fail "news file missing from previous test"
+fi
+
+# ============================================================
+section "29. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 
 # Replace curl mock with one that fails
@@ -926,7 +940,7 @@ bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 [[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
 
 # ============================================================
-section "29. news-loop.sh (displays news from file)"
+section "30. news-loop.sh (displays news from file)"
 # ============================================================
 
 # Create news file for display test
@@ -954,9 +968,10 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
 echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
 echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
+echo "$OUTPUT" | grep -qi "reload" && pass "reload key hint displayed" || fail "reload hint not displayed"
 
 # ============================================================
-section "30. news-loop.sh (handles missing news file)"
+section "31. news-loop.sh (handles missing news file)"
 # ============================================================
 
 rm -f "$NEWS_FILE"
@@ -966,7 +981,7 @@ OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.s
 echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
 
 # ============================================================
-section "31. waiting-toggle.sh (toggles Waiting state)"
+section "32. waiting-toggle.sh (toggles Waiting state)"
 # ============================================================
 
 WAIT_DIR="$HOME/.claude-pending/wait-session"
@@ -1019,7 +1034,7 @@ done
 [[ -z "$FRESH_FOUND" ]] && pass "no entry created when no pending exists" || fail "unexpected entry created: $FRESH_FOUND"
 
 # ============================================================
-section "32. dashboard-loop.sh (excludes Waiting tasks)"
+section "33. dashboard-loop.sh (excludes Waiting tasks)"
 # ============================================================
 
 DASH_DIR="$HOME/.claude-pending/dash-session"
@@ -1035,7 +1050,7 @@ echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly show
 echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
 
 # ============================================================
-section "33. waiting-loop.sh (shows only Waiting tasks)"
+section "34. waiting-loop.sh (shows only Waiting tasks)"
 # ============================================================
 
 WL_DIR="$HOME/.claude-pending/wl-session"
@@ -1058,7 +1073,7 @@ WL_EMPTY_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-empty-session \
 echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
 
 # ============================================================
-section "34. task-control.sh (shows Waiting indicator)"
+section "35. task-control.sh (shows Waiting indicator)"
 # ============================================================
 
 TC_DIR="$HOME/.claude-pending/tc-session"
@@ -1079,7 +1094,7 @@ echo "$TC_OUT2" | grep -q "● WAITING" && pass "WAITING indicator shown when wa
 echo "$TC_OUT2" | grep -q "w: Resume" && pass "bar offers Resume when waiting" || fail "no Resume label: $TC_OUT2"
 
 # ============================================================
-section "35. Uninstall"
+section "36. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
