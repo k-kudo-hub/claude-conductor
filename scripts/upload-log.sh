@@ -102,17 +102,22 @@ build_log_path() {
 build_markdown() {
     local record="$1" summary_text="$2"
     local tab session completed_at model turns calls cost tools merged slack doc
-    tab=$(printf '%s' "$record" | jq -r '.tab // "unknown"')
-    session=$(printf '%s' "$record" | jq -r '.session // "unknown"')
-    completed_at=$(printf '%s' "$record" | jq -r '.completed_at // ""')
-    model=$(printf '%s' "$record" | jq -r '.summary.model // "unknown"')
-    turns=$(printf '%s' "$record" | jq -r '.summary.total_turns // 0')
-    calls=$(printf '%s' "$record" | jq -r '.summary.total_tool_calls // 0')
-    cost=$(printf '%s' "$record" | jq -r '.summary.total_cost_usd // 0')
-    tools=$(printf '%s' "$record" | jq -r '(.summary.tools_used // []) | join(", ")')
-    merged=$(printf '%s' "$record" | jq -r 'if .markers.merged then "✅" else "-" end')
-    slack=$(printf '%s' "$record" | jq -r 'if .markers.slack then "✅" else "-" end')
-    doc=$(printf '%s' "$record" | jq -r 'if .markers.doc then "✅" else "-" end')
+    # Pull every field in a single jq pass (tab-separated) instead of forking jq per field.
+    IFS=$'\t' read -r tab session completed_at model turns calls cost tools merged slack doc < <(
+        printf '%s' "$record" | jq -r '
+            [ (.tab // "unknown"),
+              (.session // "unknown"),
+              (.completed_at // ""),
+              (.summary.model // "unknown"),
+              (.summary.total_turns // 0 | tostring),
+              (.summary.total_tool_calls // 0 | tostring),
+              (.summary.total_cost_usd // 0 | tostring),
+              ((.summary.tools_used // []) | join(", ")),
+              (if .markers.merged then "✅" else "-" end),
+              (if .markers.slack then "✅" else "-" end),
+              (if .markers.doc then "✅" else "-" end)
+            ] | @tsv'
+    )
 
     cat <<EOF | filter_secrets
 # $tab
