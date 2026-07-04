@@ -1242,6 +1242,37 @@ git clone -q --branch logs-2027 "$REMOTE" "$D_VERIFY" 2>/dev/null
 [[ -f "$D_VERIFY/work-log/y.md" ]] && pass "reused-cache branch pushed correctly" || fail "reused-cache push missing file"
 
 # ============================================================
+section "39. upload-log.sh uses record from any daily file (cross-day)"
+# ============================================================
+
+# The summary record lives ONLY in a non-today daily file; upload must still use
+# its real stats and store the log under the record's date (not today's).
+OLD_DAILY="$HOME/.claude-conductor/daily/test-session/2020-01-01.jsonl"
+cat > "$OLD_DAILY" << 'EOF'
+{"tab":"xday-task","session":"test-session","completed_at":"2020-01-01T09:00:00+0900","message":"m","summary":{"model":"claude-opus-4-6","total_turns":7,"total_tool_calls":9,"tools_used":["Bash"],"total_cost_usd":1.23},"markers":{"merged":false,"slack":false,"doc":false}}
+EOF
+
+jq --arg repo "$REMOTE" '.upload.enabled=true | .upload.repo=$repo | .upload.base_dir="work-log" | .upload.branch="main"' \
+    "$HOME/.claude-conductor/config.default.json" > "$UPLOAD_CONFIG"
+
+cat > "$PENDING_DIR/xday.json" << EOF
+{ "tab":"xday-task","session":"test-session","message":"m","event":"Stop","time":"09:00:00","transcript_path":"$E2E_TRANSCRIPT" }
+EOF
+
+# record-output.sh is intentionally NOT run, so today's file has no xday-task record
+ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "xday-task" >/dev/null 2>&1 \
+    && pass "upload succeeds using a cross-day record" || fail "cross-day upload failed"
+
+XV="$SANDBOX/xday-verify"
+git clone -q "$REMOTE" "$XV" 2>/dev/null
+XLOG=$(find "$XV/work-log" -name '*_xday-task.md' 2>/dev/null | head -1)
+[[ -n "$XLOG" ]] && grep -q "1.23" "$XLOG" \
+    && pass "cross-day log carries real stats (cost)" || fail "stats missing/zeroed: $XLOG"
+grep -q "2020/01/01" <<< "$XLOG" \
+    && pass "cross-day log stored under the record's date" || fail "wrong date path: $XLOG"
+rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/xday.json "$OLD_DAILY"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 

@@ -257,14 +257,20 @@ if [ "$FOUND" != "true" ]; then
     exit 0
 fi
 
-# Use the summary record just written by record-output.sh (last matching line).
+# Use the summary record for this tab. record-output.sh normally wrote it to
+# today's file just before this runs, but scan every daily file (they are named
+# YYYY-MM-DD.jsonl, so the glob is chronological) and keep the last match. This
+# finds the record even when completion and deletion fall on different days or
+# the date rolls over between record-output.sh and this script.
 RECORD=""
-if [ -f "$DAILY_FILE" ]; then
-    RECORD=$(jq -c --arg tab "$TAB_NAME" 'select(.tab == $tab)' "$DAILY_FILE" 2>/dev/null | tail -1)
-fi
+for df in "$DAILY_DIR"/*.jsonl; do
+    [ -f "$df" ] || continue
+    r=$(jq -c --arg tab "$TAB_NAME" 'select(.tab == $tab)' "$df" 2>/dev/null | tail -1)
+    [ -n "$r" ] && RECORD="$r"
+done
 if [ -z "$RECORD" ]; then
-    RECORD=$(jq -n --arg tab "$TAB_NAME" --arg session "$SESSION_NAME" --arg msg "$MESSAGE" \
-        '{tab:$tab, session:$session, completed_at:"", message:$msg, summary:null, markers:{}}')
+    RECORD=$(jq -n --arg tab "$TAB_NAME" --arg session "$SESSION_NAME" \
+        '{tab:$tab, session:$session, completed_at:"", summary:null, markers:{}}')
 fi
 
 COMPLETED_AT=$(printf '%s' "$RECORD" | jq -r '.completed_at // empty')
