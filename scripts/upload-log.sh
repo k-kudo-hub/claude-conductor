@@ -22,16 +22,23 @@ CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 # ------------------------------------------------------------------
 
 # filter_secrets: read stdin, mask known secret patterns, write stdout.
-# A first awk pass masks PEM key material line-by-line (the BEGIN/END markers
-# and any standalone long base64 line, i.e. the key body); this is stateless so
-# an unterminated BEGIN marker never swallows the following prose. A second sed
-# pass masks single-line tokens with ERE patterns portable across BSD/GNU sed.
-# No awk interval expressions are used (BSD awk portability). Over-masking is
-# preferred over leaking a credential.
+# A first awk pass masks PEM private key blocks: once BEGIN is seen, every line
+# up to (and including) END is dropped and replaced by a single marker, so even
+# a short (<40 char) trailing base64 line of the key body is never leaked. An
+# unterminated BEGIN over-masks to end-of-input (security over content). A
+# standalone long base64 line outside any block is masked as a backstop for
+# marker-less key material. A second sed pass masks single-line tokens with ERE
+# patterns portable across BSD/GNU sed. No awk interval expressions are used
+# (BSD awk portability). Over-masking is preferred over leaking a credential.
 filter_secrets() {
     awk '
-        /-----BEGIN[ A-Za-z]*PRIVATE KEY-----/ || /-----END[ A-Za-z]*PRIVATE KEY-----/ {
+        /-----BEGIN[ A-Za-z]*PRIVATE KEY-----/ {
             print "***REDACTED PRIVATE KEY***"
+            inkey = 1
+            next
+        }
+        inkey {
+            if (/-----END[ A-Za-z]*PRIVATE KEY-----/) { inkey = 0 }
             next
         }
         (length($0) >= 40 && $0 ~ /^[A-Za-z0-9+\/=]+$/) {

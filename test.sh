@@ -997,21 +997,26 @@ OUT=$(run_filter "just a normal log line about task completion")
 [[ "$OUT" == "just a normal log line about task completion" ]] \
     && pass "normal text unchanged" || fail "normal text altered: $OUT"
 
-# Multi-line PEM private key block must be masked (line-based sed would miss it)
-PEM=$'before\n-----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6\nAgEAAoGBAKsecretkeymaterialxyz0123456789\n-----END PRIVATE KEY-----\nafter'
+# Multi-line PEM private key block must be masked, INCLUDING a short (<40 char)
+# trailing base64 line (the wrapped remainder of the key body).
+PEM=$'before\n-----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6\nAgEAAoGBAKsecretkeymaterialxyz0123456789\nk7QmShortTailLine24charsZ=\n-----END PRIVATE KEY-----\nafter'
 OUT=$(run_filter "$PEM")
 ! echo "$OUT" | grep -q "MIIBVAIBADANBgkqhkiG" && ! echo "$OUT" | grep -q "secretkeymaterial" \
     && pass "PEM private key block masked" || fail "PEM key leaked: $OUT"
+! echo "$OUT" | grep -q "k7QmShortTailLine24charsZ" \
+    && pass "PEM short trailing line masked" || fail "PEM tail line leaked: $OUT"
 echo "$OUT" | grep -q "REDACTED" && pass "PEM masked with REDACTED marker" || fail "no REDACTED for PEM: $OUT"
 echo "$OUT" | grep -q "^before$" && echo "$OUT" | grep -q "^after$" \
     && pass "text around PEM block preserved" || fail "surrounding text lost: $OUT"
 
-# An unterminated BEGIN marker must NOT swallow all following prose (no sticky state)
-STRAY=$'head line\n-----BEGIN PRIVATE KEY-----\nthis is normal prose after a stray marker\ntail line'
+# An unterminated BEGIN marker over-masks to end-of-input (security-first):
+# it must never leak the following lines as potential key material.
+STRAY=$'head line\n-----BEGIN PRIVATE KEY-----\nMIIBstraykeymaterialthatmustnotleak12345\ntail secret line'
 OUT=$(run_filter "$STRAY")
-echo "$OUT" | grep -q "this is normal prose after a stray marker" \
-    && pass "unterminated PEM marker does not drop following prose" || fail "prose dropped after stray marker: $OUT"
-echo "$OUT" | grep -q "^tail line$" && pass "content after stray marker preserved" || fail "tail lost: $OUT"
+echo "$OUT" | grep -q "^head line$" && pass "content before stray marker preserved" || fail "head lost: $OUT"
+echo "$OUT" | grep -q "REDACTED PRIVATE KEY" && pass "unterminated PEM emits key marker" || fail "no key marker: $OUT"
+! echo "$OUT" | grep -q "MIIBstraykeymaterial" && ! echo "$OUT" | grep -q "tail secret line" \
+    && pass "unterminated PEM over-masks following lines (no leak)" || fail "leaked after stray marker: $OUT"
 
 # ============================================================
 section "34. upload-log.sh generate_summary (via claude CLI)"
