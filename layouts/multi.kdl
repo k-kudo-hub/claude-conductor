@@ -6,14 +6,21 @@ layout {
         children
     }
 
-    // Main tab: Dashboard (left) + Done (center) + News (right) + Task Creator (bottom)
+    // Main tab: (Dashboard / Waiting) (left) + Done (center) + News (right) + Task Creator (bottom)
     tab name="Main" focus=true {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
-                pane {
-                    name "Dashboard"
-                    command "bash"
-                    args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/dashboard-loop.sh"
+                pane split_direction="horizontal" {
+                    pane {
+                        name "Dashboard"
+                        command "bash"
+                        args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/dashboard-loop.sh"
+                    }
+                    pane {
+                        name "Waiting"
+                        command "bash"
+                        args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/waiting-loop.sh"
+                    }
                 }
                 pane {
                     name "Done"
