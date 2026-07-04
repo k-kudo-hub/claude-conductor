@@ -68,6 +68,14 @@ mdev-test() {
     wt_name="$(basename "$wt_path")"
     session="test-$wt_name"
 
+    # Warn if the worktree's layout predates CONDUCTOR_HOME support: its Main-tab
+    # panes hardcode ~/.claude-conductor, so they run the INSTALLED scripts rather
+    # than this worktree's (data/hooks are still isolated via CONDUCTOR_HOME).
+    if ! grep -q 'CONDUCTOR_HOME' "$wt_path/layouts/multi.kdl" 2>/dev/null; then
+        echo "mdev-test: WARNING: $wt_name/layouts/multi.kdl has no CONDUCTOR_HOME reference." >&2
+        echo "mdev-test:   Main-tab panes will run INSTALLED scripts, not this worktree's (partial isolation)." >&2
+    fi
+
     # zellij (>=0.44) rejects session names longer than 24 characters
     if (( ${#session} > 24 )); then
         session="${session:0:24}"

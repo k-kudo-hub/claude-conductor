@@ -1004,6 +1004,20 @@ SESSION_LINE=$(echo "$OUTPUT" | grep '^SESSION=' | cut -d= -f2)
   && pass "long worktree name truncated to <=24 chars ($SESSION_LINE)" \
   || fail "session name not truncated: '$SESSION_LINE' (${#SESSION_LINE} chars)"
 
+# A worktree with an env-aware multi.kdl must NOT warn about partial isolation
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
+echo "$STDERR" | grep -q "partial isolation" \
+  && fail "unexpected partial-isolation warning for env-aware layout" \
+  || pass "no warning when layout references CONDUCTOR_HOME"
+
+# A worktree whose multi.kdl hardcodes the install path must warn
+echo 'layout { pane { command "bash"; args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
+echo "$STDERR" | grep -q "partial isolation" \
+  && pass "warns about partial isolation for legacy hardcoded layout" \
+  || fail "missing partial-isolation warning: $STDERR"
+
 # ============================================================
 section "30e. mdev-test errors on invalid worktree"
 # ============================================================
