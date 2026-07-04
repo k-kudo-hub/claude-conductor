@@ -24,10 +24,10 @@ TRANSCRIPT_PATH=$(echo "$STDIN_DATA" | jq -r '.transcript_path // empty' 2>/dev/
 
 PENDING_FILE="$PENDING_DIR/${CLAUDE_SESSION_ID}.json"
 
-# Don't overwrite a Notification pending with a Stop event
+# Don't overwrite a Notification or Waiting pending with a Stop event
 if [ -f "$PENDING_FILE" ] && [ "$HOOK_EVENT" = "Stop" ]; then
     EXISTING_EVENT=$(jq -r '.event' "$PENDING_FILE" 2>/dev/null)
-    if [ "$EXISTING_EVENT" = "Notification" ]; then
+    if [ "$EXISTING_EVENT" = "Notification" ] || [ "$EXISTING_EVENT" = "Waiting" ]; then
         exit 0
     fi
 fi
