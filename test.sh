@@ -1145,6 +1145,28 @@ chmod +x "$MOCK_BIN/claude"
 rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/e2e*.json
 
 # ============================================================
+section "37. dd deletion integrates upload-log.sh"
+# ============================================================
+
+TC="$HOME/.claude-conductor/scripts/task-control.sh"
+DL="$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+
+grep -q 'upload-log.sh' "$TC" && pass "task-control.sh calls upload-log.sh" || fail "task-control.sh missing upload call"
+grep -q 'Deletion cancelled' "$TC" && pass "task-control.sh cancels dd on upload failure" || fail "task-control.sh missing guard"
+grep -q 'upload-log.sh' "$DL" && pass "dashboard-loop.sh calls upload-log.sh" || fail "dashboard-loop.sh missing upload call"
+grep -q 'Deletion cancelled' "$DL" && pass "dashboard-loop.sh cancels dd on upload failure" || fail "dashboard-loop.sh missing guard"
+
+# Functional: with upload disabled (default), dd still deletes the tab (no regression)
+cat > "$PENDING_DIR/tc-del.json" << 'EOF'
+{ "tab":"tc-del","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+CALLS="$HOME/.claude-pending/zellij-calls.log"
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del" >/dev/null 2>&1
+[[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "dd removes pending when upload disabled" || fail "pending not removed"
+grep -q 'close-tab' "$CALLS" && pass "dd closes tab when upload disabled" || fail "close-tab not called"
+
+# ============================================================
 section "31. Uninstall"
 # ============================================================
 

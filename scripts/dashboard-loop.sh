@@ -85,6 +85,13 @@ while true; do
             if [[ "$key2" =~ [1-9] ]] && [[ $key2 -le $count ]]; then
                 target_tab="${tabs[$((key2-1))]}"
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$target_tab"
+                # Upload the work log synchronously. If it fails, cancel deletion.
+                echo -ne "\r  ${DIM}Uploading log...${NC}  "
+                if ! bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$target_tab"; then
+                    echo -ne "\r  ${RED}${BOLD}Upload failed. Deletion cancelled.${NC}  "
+                    sleep 2
+                    continue
+                fi
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$target_tab" ]]; then

@@ -29,6 +29,13 @@ while true; do
             read -t 2 -n 1 -s key2
             if [[ "$key2" == "d" ]]; then
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$TAB_NAME"
+                # Upload the work log synchronously. If it fails, cancel deletion.
+                echo -ne "\r${DIM}  Uploading log...${NC}  "
+                if ! bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$TAB_NAME"; then
+                    echo -ne "\r${RED}${BOLD}  Upload failed. Deletion cancelled.${NC}  "
+                    sleep 2
+                    continue
+                fi
                 for f in "$PENDING_DIR"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$TAB_NAME" ]]; then
