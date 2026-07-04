@@ -141,14 +141,19 @@ while true; do
                 | fzf --prompt="Task type: " | awk '{print $1}')
             [[ -z "$type" ]] && continue
 
-            # Step 3: タスク名入力（デフォルト候補を初期値として提示）
+            # Step 3: タスク名入力（デフォルト候補を提示）
             default_name=$(generate_default_name "$dir" "$type")
             if skip_name_input_enabled; then
                 name="$default_name"
+            elif (( BASH_VERSINFO[0] >= 4 )); then
+                # bash 4以降: 初期値を編集可能な状態で提示（read -i は 4.0 以降）
+                read -e -i "$default_name" -r -p "  Task name: " name
+                [[ -z "$name" ]] && name="$default_name"
             else
-                echo -ne "  ${BOLD}Task name: ${NC}"
-                read -e -i "$default_name" -r name
-                [[ -z "$name" ]] && name="$type-$(date +%H%M%S)"
+                # bash 3.x（macOSデフォルト）: [候補] を提示し Enter で確定、入力で上書き
+                echo -ne "  ${BOLD}Task name ${NC}${DIM}[${default_name}]${NC}: "
+                read -r name
+                [[ -z "$name" ]] && name="$default_name"
             fi
 
             # タスク作成
