@@ -75,7 +75,14 @@ mdev-test                   # pick from .worktree/ with fzf
 `mdev-test` points `CONDUCTOR_HOME` at the worktree, so its `scripts/`,
 `layouts/`, and hook **scripts** run from the worktree copy. The session is
 named `test-<worktree>` to keep its pending/daily data separate from your real
-sessions.
+sessions. Re-running replaces any existing session of that name with a fresh one.
+
+How the window opens depends on your terminal:
+
+- **Warp** — a native new tab via a temporary Launch Configuration (opens in the
+  worktree with the session auto-starting; no separate app).
+- **iTerm** — a new window via iTerm's scripting API.
+- **anything else** — a new Terminal.app window (via an opened `.command`).
 
 > **Note:** Changes to `hooks.json`'s *structure* (adding events or swapping
 > commands) are **not** covered by `mdev-test`, because hooks live in the global
