@@ -94,5 +94,21 @@ while true; do
     cat "$TMPFILE"
     printf '\033[J'
 
-    sleep 5
+    if [ "$count" -eq 0 ]; then
+        sleep 5
+    else
+        key=""
+        read -t 5 -n 1 -s key || true
+
+        if [[ "$key" == "r" ]]; then
+            echo -ne "\r  ${YELLOW}${BOLD}Restore number...${NC}  "
+            key2=""
+            read -t 3 -n 1 -s key2 || true
+            if [[ "$key2" =~ [1-9] ]] && [[ $key2 -le $count ]]; then
+                idx=$((key2 - 1))
+                bash "$CONDUCTOR_HOME/scripts/restore-task.sh" \
+                    "${r_tabs[$idx]}" "${r_sessions[$idx]}" "${r_completed[$idx]}" 2>/dev/null
+            fi
+        fi
+    fi
 done

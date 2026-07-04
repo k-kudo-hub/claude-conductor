@@ -838,6 +838,36 @@ LEGACY_FLAG2=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RES
 [[ "$LEGACY_FLAG2" == "absent" ]] && pass "legacy entry not marked restored" || fail "legacy entry wrongly marked: $LEGACY_FLAG2"
 
 # ============================================================
+section "26f. done-loop.sh (r+number triggers restore)"
+# ============================================================
+
+# Isolate today's daily log to a single restorable entry so [1] is deterministic
+rm -rf "$HOME/.claude-conductor/daily"
+INT_SESSION="int-restore"
+INT_DIR="$HOME/.claude-conductor/daily/$INT_SESSION"
+mkdir -p "$INT_DIR"
+INT_TODAY=$(date '+%Y-%m-%d')
+INT_FILE="$INT_DIR/$INT_TODAY.jsonl"
+INT_AT="${INT_TODAY}T10:00:00+0900"
+cat > "$INT_FILE" << JSONL
+{"tab":"int-task","session":"$INT_SESSION","completed_at":"$INT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/intproj","task_type":"dev"}
+JSONL
+
+# Drive the interactive loop: feed 'r' then '1', keep stdin open briefly, then kill it.
+: > "$HOME/.claude-pending/zellij-calls.log"
+( printf 'r1'; sleep 3 ) | ZELLIJ_SESSION_NAME="$INT_SESSION" bash "$HOME/.claude-conductor/scripts/done-loop.sh" >/dev/null 2>&1 &
+DL_PID=$!
+sleep 2
+kill "$DL_PID" 2>/dev/null || true
+wait "$DL_PID" 2>/dev/null || true
+
+grep -q 'action new-tab -n int-task --cwd /tmp/intproj -- env TASK_TAB_NAME=int-task TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "done-loop r+num recreates the tab" || fail "done-loop r+num did not recreate tab"
+
+INT_FLAG=$(jq -r 'select(.tab=="int-task") | .restored' "$INT_FILE")
+[[ "$INT_FLAG" == "true" ]] && pass "done-loop r+num marks entry restored" || fail "done-loop restored flag wrong: $INT_FLAG"
+
+# ============================================================
 section "26. fetch-news.sh (successful fetch)"
 # ============================================================
 
