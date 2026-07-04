@@ -239,15 +239,13 @@ if [ "$UPLOAD_ENABLED" != "true" ] || [ -z "$UPLOAD_REPO" ]; then
     exit 0
 fi
 
-# Locate the pending file for this tab (transcript path + message).
+# Locate the pending file for this tab to get its transcript path.
 TRANSCRIPT_PATH=""
-MESSAGE=""
 FOUND=false
 for f in "$PENDING_DIR"/*.json; do
     [ -f "$f" ] || continue
     [ "$(jq -r '.tab' "$f" 2>/dev/null)" = "$TAB_NAME" ] || continue
     TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
-    MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
     FOUND=true
     break
 done
