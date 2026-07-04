@@ -93,7 +93,11 @@ Press `n` in the bottom pane to start the task creation flow:
 
 1. Select a working directory (fzf, searches `~/projects` and `~/works`)
 2. Select a task type (dev, review, docs, survey, k8s)
-3. Enter a task name
+3. Confirm the task name — a default of `{directory-name}-{type}` is pre-filled, so just press Enter to accept, or edit it inline
+
+If the resulting name collides with an existing tab, a numeric suffix (`-2`, `-3`, …) is appended to keep tab names unique.
+
+Set `"skip_task_name_input": true` in `~/.claude-conductor/config.json` to skip step 3 entirely and use the default name automatically.
 
 ### Dashboard controls
 
