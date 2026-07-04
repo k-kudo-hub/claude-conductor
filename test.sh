@@ -67,6 +67,7 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 [[ -f "$HOME/.claude-conductor/layouts/dev.kdl" ]] && pass "dev.kdl installed" || fail "dev.kdl missing"
 [[ -f "$HOME/.claude-conductor/init.zsh" ]] && pass "init.zsh installed" || fail "init.zsh missing"
@@ -399,6 +400,69 @@ grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=resto
 ( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "resume-me" "sess-xyz" ) >/dev/null 2>&1
 grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume-me TASK_TYPE=dev claude --resume sess-xyz' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "create_task resumes session with claude --resume" || fail "create_task did not pass --resume"
+
+# ============================================================
+section "17c. lock-lib.sh (mkdir-based advisory lock)"
+# ============================================================
+
+( source "$HOME/.claude-conductor/scripts/lock-lib.sh" && declare -F acquire_lock >/dev/null && declare -F release_lock >/dev/null ) \
+  && pass "lock-lib.sh defines acquire_lock/release_lock" || fail "lock-lib.sh functions missing"
+
+source "$HOME/.claude-conductor/scripts/lock-lib.sh"
+LOCKDIR="$SANDBOX/test.lock"
+
+LK_RC=0; acquire_lock "$LOCKDIR" || LK_RC=$?
+[[ $LK_RC -eq 0 ]] && pass "acquire_lock succeeds on free lock" || fail "acquire_lock failed: $LK_RC"
+[[ -d "$LOCKDIR" ]] && pass "lock directory created" || fail "lock directory missing"
+
+# A held lock blocks a second acquire (short timeout)
+LK_RC2=0; acquire_lock "$LOCKDIR" 1 || LK_RC2=$?
+[[ $LK_RC2 -eq 1 ]] && pass "held lock blocks second acquire (timeout)" || fail "second acquire wrong: $LK_RC2"
+
+release_lock "$LOCKDIR"
+[[ ! -d "$LOCKDIR" ]] && pass "release_lock removes the lock" || fail "release_lock left the lock"
+
+LK_RC3=0; acquire_lock "$LOCKDIR" || LK_RC3=$?
+[[ $LK_RC3 -eq 0 ]] && pass "re-acquire after release" || fail "re-acquire failed: $LK_RC3"
+release_lock "$LOCKDIR"
+
+# A stale lock (owner PID gone) is reclaimed
+mkdir -p "$LOCKDIR"
+echo "999999" > "$LOCKDIR/pid"
+LK_RC4=0; acquire_lock "$LOCKDIR" 1 || LK_RC4=$?
+[[ $LK_RC4 -eq 0 ]] && pass "stale lock reclaimed (dead owner)" || fail "stale lock not reclaimed: $LK_RC4"
+release_lock "$LOCKDIR"
+
+# ============================================================
+section "17d. record-output.sh waits for the daily-log lock"
+# ============================================================
+
+HOLD_SESSION="hold-sess"
+HOLD_PENDING="$HOME/.claude-pending/$HOLD_SESSION"
+HOLD_DAILY_DIR="$HOME/.claude-conductor/daily/$HOLD_SESSION"
+mkdir -p "$HOLD_PENDING" "$HOLD_DAILY_DIR"
+HOLD_DAILY="$HOLD_DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
+HOLD_LOCK="$HOLD_DAILY.lock"
+: > "$HOLD_DAILY"
+cat > "$HOLD_PENDING/held.json" << 'EOF'
+{"tab":"held-tab","session":"hold-sess","claude_session_id":"held","message":"blocked","event":"Stop","time":"09:00:00"}
+EOF
+
+# Hold the lock as a live owner (this shell), then start record-output in the background.
+mkdir -p "$HOLD_LOCK"
+echo "$$" > "$HOLD_LOCK/pid"
+( ZELLIJ_SESSION_NAME="$HOLD_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "held-tab" ) &
+RO_PID=$!
+sleep 1
+BEFORE=$(wc -l < "$HOLD_DAILY" | tr -d ' ')
+[[ "$BEFORE" -eq 0 ]] && pass "record-output blocks while lock is held" || fail "record-output wrote despite held lock: $BEFORE"
+
+# Release and let record-output proceed
+release_lock "$HOLD_LOCK"
+wait "$RO_PID" 2>/dev/null || true
+AFTER=$(wc -l < "$HOLD_DAILY" | tr -d ' ')
+[[ "$AFTER" -eq 1 ]] && pass "record-output appends after lock released" || fail "record-output append wrong: $AFTER"
+[[ ! -d "$HOLD_LOCK" ]] && pass "record-output releases the lock on exit" || fail "record-output left the lock"
 
 # ============================================================
 section "18. init.zsh loads without errors"

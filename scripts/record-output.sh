@@ -16,6 +16,9 @@ DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 CONFIG_FILE="$CONDUCTOR_HOME/config.json"
 CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
+# shellcheck source=scripts/lock-lib.sh
+source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
+
 mkdir -p "$DAILY_DIR"
 
 # Load pricing from config (fallback to config.default.json)
@@ -51,6 +54,15 @@ done
 
 if [ "$FOUND" = "false" ]; then
     exit 0
+fi
+
+# Serialise the append against restore-task.sh's read-modify-rewrite of the
+# same daily log, so neither clobbers the other.
+DAILY_LOCK="$DAILY_FILE.lock"
+if acquire_lock "$DAILY_LOCK"; then
+    trap 'release_lock "$DAILY_LOCK"' EXIT
+else
+    echo "record-output: proceeding without daily-log lock" >&2
 fi
 
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')

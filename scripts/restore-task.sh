@@ -10,11 +10,14 @@
 #   2  entry has no recorded dir (older entry, cannot recreate the tab)
 #   3  recorded dir no longer exists (e.g. the worktree was removed)
 #   4  tab recreation failed (entry left in Done for retry)
+#   5  tab created but daily-log update failed (task may reappear in Done)
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
 # shellcheck source=scripts/task-lib.sh
 source "$CONDUCTOR_HOME/scripts/task-lib.sh"
+# shellcheck source=scripts/lock-lib.sh
+source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
 
 TAB="$1"
 SESSION="$2"
@@ -74,10 +77,24 @@ fi
 # Mark the entry restored (temp file + move, per repo convention).
 # Flip only the first not-yet-restored match — (tab, completed_at) is not a
 # unique key, and only one tab was recreated above.
+# Hold the daily-log lock across the read-modify-rewrite so a concurrent
+# record-output.sh append can't be clobbered by the mv.
+DAILY_LOCK="$DAILY_FILE.lock"
+LOCK_HELD=0
+if acquire_lock "$DAILY_LOCK"; then
+    LOCK_HELD=1
+else
+    echo "restore-task: proceeding without daily-log lock" >&2
+fi
 TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
-jq -s -c --arg t "$TAB" --arg c "$COMPLETED_AT" \
+trap '[ "$LOCK_HELD" = 1 ] && release_lock "$DAILY_LOCK"; rm -f "$TMP"' EXIT
+
+if jq -s -c --arg t "$TAB" --arg c "$COMPLETED_AT" \
     '(map(.tab == $t and .completed_at == $c and (.restored // false) != true) | index(true)) as $i
      | if $i == null then . else (.[$i] += {restored: true}) end
      | .[]' \
-    "$DAILY_FILE" > "$TMP" && mv "$TMP" "$DAILY_FILE"
+    "$DAILY_FILE" > "$TMP" && mv "$TMP" "$DAILY_FILE"; then
+    exit 0
+else
+    exit 5
+fi
