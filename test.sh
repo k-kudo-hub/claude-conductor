@@ -993,6 +993,15 @@ OUT=$(run_filter "just a normal log line about task completion")
 [[ "$OUT" == "just a normal log line about task completion" ]] \
     && pass "normal text unchanged" || fail "normal text altered: $OUT"
 
+# Multi-line PEM private key block must be masked (line-based sed would miss it)
+PEM=$'before\n-----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6\nAgEAAoGBAKsecretkeymaterialxyz0123456789\n-----END PRIVATE KEY-----\nafter'
+OUT=$(run_filter "$PEM")
+! echo "$OUT" | grep -q "MIIBVAIBADANBgkqhkiG" && ! echo "$OUT" | grep -q "secretkeymaterial" \
+    && pass "PEM private key block masked" || fail "PEM key leaked: $OUT"
+echo "$OUT" | grep -q "REDACTED" && pass "PEM masked with REDACTED marker" || fail "no REDACTED for PEM: $OUT"
+echo "$OUT" | grep -q "^before$" && echo "$OUT" | grep -q "^after$" \
+    && pass "text around PEM block preserved" || fail "surrounding text lost: $OUT"
+
 # ============================================================
 section "34. upload-log.sh generate_summary (via claude CLI)"
 # ============================================================
@@ -1165,6 +1174,42 @@ CALLS="$HOME/.claude-pending/zellij-calls.log"
 printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del" >/dev/null 2>&1
 [[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "dd removes pending when upload disabled" || fail "pending not removed"
 grep -q 'close-tab' "$CALLS" && pass "dd closes tab when upload disabled" || fail "close-tab not called"
+
+# ============================================================
+section "38. upload-log.sh push_log (bootstrap + idempotent)"
+# ============================================================
+
+run_push() {
+    ( UPLOAD_LOG_LIB=1 source "$UPLOAD_SCRIPT"; push_log "$1" "$2" "$3" "$4" )
+}
+
+# A) Bootstrap: push to a brand-new EMPTY bare repo (no branch exists yet)
+EMPTY_REMOTE="$SANDBOX/empty-log.git"
+git init --bare -q "$EMPTY_REMOTE"
+rm -rf "$HOME/.claude-conductor/upload-cache"
+if run_push "$EMPTY_REMOTE" "main" "work-log/2026/07/04/120000_boot.md" "hello world" >/dev/null 2>&1; then
+    pass "push_log bootstraps an empty repo"
+else
+    fail "push_log failed to bootstrap empty repo"
+fi
+BOOT_VERIFY="$SANDBOX/boot-verify"
+git clone -q "$EMPTY_REMOTE" "$BOOT_VERIFY" 2>/dev/null
+[[ -f "$BOOT_VERIFY/work-log/2026/07/04/120000_boot.md" ]] \
+    && pass "bootstrapped log present in remote" || fail "log not found after bootstrap"
+
+# B) Idempotent: pushing identical content to the same path must not fail (nothing-to-commit)
+if run_push "$EMPTY_REMOTE" "main" "work-log/2026/07/04/120000_boot.md" "hello world" >/dev/null 2>&1; then
+    pass "push_log succeeds on identical re-upload (no nothing-to-commit abort)"
+else
+    fail "push_log aborted on identical re-upload"
+fi
+
+# C) Branch that does not exist yet on a populated repo is created
+if run_push "$REMOTE" "logs-2026" "work-log/x.md" "content x" >/dev/null 2>&1; then
+    pass "push_log creates a non-existent branch"
+else
+    fail "push_log failed to create new branch"
+fi
 
 # ============================================================
 section "31. Uninstall"

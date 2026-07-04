@@ -28,10 +28,23 @@ load_config() {
 # ------------------------------------------------------------------
 
 # filter_secrets: read stdin, mask known secret patterns, write stdout.
-# Uses ERE (sed -E) patterns that work on both BSD (macOS) and GNU sed.
+# A first awk pass collapses multi-line PEM private key blocks to a single
+# marker (sed is line-based and would leak the key body); a second sed pass
+# masks single-line tokens with ERE patterns portable across BSD/GNU sed.
 # Over-masking is preferred over leaking a credential.
 filter_secrets() {
-    sed -E \
+    awk '
+        inkey {
+            if (/-----END[ A-Za-z]*PRIVATE KEY-----/) { inkey = 0 }
+            next
+        }
+        /-----BEGIN[ A-Za-z]*PRIVATE KEY-----/ {
+            print "***REDACTED PRIVATE KEY***"
+            inkey = 1
+            next
+        }
+        { print }
+    ' | sed -E \
         -e 's/sk-ant-[A-Za-z0-9_-]{10,}/***REDACTED***/g' \
         -e 's/sk-[A-Za-z0-9_-]{20,}/***REDACTED***/g' \
         -e 's/gh[posur]_[A-Za-z0-9]{20,}/***REDACTED***/g' \
@@ -158,14 +171,21 @@ push_log() {
     slug=$(printf '%s' "$repo" | sed -E 's#[^A-Za-z0-9._-]+#_#g')
     cache="$CONDUCTOR_HOME/upload-cache/$slug"
 
-    if [ -d "$cache/.git" ]; then
-        git -C "$cache" fetch --quiet origin "$branch" 2>/dev/null || return 1
-        git -C "$cache" checkout --quiet "$branch" 2>/dev/null || return 1
-        git -C "$cache" reset --hard --quiet "origin/$branch" 2>/dev/null || return 1
-    else
+    # Ensure a clone exists. Clone branch-agnostically so a brand-new empty
+    # repo (no branches yet) still succeeds.
+    if [ ! -d "$cache/.git" ]; then
         rm -rf "$cache"
         mkdir -p "$(dirname "$cache")"
-        git clone --quiet --depth 1 --branch "$branch" "$url" "$cache" 2>/dev/null || return 1
+        git clone --quiet --depth 1 "$url" "$cache" 2>/dev/null || return 1
+    fi
+
+    # Check out the target branch: base it on origin/$branch if that branch
+    # exists remotely, otherwise create it (bootstraps empty repos / new branches).
+    git -C "$cache" fetch --quiet --depth 1 origin "$branch" 2>/dev/null
+    if git -C "$cache" rev-parse --verify --quiet FETCH_HEAD >/dev/null 2>&1; then
+        git -C "$cache" checkout --quiet -B "$branch" FETCH_HEAD 2>/dev/null || return 1
+    else
+        git -C "$cache" checkout --quiet -B "$branch" 2>/dev/null || return 1
     fi
 
     local target="$cache/$rel_path"
@@ -173,10 +193,14 @@ push_log() {
     printf '%s\n' "$content" > "$target" || return 1
 
     git -C "$cache" add "$rel_path" 2>/dev/null || return 1
-    git -C "$cache" \
-        -c user.email="conductor@local" -c user.name="claude-conductor" \
-        commit --quiet -m "chore: add work log $rel_path" 2>/dev/null || return 1
-    git -C "$cache" push --quiet origin "$branch" 2>/dev/null || return 1
+    # Commit only when the file actually changed; an identical re-upload is a
+    # no-op success rather than a "nothing to commit" failure that would block dd.
+    if ! git -C "$cache" diff --cached --quiet 2>/dev/null; then
+        git -C "$cache" \
+            -c user.email="conductor@local" -c user.name="claude-conductor" \
+            commit --quiet -m "chore: add work log $rel_path" 2>/dev/null || return 1
+    fi
+    git -C "$cache" push --quiet -u origin "$branch" 2>/dev/null || return 1
 
     local sha
     sha=$(git -C "$cache" rev-parse HEAD 2>/dev/null)
