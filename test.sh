@@ -1884,6 +1884,29 @@ printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del" >/dev/null 2>
 [[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "dd removes pending when upload disabled" || fail "pending not removed"
 grep -q 'close-tab' "$CALLS" && pass "dd closes tab when upload disabled" || fail "close-tab not called"
 
+# dd must close ITS OWN tab by id (not the active tab): a mid-upload focus change
+# must not let it close the wrong tab. Mock zellij returns list-tabs data here.
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n7  2  tc-del-id\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+cat > "$PENDING_DIR/tc-del-id.json" << 'EOF'
+{ "tab":"tc-del-id","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del-id" >/dev/null 2>&1
+grep -q 'close-tab-by-id 7' "$CALLS" && pass "dd closes its own tab by id" || fail "close-tab-by-id not called with correct id: $(cat "$CALLS")"
+# Restore the plain mock zellij for later sections
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+
 # ============================================================
 section "46. upload-log.sh push_log (bootstrap + idempotent)"
 # ============================================================

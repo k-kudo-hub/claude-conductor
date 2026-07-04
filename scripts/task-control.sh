@@ -74,7 +74,17 @@ while true; do
                         rm -f "$f"
                     fi
                 done
-                zellij action close-tab 2>/dev/null
+                # Close this task's own tab by id, not the active tab: the
+                # synchronous upload can take seconds, during which the active
+                # tab may have switched (e.g. auto-routing to Main), so
+                # `close-tab` could close the wrong tab. Fall back to close-tab
+                # only if the id lookup fails.
+                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$TAB_NAME" '$3 == name {print $1}')
+                if [[ -n "$tab_id" ]]; then
+                    zellij action close-tab-by-id "$tab_id" 2>/dev/null
+                else
+                    zellij action close-tab 2>/dev/null
+                fi
                 exit 0
             fi
             ;;
