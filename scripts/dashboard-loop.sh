@@ -104,7 +104,15 @@ while true; do
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$target_tab"
                 # Upload the work log synchronously. If it fails, cancel deletion.
                 echo -ne "\r  ${DIM}Uploading log...${NC}  "
-                if ! bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$target_tab"; then
+                if upload_out=$(bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$target_tab"); then
+                    # Show the upload result (URL) briefly so it is confirmable
+                    # before the tab closes. Empty output means nothing was
+                    # uploaded (disabled / no pending) -> close immediately.
+                    if [[ -n "$upload_out" ]]; then
+                        echo -ne "\r\033[K  ${GREEN}${BOLD}${upload_out#upload-log: }${NC}"
+                        sleep 2
+                    fi
+                else
                     echo -ne "\r  ${RED}${BOLD}Upload failed. Deletion cancelled.${NC}  "
                     sleep 2
                     continue

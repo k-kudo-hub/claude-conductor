@@ -12,6 +12,7 @@ PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 DIM='\033[2m'
 BOLD='\033[1m'
 RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
@@ -63,7 +64,15 @@ while true; do
                 bash "$CONDUCTOR_HOME/scripts/record-output.sh" "$TAB_NAME"
                 # Upload the work log synchronously. If it fails, cancel deletion.
                 echo -ne "\r${DIM}  Uploading log...${NC}  "
-                if ! bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$TAB_NAME"; then
+                if upload_out=$(bash "$CONDUCTOR_HOME/scripts/upload-log.sh" "$TAB_NAME"); then
+                    # Show the upload result (URL) briefly so it is confirmable
+                    # before the tab closes. Empty output means nothing was
+                    # uploaded (disabled / no pending) -> close immediately.
+                    if [[ -n "$upload_out" ]]; then
+                        echo -ne "\r\033[K${GREEN}${BOLD}  ${upload_out#upload-log: }${NC}"
+                        sleep 2
+                    fi
+                else
                     echo -ne "\r${RED}${BOLD}  Upload failed. Deletion cancelled.${NC}  "
                     sleep 2
                     continue

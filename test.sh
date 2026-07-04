@@ -1907,6 +1907,25 @@ echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 
+# On a real (non-empty) upload success, the confirmation is shown but the tab
+# is still deleted and closed afterwards.
+UPLOAD_REAL="$HOME/.claude-conductor/scripts/upload-log.sh"
+mv "$UPLOAD_REAL" "$UPLOAD_REAL.real"
+cat > "$UPLOAD_REAL" << 'STUB'
+#!/bin/bash
+echo "upload-log: アップロードしました -> https://example/log.md"
+exit 0
+STUB
+chmod +x "$UPLOAD_REAL"
+cat > "$PENDING_DIR/tc-ok.json" << 'EOF'
+{ "tab":"tc-ok","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$CALLS"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-ok" >/dev/null 2>&1
+[[ ! -f "$PENDING_DIR/tc-ok.json" ]] && pass "dd deletes pending after a confirmed upload" || fail "pending not removed after upload"
+grep -q 'close-tab' "$CALLS" && pass "dd closes tab after a confirmed upload" || fail "tab not closed after upload"
+mv "$UPLOAD_REAL.real" "$UPLOAD_REAL"
+
 # ============================================================
 section "46. upload-log.sh push_log (bootstrap + idempotent)"
 # ============================================================
