@@ -1036,7 +1036,28 @@ WL_EMPTY_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-empty-session \
 echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
 
 # ============================================================
-section "34. Uninstall"
+section "34. task-control.sh (shows Waiting indicator)"
+# ============================================================
+
+TC_DIR="$HOME/.claude-pending/tc-session"
+mkdir -p "$TC_DIR"
+
+# Not waiting -> normal bar, no indicator
+echo '{"tab":"my-task","session":"tc-session","message":"needs permission","event":"Notification","time":"12:00:00"}' > "$TC_DIR/tc1.json"
+TC_OUT=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
+    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+echo "$TC_OUT" | grep -q "w: Waiting" && pass "normal bar offers Waiting" || fail "normal bar wrong: $TC_OUT"
+echo "$TC_OUT" | grep -q "● WAITING" && fail "indicator shown when not waiting" || pass "no indicator when not waiting"
+
+# Waiting -> indicator + Resume label
+jq '.event = "Waiting"' "$TC_DIR/tc1.json" > "$TC_DIR/tc1.tmp" && mv "$TC_DIR/tc1.tmp" "$TC_DIR/tc1.json"
+TC_OUT2=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
+    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+echo "$TC_OUT2" | grep -q "● WAITING" && pass "WAITING indicator shown when waiting" || fail "no indicator when waiting: $TC_OUT2"
+echo "$TC_OUT2" | grep -q "w: Resume" && pass "bar offers Resume when waiting" || fail "no Resume label: $TC_OUT2"
+
+# ============================================================
+section "35. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
