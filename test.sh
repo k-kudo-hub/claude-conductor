@@ -789,6 +789,49 @@ COST_OLD=$(sed -n '3p' "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // nu
 [[ "$COST_OLD" == "-" ]] && pass "old task without cost shows -" || fail "old task cost wrong: $COST_OLD"
 
 # ============================================================
+section "26e. restore-task.sh (restore Done task to dashboard)"
+# ============================================================
+
+RESTORE_SESSION="restore-sess"
+RESTORE_DAILY_DIR="$HOME/.claude-conductor/daily/$RESTORE_SESSION"
+mkdir -p "$RESTORE_DAILY_DIR"
+RESTORE_TODAY=$(date '+%Y-%m-%d')
+RESTORE_DAILY_FILE="$RESTORE_DAILY_DIR/$RESTORE_TODAY.jsonl"
+RESTORE_AT="${RESTORE_TODAY}T10:00:00+0900"
+OLD_AT="${RESTORE_TODAY}T09:00:00+0900"
+
+# Two entries: one with dir/task_type (restorable), one without dir (legacy, not restorable)
+cat > "$RESTORE_DAILY_FILE" << JSONL
+{"tab":"restore-me","session":"$RESTORE_SESSION","completed_at":"$RESTORE_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"/tmp/proj","task_type":"dev"}
+{"tab":"legacy-task","session":"$RESTORE_SESSION","completed_at":"$OLD_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false}}
+JSONL
+
+# Restore the entry that has dir/task_type
+: > "$HOME/.claude-pending/zellij-calls.log"
+RESTORE_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "restore-me" "$RESTORE_SESSION" "$RESTORE_AT" || RESTORE_RC=$?
+[[ $RESTORE_RC -eq 0 ]] && pass "restore-task.sh exits 0 on restorable entry" || fail "restore-task.sh exit wrong: $RESTORE_RC"
+
+grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=restore-me TASK_TYPE=dev claude' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "restore recreates tab with dir/type" || fail "restore did not recreate tab correctly"
+
+RESTORED_FLAG=$(jq -r 'select(.tab=="restore-me") | .restored' "$RESTORE_DAILY_FILE")
+[[ "$RESTORED_FLAG" == "true" ]] && pass "restored entry marked restored:true" || fail "restored flag wrong: $RESTORED_FLAG"
+
+# The other entry must stay untouched
+LEGACY_FLAG=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$LEGACY_FLAG" == "absent" ]] && pass "unrelated entry untouched" || fail "unrelated entry changed: $LEGACY_FLAG"
+
+# Legacy entry without dir cannot be restored
+: > "$HOME/.claude-pending/zellij-calls.log"
+LEGACY_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "legacy-task" "$RESTORE_SESSION" "$OLD_AT" || LEGACY_RC=$?
+[[ $LEGACY_RC -eq 2 ]] && pass "restore-task.sh exits 2 when dir missing" || fail "legacy exit wrong: $LEGACY_RC"
+[[ ! -s "$HOME/.claude-pending/zellij-calls.log" ]] && pass "no tab created for legacy entry" || fail "tab wrongly created for legacy entry"
+LEGACY_FLAG2=$(jq -r 'select(.tab=="legacy-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
+[[ "$LEGACY_FLAG2" == "absent" ]] && pass "legacy entry not marked restored" || fail "legacy entry wrongly marked: $LEGACY_FLAG2"
+
+# ============================================================
 section "26. fetch-news.sh (successful fetch)"
 # ============================================================
 
