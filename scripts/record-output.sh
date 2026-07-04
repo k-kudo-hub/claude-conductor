@@ -16,6 +16,9 @@ DAILY_FILE="$DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 CONFIG_FILE="$CONDUCTOR_HOME/config.json"
 CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
+# shellcheck source=scripts/lock-lib.sh
+source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
+
 mkdir -p "$DAILY_DIR"
 
 # Load pricing from config (fallback to config.default.json)
@@ -30,6 +33,9 @@ PRICING_JSON="${PRICING_JSON:-"{}"}"
 
 TRANSCRIPT_PATH=""
 MESSAGE=""
+DIR=""
+TASK_TYPE=""
+CLAUDE_SESSION_ID=""
 FOUND=false
 
 for f in "$PENDING_DIR"/*.json; do
@@ -39,6 +45,9 @@ for f in "$PENDING_DIR"/*.json; do
 
     TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
     MESSAGE=$(jq -r '.message // empty' "$f" 2>/dev/null)
+    DIR=$(jq -r '.dir // empty' "$f" 2>/dev/null)
+    TASK_TYPE=$(jq -r '.task_type // empty' "$f" 2>/dev/null)
+    CLAUDE_SESSION_ID=$(jq -r '.claude_session_id // empty' "$f" 2>/dev/null)
     FOUND=true
     break
 done
@@ -48,10 +57,11 @@ if [ "$FOUND" = "false" ]; then
 fi
 
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
+OUT=""
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary, markers, and cost in a single jq pass
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --argjson pricing "$PRICING_JSON" '. as $all |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --argjson pricing "$PRICING_JSON" '. as $all |
         ([.[] | select(.type == "user")] | length) as $turns |
         [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
         ($tools | length) as $calls |
@@ -104,16 +114,24 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 doc: $has_doc
             }
         }
+        + (if $dir != "" then {dir: $dir} else {} end)
+        + (if $task_type != "" then {task_type: $task_type} else {} end)
+        + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     if [ -n "$RECORD" ]; then
-        echo "$RECORD" >> "$DAILY_FILE"
+        OUT="$RECORD"
     else
-        jq -n -c \
+        OUT=$(jq -n -c \
             --arg tab "$TAB_NAME" \
             --arg session "$SESSION_NAME" \
             --arg completed_at "$COMPLETED_AT" \
             --arg message "${MESSAGE:-Parse failed}" \
+            --arg dir "$DIR" \
+            --arg task_type "$TASK_TYPE" \
+            --arg claude_session_id "$CLAUDE_SESSION_ID" \
+            --arg transcript_path "$TRANSCRIPT_PATH" \
             '{
                 tab: $tab,
                 session: $session,
@@ -121,14 +139,22 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                 message: $message,
                 summary: null,
                 markers: { merged: false, slack: false, doc: false }
-            }' >> "$DAILY_FILE"
+            }
+            + (if $dir != "" then {dir: $dir} else {} end)
+            + (if $task_type != "" then {task_type: $task_type} else {} end)
+            + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
     fi
 else
-    jq -n -c \
+    OUT=$(jq -n -c \
         --arg tab "$TAB_NAME" \
         --arg session "$SESSION_NAME" \
         --arg completed_at "$COMPLETED_AT" \
         --arg message "${MESSAGE:-No summary available}" \
+        --arg dir "$DIR" \
+        --arg task_type "$TASK_TYPE" \
+        --arg claude_session_id "$CLAUDE_SESSION_ID" \
+        --arg transcript_path "$TRANSCRIPT_PATH" \
         '{
             tab: $tab,
             session: $session,
@@ -136,5 +162,23 @@ else
             message: $message,
             summary: null,
             markers: { merged: false, slack: false, doc: false }
-        }' >> "$DAILY_FILE"
+        }
+        + (if $dir != "" then {dir: $dir} else {} end)
+        + (if $task_type != "" then {task_type: $task_type} else {} end)
+        + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
+fi
+
+# Append under the daily-log lock, held only for the write itself so the hold
+# time stays sub-millisecond — a slow transcript parse above must never block a
+# concurrent restore long enough to trip its fail-open rewrite.
+if [ -n "$OUT" ]; then
+    DAILY_LOCK="$DAILY_FILE.lock"
+    if acquire_lock "$DAILY_LOCK" 2; then
+        printf '%s\n' "$OUT" >> "$DAILY_FILE"
+        release_lock "$DAILY_LOCK"
+    else
+        echo "record-output: proceeding without daily-log lock" >&2
+        printf '%s\n' "$OUT" >> "$DAILY_FILE"
+    fi
 fi
