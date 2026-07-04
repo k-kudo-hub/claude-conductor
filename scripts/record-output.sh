@@ -56,16 +56,8 @@ if [ "$FOUND" = "false" ]; then
     exit 0
 fi
 
-# Serialise the append against restore-task.sh's read-modify-rewrite of the
-# same daily log, so neither clobbers the other.
-DAILY_LOCK="$DAILY_FILE.lock"
-if acquire_lock "$DAILY_LOCK"; then
-    trap 'release_lock "$DAILY_LOCK"' EXIT
-else
-    echo "record-output: proceeding without daily-log lock" >&2
-fi
-
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
+OUT=""
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary, markers, and cost in a single jq pass
@@ -129,9 +121,9 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     if [ -n "$RECORD" ]; then
-        echo "$RECORD" >> "$DAILY_FILE"
+        OUT="$RECORD"
     else
-        jq -n -c \
+        OUT=$(jq -n -c \
             --arg tab "$TAB_NAME" \
             --arg session "$SESSION_NAME" \
             --arg completed_at "$COMPLETED_AT" \
@@ -151,10 +143,10 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             + (if $dir != "" then {dir: $dir} else {} end)
             + (if $task_type != "" then {task_type: $task_type} else {} end)
             + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
-            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' >> "$DAILY_FILE"
+            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
     fi
 else
-    jq -n -c \
+    OUT=$(jq -n -c \
         --arg tab "$TAB_NAME" \
         --arg session "$SESSION_NAME" \
         --arg completed_at "$COMPLETED_AT" \
@@ -174,5 +166,19 @@ else
         + (if $dir != "" then {dir: $dir} else {} end)
         + (if $task_type != "" then {task_type: $task_type} else {} end)
         + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
-        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)' >> "$DAILY_FILE"
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
+fi
+
+# Append under the daily-log lock, held only for the write itself so the hold
+# time stays sub-millisecond — a slow transcript parse above must never block a
+# concurrent restore long enough to trip its fail-open rewrite.
+if [ -n "$OUT" ]; then
+    DAILY_LOCK="$DAILY_FILE.lock"
+    if acquire_lock "$DAILY_LOCK" 2; then
+        printf '%s\n' "$OUT" >> "$DAILY_FILE"
+        release_lock "$DAILY_LOCK"
+    else
+        echo "record-output: proceeding without daily-log lock" >&2
+        printf '%s\n' "$OUT" >> "$DAILY_FILE"
+    fi
 fi

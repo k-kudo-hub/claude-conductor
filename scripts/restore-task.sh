@@ -81,7 +81,7 @@ fi
 # record-output.sh append can't be clobbered by the mv.
 DAILY_LOCK="$DAILY_FILE.lock"
 LOCK_HELD=0
-if acquire_lock "$DAILY_LOCK"; then
+if acquire_lock "$DAILY_LOCK" 2; then
     LOCK_HELD=1
 else
     echo "restore-task: proceeding without daily-log lock" >&2

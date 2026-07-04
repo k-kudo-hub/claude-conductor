@@ -18,7 +18,12 @@ acquire_lock() {
         local owner
         owner=$(cat "$lockdir/pid" 2>/dev/null || true)
         if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-            rm -rf "$lockdir" 2>/dev/null
+            # Break the stale lock by renaming it aside first: `mv` of a given
+            # directory succeeds for only one racer (the source vanishes), so we
+            # never blindly `rm` a lock another process may have just recreated.
+            if mv "$lockdir" "${lockdir}.stale.$$" 2>/dev/null; then
+                rm -rf "${lockdir}.stale.$$" 2>/dev/null
+            fi
             continue
         fi
         waited=$((waited + 1))
