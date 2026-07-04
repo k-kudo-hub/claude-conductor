@@ -28,19 +28,20 @@ load_config() {
 # ------------------------------------------------------------------
 
 # filter_secrets: read stdin, mask known secret patterns, write stdout.
-# A first awk pass collapses multi-line PEM private key blocks to a single
-# marker (sed is line-based and would leak the key body); a second sed pass
-# masks single-line tokens with ERE patterns portable across BSD/GNU sed.
-# Over-masking is preferred over leaking a credential.
+# A first awk pass masks PEM key material line-by-line (the BEGIN/END markers
+# and any standalone long base64 line, i.e. the key body); this is stateless so
+# an unterminated BEGIN marker never swallows the following prose. A second sed
+# pass masks single-line tokens with ERE patterns portable across BSD/GNU sed.
+# No awk interval expressions are used (BSD awk portability). Over-masking is
+# preferred over leaking a credential.
 filter_secrets() {
     awk '
-        inkey {
-            if (/-----END[ A-Za-z]*PRIVATE KEY-----/) { inkey = 0 }
+        /-----BEGIN[ A-Za-z]*PRIVATE KEY-----/ || /-----END[ A-Za-z]*PRIVATE KEY-----/ {
+            print "***REDACTED PRIVATE KEY***"
             next
         }
-        /-----BEGIN[ A-Za-z]*PRIVATE KEY-----/ {
-            print "***REDACTED PRIVATE KEY***"
-            inkey = 1
+        (length($0) >= 40 && $0 ~ /^[A-Za-z0-9+\/=]+$/) {
+            print "***REDACTED***"
             next
         }
         { print }

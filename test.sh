@@ -1002,6 +1002,13 @@ echo "$OUT" | grep -q "REDACTED" && pass "PEM masked with REDACTED marker" || fa
 echo "$OUT" | grep -q "^before$" && echo "$OUT" | grep -q "^after$" \
     && pass "text around PEM block preserved" || fail "surrounding text lost: $OUT"
 
+# An unterminated BEGIN marker must NOT swallow all following prose (no sticky state)
+STRAY=$'head line\n-----BEGIN PRIVATE KEY-----\nthis is normal prose after a stray marker\ntail line'
+OUT=$(run_filter "$STRAY")
+echo "$OUT" | grep -q "this is normal prose after a stray marker" \
+    && pass "unterminated PEM marker does not drop following prose" || fail "prose dropped after stray marker: $OUT"
+echo "$OUT" | grep -q "^tail line$" && pass "content after stray marker preserved" || fail "tail lost: $OUT"
+
 # ============================================================
 section "34. upload-log.sh generate_summary (via claude CLI)"
 # ============================================================
