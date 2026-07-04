@@ -201,8 +201,9 @@ Notes:
 
 ## Releasing
 
-Versioning is driven by pull request labels. Every PR **must** carry exactly one bump
-label, and the version is tagged automatically on merge.
+Versioning is driven by pull request labels. Every PR **must** carry one of the bump
+labels below, and the version is tagged automatically on merge. If more than one is
+present, the highest bump wins (`major` > `minor` > `patch`).
 
 - `bump:patch` — backwards-compatible fixes (`v1.2.3` → `v1.2.4`)
 - `bump:minor` — backwards-compatible features (`v1.2.3` → `v1.3.0`)
