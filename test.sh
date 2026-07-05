@@ -1825,6 +1825,10 @@ echo "- 作業を実施。誤って ghp_abcdefghijklmnopqrstuvwxyz0123456789 を
 MOCK
 chmod +x "$MOCK_BIN/claude"
 
+# record-output.sh stamps completed_at with the current time, and the log path
+# is derived from it — so the expected date is today, captured here (not a
+# hardcoded date, which would break on every day after the test was written).
+E2E_DATE=$(date '+%Y/%m/%d')
 ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e"
 ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e" >/dev/null 2>&1 \
     && pass "upload-log.sh exits 0 on success" || fail "upload-log.sh failed on success path"
@@ -1836,7 +1840,7 @@ LOGFILE=$(find "$VERIFY/work-log" -name '*_upload-e2e.md' 2>/dev/null | head -1)
 [[ -n "$LOGFILE" ]] && pass "log file pushed to repo" || fail "log file not found in repo"
 if [[ -n "$LOGFILE" ]]; then
     grep -q "upload-e2e" "$LOGFILE" && pass "pushed log has task title" || fail "pushed log missing title"
-    grep -q "2026/07/04" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE"
+    grep -q "$E2E_DATE" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE (expected $E2E_DATE)"
     ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks LLM-echoed secret" || fail "secret leaked in pushed log"
     ! grep -q "RAWMESSAGEMARKER" "$LOGFILE" && pass "pushed log excludes raw message" || fail "raw message leaked in pushed log"
 fi
