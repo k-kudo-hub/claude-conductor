@@ -2100,7 +2100,42 @@ echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     && pass "VERSION matches semver format ($VER)" || fail "VERSION not semver: $VER"
 
 # ============================================================
-section "50. Uninstall"
+section "50. update-lib.sh (repo slug + version compare)"
+# ============================================================
+
+UPDATE_LIB="$CONDUCTOR_HOME/scripts/update-lib.sh"
+
+slug() { ( source "$UPDATE_LIB"; uc_repo_slug "$1" ); }
+[[ "$(slug 'git@github.com:owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses SSH url" || fail "SSH slug wrong: $(slug 'git@github.com:owner/repo.git')"
+[[ "$(slug 'https://github.com/owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses HTTPS url with .git" || fail "HTTPS .git slug wrong: $(slug 'https://github.com/owner/repo.git')"
+[[ "$(slug 'https://github.com/owner/repo')" == "owner/repo" ]] \
+    && pass "repo_slug parses HTTPS url without .git" || fail "HTTPS slug wrong: $(slug 'https://github.com/owner/repo')"
+[[ "$(slug 'ssh://git@github.com/owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses ssh:// url" || fail "ssh:// slug wrong: $(slug 'ssh://git@github.com/owner/repo.git')"
+set +e
+( source "$UPDATE_LIB"; uc_repo_slug "" ) >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "repo_slug empty url returns non-zero" || fail "empty url did not fail"
+
+vgt() { ( source "$UPDATE_LIB"; uc_version_gt "$1" "$2" ); }
+vgt v1.2.4 v1.2.3 && pass "version_gt patch newer" || fail "v1.2.4 > v1.2.3 wrong"
+vgt v1.3.0 v1.2.9 && pass "version_gt minor beats higher patch" || fail "v1.3.0 > v1.2.9 wrong"
+vgt v2.0.0 v1.9.9 && pass "version_gt major beats higher minor" || fail "v2.0.0 > v1.9.9 wrong"
+vgt v1.2.10 v1.2.9 && pass "version_gt numeric (not lexical) 10>9" || fail "v1.2.10 > v1.2.9 wrong"
+vgt 1.2.4 1.2.3 && pass "version_gt accepts no-v prefix" || fail "1.2.4 > 1.2.3 wrong"
+set +e
+vgt v1.2.3 v1.2.3; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "version_gt equal is not greater" || fail "equal reported as greater"
+set +e
+vgt v1.2.3 v1.2.4; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "version_gt older is not greater" || fail "older reported as greater"
+
+# ============================================================
+section "51. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
