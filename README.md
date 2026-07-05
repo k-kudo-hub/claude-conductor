@@ -52,6 +52,24 @@ The installer will:
 1. Copy scripts and layouts to `~/.claude-conductor/`
 2. Merge hooks into `~/.claude/settings.json`
 3. Add `source` line to `~/.zshrc` (with confirmation)
+4. Record the installed version and update source (`~/.claude-conductor/VERSION`, `REPO_URL`)
+
+## Updating
+
+```bash
+mdev update
+```
+
+`mdev update` downloads the latest release, extracts it, and re-runs `install.sh`
+(your `config.json` is preserved). It follows the same approach as Claude Code's
+native updater — it fetches the release archive rather than pulling git, so the
+install directory does not need to be a git checkout.
+
+When you start a session, `mdev` also checks once a day whether a newer release is
+available and prints a short notice if so. The check is best-effort: it is cached
+for the day, times out quickly, and stays silent on any network failure so it never
+delays startup. Disable it by setting `update_check.enabled` to `false` in
+`~/.claude-conductor/config.json`.
 
 ## Usage
 

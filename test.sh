@@ -270,6 +270,10 @@ section "12. config.default.json installed"
 # Validate JSON
 jq '.' "$HOME/.claude-conductor/config.default.json" > /dev/null 2>&1 && pass "config.default.json is valid JSON" || fail "config.default.json is invalid JSON"
 
+# update_check.enabled defaults to true (drives the startup update notice)
+[[ "$(jq -r '.update_check.enabled' "$HOME/.claude-conductor/config.default.json")" == "true" ]] \
+    && pass "update_check.enabled defaults to true" || fail "update_check.enabled default missing/wrong"
+
 # ============================================================
 section "13. config.json created from default on install"
 # ============================================================
