@@ -2122,10 +2122,16 @@ slug() { ( source "$UPDATE_LIB"; uc_repo_slug "$1" ); }
     && pass "repo_slug parses HTTPS url without .git" || fail "HTTPS slug wrong: $(slug 'https://github.com/owner/repo')"
 [[ "$(slug 'ssh://git@github.com/owner/repo.git')" == "owner/repo" ]] \
     && pass "repo_slug parses ssh:// url" || fail "ssh:// slug wrong: $(slug 'ssh://git@github.com/owner/repo.git')"
+[[ "$(slug 'git@github.com:torvalds/torvalds.git')" == "torvalds/torvalds" ]] \
+    && pass "repo_slug allows owner == repo" || fail "same-name slug wrong: $(slug 'git@github.com:torvalds/torvalds.git')"
 set +e
 ( source "$UPDATE_LIB"; uc_repo_slug "" ) >/dev/null 2>&1; RC=$?
 set -e
 [[ $RC -ne 0 ]] && pass "repo_slug empty url returns non-zero" || fail "empty url did not fail"
+set +e
+( source "$UPDATE_LIB"; uc_repo_slug "notaurl" ) >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "repo_slug rejects url without a path" || fail "bare string did not fail"
 
 vgt() { ( source "$UPDATE_LIB"; uc_version_gt "$1" "$2" ); }
 vgt v1.2.4 v1.2.3 && pass "version_gt patch newer" || fail "v1.2.4 > v1.2.3 wrong"

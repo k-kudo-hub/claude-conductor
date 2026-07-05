@@ -55,11 +55,14 @@ fi
 tar -xzf "$TMP/src.tar.gz" -C "$TMP"
 
 # GitHub extracts a source tarball to <repo>-<version>/; locate the dir holding install.sh.
-SRC=$(dirname "$(find "$TMP" -maxdepth 2 -name install.sh -type f 2>/dev/null | head -1)")
-if [ ! -f "$SRC/install.sh" ]; then
+# Validate the find result first: an empty result would make `dirname ""` == "."
+# and could run install.sh from the current directory instead of the tarball.
+FOUND=$(find "$TMP" -maxdepth 2 -name install.sh -type f 2>/dev/null | head -1)
+if [ -z "$FOUND" ]; then
     echo "展開したソースに install.sh が見つかりません。" >&2
     exit 1
 fi
+SRC=$(dirname "$FOUND")
 
 # Reinstall, injecting the version and URL (the tarball has no .git).
 CONDUCTOR_VERSION="$LATEST" CONDUCTOR_REPO_URL="$REPO_URL" bash "$SRC/install.sh"

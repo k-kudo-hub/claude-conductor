@@ -18,7 +18,9 @@ uc_repo_slug() {
     local repo="${url##*/}"
     local rest="${url%/*}"
     local owner="${rest##*/}"
-    if [ -z "$owner" ] || [ -z "$repo" ] || [ "$owner" = "$repo" ]; then
+    # owner and repo may legitimately be identical (e.g. torvalds/torvalds),
+    # so only reject when either component is missing.
+    if [ -z "$owner" ] || [ -z "$repo" ] || [ "$owner" = "$rest" ]; then
         return 1
     fi
     echo "$owner/$repo"
