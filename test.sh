@@ -2135,7 +2135,31 @@ set -e
 [[ $RC -ne 0 ]] && pass "version_gt older is not greater" || fail "older reported as greater"
 
 # ============================================================
-section "51. Uninstall"
+section "51. install.sh records REPO_URL and honors overrides"
+# ============================================================
+
+# The top-level install ran from a git checkout, so REPO_URL is recorded.
+[[ -f "$CONDUCTOR_HOME/REPO_URL" ]] && pass "REPO_URL file created" || fail "REPO_URL file missing"
+grep -q "claude-conductor" "$CONDUCTOR_HOME/REPO_URL" \
+    && pass "REPO_URL points at the origin repo" || fail "REPO_URL wrong: $(cat "$CONDUCTOR_HOME/REPO_URL" 2>/dev/null)"
+
+# A tarball-based update has no .git, so update.sh injects the version and URL
+# via env vars. Verify install.sh honors them (isolated HOME to avoid clobber).
+OV_HOME="$SANDBOX/override-home"
+mkdir -p "$OV_HOME"
+touch "$OV_HOME/.zshrc"
+(
+    export HOME="$OV_HOME"
+    echo n | CONDUCTOR_VERSION="v9.9.9" CONDUCTOR_REPO_URL="https://github.com/o/r.git" \
+        bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+)
+[[ "$(cat "$OV_HOME/.claude-conductor/VERSION" 2>/dev/null)" == "v9.9.9" ]] \
+    && pass "install.sh honors CONDUCTOR_VERSION override" || fail "CONDUCTOR_VERSION not honored: $(cat "$OV_HOME/.claude-conductor/VERSION" 2>/dev/null)"
+[[ "$(cat "$OV_HOME/.claude-conductor/REPO_URL" 2>/dev/null)" == "https://github.com/o/r.git" ]] \
+    && pass "install.sh honors CONDUCTOR_REPO_URL override" || fail "CONDUCTOR_REPO_URL not honored: $(cat "$OV_HOME/.claude-conductor/REPO_URL" 2>/dev/null)"
+
+# ============================================================
+section "52. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
