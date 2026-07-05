@@ -55,7 +55,11 @@ uc_latest_tag() {
     local url="$1"
     [ -n "$url" ] || return 1
     local latest
-    latest=$(git ls-remote --tags "$url" 2>/dev/null \
+    # Bound the network wait so an unreachable remote never blocks startup:
+    # http.lowSpeed* caps HTTPS transfers, ConnectTimeout+BatchMode caps SSH,
+    # GIT_TERMINAL_PROMPT=0 avoids interactive auth hangs.
+    latest=$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o ConnectTimeout=5 -o BatchMode=yes" \
+        git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 ls-remote --tags "$url" 2>/dev/null \
         | awk '{print $2}' \
         | sed 's#refs/tags/##' \
         | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \

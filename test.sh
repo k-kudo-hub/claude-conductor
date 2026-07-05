@@ -2159,7 +2159,69 @@ touch "$OV_HOME/.zshrc"
     && pass "install.sh honors CONDUCTOR_REPO_URL override" || fail "CONDUCTOR_REPO_URL not honored: $(cat "$OV_HOME/.claude-conductor/REPO_URL" 2>/dev/null)"
 
 # ============================================================
-section "52. Uninstall"
+section "52. check-update.sh (startup update notice)"
+# ============================================================
+
+CHECK="$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# Local bare repo with two semver tags; v0.2.0 is newer than installed v0.1.0.
+UPD_REMOTE="$SANDBOX/upd-remote.git"
+git init --bare -q "$UPD_REMOTE"
+UPD_SEED="$SANDBOX/upd-seed"
+git clone -q "$UPD_REMOTE" "$UPD_SEED" 2>/dev/null
+git -C "$UPD_SEED" checkout -q -b main
+echo x > "$UPD_SEED/f"
+git -C "$UPD_SEED" add .
+git -C "$UPD_SEED" -c user.email=a@b -c user.name=a commit -q -m init
+git -C "$UPD_SEED" tag v0.1.0
+git -C "$UPD_SEED" tag v0.2.0
+git -C "$UPD_SEED" push -q origin main --tags 2>/dev/null
+
+echo "$UPD_REMOTE" > "$CONDUCTOR_HOME/REPO_URL"
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+
+OUT=$(bash "$CHECK" --force 2>&1)
+echo "$OUT" | grep -q "v0.2.0" && pass "notice shown when outdated" || fail "no notice when outdated: $OUT"
+echo "$OUT" | grep -q "mdev update" && pass "notice suggests mdev update" || fail "notice missing command: $OUT"
+[[ -f "$CONDUCTOR_HOME/.update-check" ]] && grep -q "v0.2.0" "$CONDUCTOR_HOME/.update-check" \
+    && pass "latest tag cached with date" || fail "cache not written"
+
+# Up to date: installed == latest -> no notice
+echo "v0.2.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+OUT=$(bash "$CHECK" --force 2>&1)
+[[ -z "$OUT" ]] && pass "no notice when up to date" || fail "unexpected notice when current: $OUT"
+
+# Disabled via config -> no notice even when outdated
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+printf '{"update_check":{"enabled":false}}' > "$CONDUCTOR_HOME/config.json"
+OUT=$(bash "$CHECK" --force 2>&1)
+[[ -z "$OUT" ]] && pass "no notice when update_check disabled" || fail "notice despite disabled: $OUT"
+rm -f "$CONDUCTOR_HOME/config.json"
+
+# Unreachable remote -> silent, exit 0 (never blocks startup)
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+echo "$SANDBOX/does-not-exist.git" > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$CHECK" --force 2>&1); RC=$?
+set -e
+[[ $RC -eq 0 && -z "$OUT" ]] && pass "silent + exit 0 on network failure" || fail "not silent on failure: rc=$RC out=$OUT"
+
+# Empty REPO_URL -> silent exit 0
+: > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$CHECK" --force 2>&1); RC=$?
+set -e
+[[ $RC -eq 0 && -z "$OUT" ]] && pass "silent when REPO_URL empty" || fail "not silent on empty URL"
+
+# Restore installed version for later sections
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+
+# ============================================================
+section "53. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
