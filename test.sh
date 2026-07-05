@@ -270,6 +270,10 @@ section "12. config.default.json installed"
 # Validate JSON
 jq '.' "$HOME/.claude-conductor/config.default.json" > /dev/null 2>&1 && pass "config.default.json is valid JSON" || fail "config.default.json is invalid JSON"
 
+# update_check.enabled defaults to true (drives the startup update notice)
+[[ "$(jq -r '.update_check.enabled' "$HOME/.claude-conductor/config.default.json")" == "true" ]] \
+    && pass "update_check.enabled defaults to true" || fail "update_check.enabled default missing/wrong"
+
 # ============================================================
 section "13. config.json created from default on install"
 # ============================================================
@@ -1821,6 +1825,10 @@ echo "- 作業を実施。誤って ghp_abcdefghijklmnopqrstuvwxyz0123456789 を
 MOCK
 chmod +x "$MOCK_BIN/claude"
 
+# record-output.sh stamps completed_at with the current time, and the log path
+# is derived from it — so the expected date is today, captured here (not a
+# hardcoded date, which would break on every day after the test was written).
+E2E_DATE=$(date '+%Y/%m/%d')
 ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "upload-e2e"
 ZELLIJ_SESSION_NAME=test-session bash "$UPLOAD_SCRIPT" "upload-e2e" >/dev/null 2>&1 \
     && pass "upload-log.sh exits 0 on success" || fail "upload-log.sh failed on success path"
@@ -1832,7 +1840,7 @@ LOGFILE=$(find "$VERIFY/work-log" -name '*_upload-e2e.md' 2>/dev/null | head -1)
 [[ -n "$LOGFILE" ]] && pass "log file pushed to repo" || fail "log file not found in repo"
 if [[ -n "$LOGFILE" ]]; then
     grep -q "upload-e2e" "$LOGFILE" && pass "pushed log has task title" || fail "pushed log missing title"
-    grep -q "2026/07/04" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE"
+    grep -q "$E2E_DATE" <<< "$LOGFILE" && pass "log stored under YYYY/MM/DD" || fail "wrong date path: $LOGFILE (expected $E2E_DATE)"
     ! grep -q "ghp_abcdef" "$LOGFILE" && pass "pushed log masks LLM-echoed secret" || fail "secret leaked in pushed log"
     ! grep -q "RAWMESSAGEMARKER" "$LOGFILE" && pass "pushed log excludes raw message" || fail "raw message leaked in pushed log"
 fi
@@ -2100,7 +2108,215 @@ echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     && pass "VERSION matches semver format ($VER)" || fail "VERSION not semver: $VER"
 
 # ============================================================
-section "50. Uninstall"
+section "50. update-lib.sh (repo slug + version compare)"
+# ============================================================
+
+UPDATE_LIB="$CONDUCTOR_HOME/scripts/update-lib.sh"
+
+slug() { ( source "$UPDATE_LIB"; uc_repo_slug "$1" ); }
+[[ "$(slug 'git@github.com:owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses SSH url" || fail "SSH slug wrong: $(slug 'git@github.com:owner/repo.git')"
+[[ "$(slug 'https://github.com/owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses HTTPS url with .git" || fail "HTTPS .git slug wrong: $(slug 'https://github.com/owner/repo.git')"
+[[ "$(slug 'https://github.com/owner/repo')" == "owner/repo" ]] \
+    && pass "repo_slug parses HTTPS url without .git" || fail "HTTPS slug wrong: $(slug 'https://github.com/owner/repo')"
+[[ "$(slug 'ssh://git@github.com/owner/repo.git')" == "owner/repo" ]] \
+    && pass "repo_slug parses ssh:// url" || fail "ssh:// slug wrong: $(slug 'ssh://git@github.com/owner/repo.git')"
+[[ "$(slug 'git@github.com:torvalds/torvalds.git')" == "torvalds/torvalds" ]] \
+    && pass "repo_slug allows owner == repo" || fail "same-name slug wrong: $(slug 'git@github.com:torvalds/torvalds.git')"
+set +e
+( source "$UPDATE_LIB"; uc_repo_slug "" ) >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "repo_slug empty url returns non-zero" || fail "empty url did not fail"
+set +e
+( source "$UPDATE_LIB"; uc_repo_slug "notaurl" ) >/dev/null 2>&1; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "repo_slug rejects url without a path" || fail "bare string did not fail"
+
+vgt() { ( source "$UPDATE_LIB"; uc_version_gt "$1" "$2" ); }
+vgt v1.2.4 v1.2.3 && pass "version_gt patch newer" || fail "v1.2.4 > v1.2.3 wrong"
+vgt v1.3.0 v1.2.9 && pass "version_gt minor beats higher patch" || fail "v1.3.0 > v1.2.9 wrong"
+vgt v2.0.0 v1.9.9 && pass "version_gt major beats higher minor" || fail "v2.0.0 > v1.9.9 wrong"
+vgt v1.2.10 v1.2.9 && pass "version_gt numeric (not lexical) 10>9" || fail "v1.2.10 > v1.2.9 wrong"
+vgt 1.2.4 1.2.3 && pass "version_gt accepts no-v prefix" || fail "1.2.4 > 1.2.3 wrong"
+set +e
+vgt v1.2.3 v1.2.3; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "version_gt equal is not greater" || fail "equal reported as greater"
+set +e
+vgt v1.2.3 v1.2.4; RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "version_gt older is not greater" || fail "older reported as greater"
+
+# ============================================================
+section "51. install.sh records REPO_URL and honors overrides"
+# ============================================================
+
+# The top-level install ran from a git checkout, so REPO_URL is recorded.
+[[ -f "$CONDUCTOR_HOME/REPO_URL" ]] && pass "REPO_URL file created" || fail "REPO_URL file missing"
+grep -q "claude-conductor" "$CONDUCTOR_HOME/REPO_URL" \
+    && pass "REPO_URL points at the origin repo" || fail "REPO_URL wrong: $(cat "$CONDUCTOR_HOME/REPO_URL" 2>/dev/null)"
+
+# A tarball-based update has no .git, so update.sh injects the version and URL
+# via env vars. Verify install.sh honors them (isolated HOME to avoid clobber).
+OV_HOME="$SANDBOX/override-home"
+mkdir -p "$OV_HOME"
+touch "$OV_HOME/.zshrc"
+(
+    export HOME="$OV_HOME"
+    echo n | CONDUCTOR_VERSION="v9.9.9" CONDUCTOR_REPO_URL="https://github.com/o/r.git" \
+        bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+)
+[[ "$(cat "$OV_HOME/.claude-conductor/VERSION" 2>/dev/null)" == "v9.9.9" ]] \
+    && pass "install.sh honors CONDUCTOR_VERSION override" || fail "CONDUCTOR_VERSION not honored: $(cat "$OV_HOME/.claude-conductor/VERSION" 2>/dev/null)"
+[[ "$(cat "$OV_HOME/.claude-conductor/REPO_URL" 2>/dev/null)" == "https://github.com/o/r.git" ]] \
+    && pass "install.sh honors CONDUCTOR_REPO_URL override" || fail "CONDUCTOR_REPO_URL not honored: $(cat "$OV_HOME/.claude-conductor/REPO_URL" 2>/dev/null)"
+
+# ============================================================
+section "52. check-update.sh (startup update notice)"
+# ============================================================
+
+CHECK="$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# Local bare repo with two semver tags; v0.2.0 is newer than installed v0.1.0.
+UPD_REMOTE="$SANDBOX/upd-remote.git"
+git init --bare -q "$UPD_REMOTE"
+UPD_SEED="$SANDBOX/upd-seed"
+git clone -q "$UPD_REMOTE" "$UPD_SEED" 2>/dev/null
+git -C "$UPD_SEED" checkout -q -b main
+echo x > "$UPD_SEED/f"
+git -C "$UPD_SEED" add .
+git -C "$UPD_SEED" -c user.email=a@b -c user.name=a commit -q -m init
+git -C "$UPD_SEED" tag v0.1.0
+git -C "$UPD_SEED" tag v0.2.0
+git -C "$UPD_SEED" push -q origin main --tags 2>/dev/null
+
+echo "$UPD_REMOTE" > "$CONDUCTOR_HOME/REPO_URL"
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+
+OUT=$(bash "$CHECK" --force 2>&1)
+echo "$OUT" | grep -q "v0.2.0" && pass "notice shown when outdated" || fail "no notice when outdated: $OUT"
+echo "$OUT" | grep -q "mdev update" && pass "notice suggests mdev update" || fail "notice missing command: $OUT"
+[[ -f "$CONDUCTOR_HOME/.update-check" ]] && grep -q "v0.2.0" "$CONDUCTOR_HOME/.update-check" \
+    && pass "latest tag cached with date" || fail "cache not written"
+
+# Up to date: installed == latest -> no notice
+echo "v0.2.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+OUT=$(bash "$CHECK" --force 2>&1)
+[[ -z "$OUT" ]] && pass "no notice when up to date" || fail "unexpected notice when current: $OUT"
+
+# Disabled via config -> no notice even when outdated
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+printf '{"update_check":{"enabled":false}}' > "$CONDUCTOR_HOME/config.json"
+OUT=$(bash "$CHECK" --force 2>&1)
+[[ -z "$OUT" ]] && pass "no notice when update_check disabled" || fail "notice despite disabled: $OUT"
+rm -f "$CONDUCTOR_HOME/config.json"
+
+# Unreachable remote -> silent, exit 0 (never blocks startup)
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+rm -f "$CONDUCTOR_HOME/.update-check"
+echo "$SANDBOX/does-not-exist.git" > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$CHECK" --force 2>&1); RC=$?
+set -e
+[[ $RC -eq 0 && -z "$OUT" ]] && pass "silent + exit 0 on network failure" || fail "not silent on failure: rc=$RC out=$OUT"
+
+# Empty REPO_URL -> silent exit 0
+: > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$CHECK" --force 2>&1); RC=$?
+set -e
+[[ $RC -eq 0 && -z "$OUT" ]] && pass "silent when REPO_URL empty" || fail "not silent on empty URL"
+
+# Restore installed version for later sections
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+
+# ============================================================
+section "53. update.sh (download tarball + reinstall)"
+# ============================================================
+
+UPDATE_SH="$CONDUCTOR_HOME/scripts/update.sh"
+
+# update.sh downloads a real tarball via curl; the fetch-news mock curl would
+# hijack that. Disable it for this section (restored before Uninstall).
+[ -f "$MOCK_BIN/curl" ] && mv "$MOCK_BIN/curl" "$MOCK_BIN/curl.disabled"
+
+# A real update runs on an already-configured system, so install.sh skips its
+# interactive .zshrc prompt. Mirror that here (top-level install answered "n").
+grep -qF "claude-conductor/init.zsh" "$HOME/.zshrc" \
+    || echo 'source "$HOME/.claude-conductor/init.zsh"' >> "$HOME/.zshrc"
+
+# Reuse the bare repo from section 52 (has tag v0.2.0). Point install at it.
+echo "$UPD_REMOTE" > "$CONDUCTOR_HOME/REPO_URL"
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+
+# Build a release source tarball named like GitHub's: conductor-0.2.0/...
+STAGE="$SANDBOX/stage"
+SRCDIR="$STAGE/conductor-0.2.0"
+mkdir -p "$SRCDIR"
+cp -R "$CONDUCTOR_HOME/scripts" "$SRCDIR/scripts"
+cp -R "$CONDUCTOR_HOME/layouts" "$SRCDIR/layouts"
+cp "$CONDUCTOR_HOME/init.zsh" "$SRCDIR/init.zsh"
+cp "$CONDUCTOR_HOME/hooks.json" "$SRCDIR/hooks.json"
+cp "$CONDUCTOR_HOME/config.default.json" "$SRCDIR/config.default.json"
+cp "$REPO_DIR/install.sh" "$SRCDIR/install.sh"
+TARBALL="$SANDBOX/release-0.2.0.tar.gz"
+tar -czf "$TARBALL" -C "$STAGE" conductor-0.2.0
+
+# Run update from the local tarball (file:// so no network is needed).
+OUT=$(CONDUCTOR_TARBALL_URL="file://$TARBALL" bash "$UPDATE_SH" 2>&1)
+echo "$OUT" | grep -q "v0.2.0 に更新しました" && pass "update.sh reports success" || fail "no success message: $OUT"
+[[ "$(cat "$CONDUCTOR_HOME/VERSION" 2>/dev/null)" == "v0.2.0" ]] \
+    && pass "VERSION updated to latest tag" || fail "VERSION not updated: $(cat "$CONDUCTOR_HOME/VERSION" 2>/dev/null)"
+
+# Already up to date -> no download, exits 0 with a note
+echo "v0.2.0" > "$CONDUCTOR_HOME/VERSION"
+OUT=$(CONDUCTOR_TARBALL_URL="file://$SANDBOX/nonexistent.tar.gz" bash "$UPDATE_SH" 2>&1)
+echo "$OUT" | grep -q "既に最新" && pass "update.sh no-ops when already current" || fail "did not detect current: $OUT"
+
+# Missing REPO_URL -> error, non-zero exit
+: > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$UPDATE_SH" 2>&1); RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "update.sh fails when REPO_URL unknown" || fail "did not fail on missing URL: $OUT"
+
+# Restore the mock curl for any later use
+[ -f "$MOCK_BIN/curl.disabled" ] && mv "$MOCK_BIN/curl.disabled" "$MOCK_BIN/curl"
+
+# ============================================================
+section "54. mdev dispatch (update subcommand + startup check)"
+# ============================================================
+
+# Stub update.sh and check-update.sh with markers so we can observe which one
+# mdev() invokes without running the real flows.
+mv "$CONDUCTOR_HOME/scripts/update.sh" "$CONDUCTOR_HOME/scripts/update.sh.real"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh" "$CONDUCTOR_HOME/scripts/check-update.sh.real"
+printf '#!/bin/bash\necho called > "%s/mdev-update-marker"\n' "$SANDBOX" > "$CONDUCTOR_HOME/scripts/update.sh"
+printf '#!/bin/bash\necho called > "%s/mdev-check-marker"\n' "$SANDBOX" > "$CONDUCTOR_HOME/scripts/check-update.sh"
+chmod +x "$CONDUCTOR_HOME/scripts/update.sh" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# `mdev update` runs the updater and does NOT start a session / startup check
+rm -f "$SANDBOX/mdev-update-marker" "$SANDBOX/mdev-check-marker"
+zsh -c "source '$CONDUCTOR_HOME/init.zsh' && mdev update" >/dev/null 2>&1
+[[ -f "$SANDBOX/mdev-update-marker" ]] && pass "mdev update dispatches to update.sh" || fail "mdev update did not call update.sh"
+[[ ! -f "$SANDBOX/mdev-check-marker" ]] && pass "mdev update skips startup check" || fail "mdev update ran startup check"
+
+# A normal `mdev <name>` runs the startup update check (and not the updater)
+rm -f "$SANDBOX/mdev-update-marker" "$SANDBOX/mdev-check-marker"
+zsh -c "source '$CONDUCTOR_HOME/init.zsh' && mdev testsess" >/dev/null 2>&1
+[[ -f "$SANDBOX/mdev-check-marker" ]] && pass "mdev runs startup update check" || fail "mdev did not run check-update.sh"
+[[ ! -f "$SANDBOX/mdev-update-marker" ]] && pass "normal mdev does not run updater" || fail "normal mdev ran updater"
+
+# Restore the real scripts
+mv "$CONDUCTOR_HOME/scripts/update.sh.real" "$CONDUCTOR_HOME/scripts/update.sh"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# ============================================================
+section "55. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

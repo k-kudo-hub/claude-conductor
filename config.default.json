@@ -7,6 +7,9 @@
     "base_dir": "work-log",
     "branch": "main"
   },
+  "update_check": {
+    "enabled": true
+  },
   "skip_task_name_input": false,
   "pricing": {
     "claude-opus-4-7": {
