@@ -2221,7 +2221,60 @@ set -e
 echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
 
 # ============================================================
-section "53. Uninstall"
+section "53. update.sh (download tarball + reinstall)"
+# ============================================================
+
+UPDATE_SH="$CONDUCTOR_HOME/scripts/update.sh"
+
+# update.sh downloads a real tarball via curl; the fetch-news mock curl would
+# hijack that. Disable it for this section (restored before Uninstall).
+[ -f "$MOCK_BIN/curl" ] && mv "$MOCK_BIN/curl" "$MOCK_BIN/curl.disabled"
+
+# A real update runs on an already-configured system, so install.sh skips its
+# interactive .zshrc prompt. Mirror that here (top-level install answered "n").
+grep -qF "claude-conductor/init.zsh" "$HOME/.zshrc" \
+    || echo 'source "$HOME/.claude-conductor/init.zsh"' >> "$HOME/.zshrc"
+
+# Reuse the bare repo from section 52 (has tag v0.2.0). Point install at it.
+echo "$UPD_REMOTE" > "$CONDUCTOR_HOME/REPO_URL"
+echo "v0.1.0" > "$CONDUCTOR_HOME/VERSION"
+
+# Build a release source tarball named like GitHub's: conductor-0.2.0/...
+STAGE="$SANDBOX/stage"
+SRCDIR="$STAGE/conductor-0.2.0"
+mkdir -p "$SRCDIR"
+cp -R "$CONDUCTOR_HOME/scripts" "$SRCDIR/scripts"
+cp -R "$CONDUCTOR_HOME/layouts" "$SRCDIR/layouts"
+cp "$CONDUCTOR_HOME/init.zsh" "$SRCDIR/init.zsh"
+cp "$CONDUCTOR_HOME/hooks.json" "$SRCDIR/hooks.json"
+cp "$CONDUCTOR_HOME/config.default.json" "$SRCDIR/config.default.json"
+cp "$REPO_DIR/install.sh" "$SRCDIR/install.sh"
+TARBALL="$SANDBOX/release-0.2.0.tar.gz"
+tar -czf "$TARBALL" -C "$STAGE" conductor-0.2.0
+
+# Run update from the local tarball (file:// so no network is needed).
+OUT=$(CONDUCTOR_TARBALL_URL="file://$TARBALL" bash "$UPDATE_SH" 2>&1)
+echo "$OUT" | grep -q "v0.2.0 に更新しました" && pass "update.sh reports success" || fail "no success message: $OUT"
+[[ "$(cat "$CONDUCTOR_HOME/VERSION" 2>/dev/null)" == "v0.2.0" ]] \
+    && pass "VERSION updated to latest tag" || fail "VERSION not updated: $(cat "$CONDUCTOR_HOME/VERSION" 2>/dev/null)"
+
+# Already up to date -> no download, exits 0 with a note
+echo "v0.2.0" > "$CONDUCTOR_HOME/VERSION"
+OUT=$(CONDUCTOR_TARBALL_URL="file://$SANDBOX/nonexistent.tar.gz" bash "$UPDATE_SH" 2>&1)
+echo "$OUT" | grep -q "既に最新" && pass "update.sh no-ops when already current" || fail "did not detect current: $OUT"
+
+# Missing REPO_URL -> error, non-zero exit
+: > "$CONDUCTOR_HOME/REPO_URL"
+set +e
+OUT=$(bash "$UPDATE_SH" 2>&1); RC=$?
+set -e
+[[ $RC -ne 0 ]] && pass "update.sh fails when REPO_URL unknown" || fail "did not fail on missing URL: $OUT"
+
+# Restore the mock curl for any later use
+[ -f "$MOCK_BIN/curl.disabled" ] && mv "$MOCK_BIN/curl.disabled" "$MOCK_BIN/curl"
+
+# ============================================================
+section "54. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
