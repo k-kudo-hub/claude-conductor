@@ -2274,7 +2274,35 @@ set -e
 [ -f "$MOCK_BIN/curl.disabled" ] && mv "$MOCK_BIN/curl.disabled" "$MOCK_BIN/curl"
 
 # ============================================================
-section "54. Uninstall"
+section "54. mdev dispatch (update subcommand + startup check)"
+# ============================================================
+
+# Stub update.sh and check-update.sh with markers so we can observe which one
+# mdev() invokes without running the real flows.
+mv "$CONDUCTOR_HOME/scripts/update.sh" "$CONDUCTOR_HOME/scripts/update.sh.real"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh" "$CONDUCTOR_HOME/scripts/check-update.sh.real"
+printf '#!/bin/bash\necho called > "%s/mdev-update-marker"\n' "$SANDBOX" > "$CONDUCTOR_HOME/scripts/update.sh"
+printf '#!/bin/bash\necho called > "%s/mdev-check-marker"\n' "$SANDBOX" > "$CONDUCTOR_HOME/scripts/check-update.sh"
+chmod +x "$CONDUCTOR_HOME/scripts/update.sh" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# `mdev update` runs the updater and does NOT start a session / startup check
+rm -f "$SANDBOX/mdev-update-marker" "$SANDBOX/mdev-check-marker"
+zsh -c "source '$CONDUCTOR_HOME/init.zsh' && mdev update" >/dev/null 2>&1
+[[ -f "$SANDBOX/mdev-update-marker" ]] && pass "mdev update dispatches to update.sh" || fail "mdev update did not call update.sh"
+[[ ! -f "$SANDBOX/mdev-check-marker" ]] && pass "mdev update skips startup check" || fail "mdev update ran startup check"
+
+# A normal `mdev <name>` runs the startup update check (and not the updater)
+rm -f "$SANDBOX/mdev-update-marker" "$SANDBOX/mdev-check-marker"
+zsh -c "source '$CONDUCTOR_HOME/init.zsh' && mdev testsess" >/dev/null 2>&1
+[[ -f "$SANDBOX/mdev-check-marker" ]] && pass "mdev runs startup update check" || fail "mdev did not run check-update.sh"
+[[ ! -f "$SANDBOX/mdev-update-marker" ]] && pass "normal mdev does not run updater" || fail "normal mdev ran updater"
+
+# Restore the real scripts
+mv "$CONDUCTOR_HOME/scripts/update.sh.real" "$CONDUCTOR_HOME/scripts/update.sh"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# ============================================================
+section "55. Uninstall"
 # ============================================================
 
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null

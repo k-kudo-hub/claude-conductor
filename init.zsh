@@ -12,10 +12,18 @@ alias zjk='zellij kill-session'
 
 # --- Session launchers ---
 
-# Multi-task session with dashboard
+# Multi-task session with dashboard.
+#   mdev              start a session (name defaults to <dir>-<HHMMSS>)
+#   mdev <name>       start a session with the given name
+#   mdev update       update claude-conductor to the latest release
 mdev() {
+    if [[ "$1" == "update" ]]; then
+        bash "$CONDUCTOR_HOME/scripts/update.sh"
+        return $?
+    fi
     local session_name="${1:-$(basename $(pwd))-$(date +%H%M%S)}"
     bash "$CONDUCTOR_HOME/scripts/fetch-news.sh"
+    bash "$CONDUCTOR_HOME/scripts/check-update.sh"
     zellij --new-session-with-layout "$CONDUCTOR_HOME/layouts/multi.kdl" --session "$session_name"
 }
 
