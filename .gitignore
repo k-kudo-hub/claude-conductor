@@ -2,3 +2,12 @@
 *.swp
 *.swo
 .claude/todo/
+
+# ユーザーローカル設定（install.sh が config.default.json から初回生成する個人用ファイル）
+config.json
+
+# CONDUCTOR_HOME としてリポジトリ／worktree を使う場合（mdev-test 等）の実行時生成物
+/daily/
+/news/
+/upload-cache/
+/VERSION
