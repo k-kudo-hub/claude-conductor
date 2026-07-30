@@ -151,6 +151,30 @@ The Done pane lists today's completed tasks. Restore one back to the dashboard t
 
 A restored task is recreated in its original directory and task type, resuming its previous Claude Code conversation (`claude --resume`) when the session is still available — otherwise a fresh session starts. Once the tab is recreated, its daily-log entry is marked `restored` so it no longer appears in the Done pane. If the original directory no longer exists (e.g. the worktree was removed), the task stays in the Done pane instead of being lost.
 
+## Using a different agent CLI (optional)
+
+By default, task tabs and the `dev` session launch `claude`. Set `agent.command` in
+`~/.claude-conductor/config.json` to launch any other CLI instead (e.g. Codex):
+
+```json
+{
+  "agent": {
+    "command": "codex",
+    "resume_args": "resume"
+  }
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `command` | Command used to launch the agent (default `claude`). The string is word-split, so wrapper invocations like `"fdev secrets exec my-header -- claude"` work |
+| `resume_args` | Argument(s) inserted between the command and the session id when restoring a Done task (default `--resume`, i.e. `claude --resume <id>`; Codex uses `resume`) |
+
+> **Note:** The dashboard's pending/waiting states, Done-task restore, and cost
+> tracking are driven by Claude Code's hooks (`session_id`, transcript, etc.).
+> With a non-Claude agent the tabs and layouts still work, but those
+> hook-driven features stay inactive.
+
 ## How it works
 
 ```

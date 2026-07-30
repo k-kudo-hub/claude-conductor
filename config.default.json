@@ -1,6 +1,10 @@
 {
   "search_dirs": ["~/projects", "~/works"],
   "search_depth": 1,
+  "agent": {
+    "command": "claude",
+    "resume_args": "--resume"
+  },
   "upload": {
     "enabled": false,
     "repo": "",
@@ -58,10 +62,11 @@
   },
   "task_types": {
     "dev": {
-      "description": "Claude Code + LazyVim",
+      "description": "Claude Code + LazyVim + lazygit",
       "layout": [
         { "action": "new-pane", "direction": "right", "command": "nvim" },
-        { "action": "focus-previous-pane" }
+        { "action": "new-pane", "direction": "down", "command": "lazygit" },
+        { "action": "move-focus", "direction": "left" }
       ]
     },
     "review": {

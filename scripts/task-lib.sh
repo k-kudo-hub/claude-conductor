@@ -13,6 +13,25 @@ load_config() {
     echo "$config_file"
 }
 
+# Agent launch command (config .agent.command). The value is a single string
+# that callers word-split on purpose, so wrapper invocations like
+# "fdev secrets exec my-header -- claude" work as-is.
+agent_command() {
+    local cmd
+    cmd=$(jq -r '.agent.command // empty' "$(load_config)" 2>/dev/null)
+    [[ -z "$cmd" ]] && cmd="claude"
+    echo "$cmd"
+}
+
+# Arguments inserted between the agent command and the session id when
+# resuming (config .agent.resume_args). Word-split like agent_command.
+agent_resume_args() {
+    local args
+    args=$(jq -r '.agent.resume_args // empty' "$(load_config)" 2>/dev/null)
+    [[ -z "$args" ]] && args="--resume"
+    echo "$args"
+}
+
 apply_layout() {
     local dir="$1"
     local type="$2"
@@ -64,12 +83,17 @@ create_task() {
     local dir="$1"
     local type="$2"
     local name="$3"
-    local resume="$4"   # optional: Claude session id to resume
+    local resume="$4"   # optional: agent session id to resume
+
+    local -a agent_cmd
+    read -r -a agent_cmd <<< "$(agent_command)"
 
     if [[ -n "$resume" ]]; then
-        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude --resume "$resume"
+        local -a resume_flags
+        read -r -a resume_flags <<< "$(agent_resume_args)"
+        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" "${agent_cmd[@]}" "${resume_flags[@]}" "$resume"
     else
-        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" claude
+        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" "${agent_cmd[@]}"
     fi
     # Report tab-creation success to the caller (restore relies on this).
     # Bail out before building panes if the tab itself could not be created.
