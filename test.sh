@@ -331,7 +331,7 @@ section "16. layout actions generate correct zellij commands"
 # Clear zellij call log
 : > "$HOME/.claude-pending/zellij-calls.log"
 
-# Test dev layout (1 action: new-pane right nvim)
+# Test dev layout (new-pane right nvim, new-pane down lazygit, move-focus left)
 DEV_LAYOUT=$(jq -c '.task_types.dev.layout[]' "$CONFIG_FILE")
 while IFS= read -r step; do
     ACTION=$(echo "$step" | jq -r '.action')
@@ -357,8 +357,10 @@ done <<< "$DEV_LAYOUT"
 
 grep -q 'action new-pane --direction right --cwd /tmp -- nvim' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "dev layout: new-pane right nvim" || fail "dev layout: missing nvim pane"
-grep -q 'action focus-previous-pane' "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "dev layout: focus-previous-pane" || fail "dev layout: missing focus-previous-pane"
+grep -q 'action new-pane --direction down --cwd /tmp -- lazygit' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "dev layout: new-pane down lazygit" || fail "dev layout: missing lazygit pane"
+grep -q 'action move-focus left' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "dev layout: move-focus left" || fail "dev layout: missing move-focus left"
 
 # Clear and test k8s layout
 : > "$HOME/.claude-pending/zellij-calls.log"
@@ -429,6 +431,35 @@ grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=resto
 ( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "resume-me" "sess-xyz" ) >/dev/null 2>&1
 grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume-me TASK_TYPE=dev claude --resume sess-xyz' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "create_task resumes session with claude --resume" || fail "create_task did not pass --resume"
+
+# ============================================================
+section "17b2. configurable agent command (.agent.command)"
+# ============================================================
+
+CONDUCTOR_CFG="$HOME/.claude-conductor/config.json"
+
+# A custom agent command replaces claude in new tabs
+jq '.agent = {"command": "codex", "resume_args": "resume"}' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-task" ) >/dev/null 2>&1
+grep -q 'action new-tab -n codex-task --cwd /tmp/proj -- env TASK_TAB_NAME=codex-task TASK_TYPE=dev codex' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task honors .agent.command" || fail "create_task ignored .agent.command"
+
+# Custom resume_args are inserted before the session id
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-resume" "sess-abc" ) >/dev/null 2>&1
+grep -q 'TASK_TYPE=dev codex resume sess-abc' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task honors .agent.resume_args" || fail "create_task ignored .agent.resume_args"
+
+# A multi-word command is word-split into separate arguments
+jq '.agent.command = "fdev exec wrapper -- claude"' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "wrapped-task" ) >/dev/null 2>&1
+grep -q 'TASK_TYPE=dev fdev exec wrapper -- claude' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "multi-word agent command is word-split" || fail "multi-word agent command not split"
+
+# Restore the default config for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
 
 # ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"

@@ -9,14 +9,22 @@ layout {
     tab name="Dev" focus=true {
         pane split_direction="vertical" {
             pane {
-                name "Claude Code"
-                command "claude"
+                name "Agent"
+                command "bash"
+                args "-c" "bash \"${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/agent-launch.sh\""
                 size "50%"
             }
-            pane {
-                name "LazyVim"
-                command "nvim"
-                size "50%"
+            pane split_direction="horizontal" size="50%" {
+                pane {
+                    name "LazyVim"
+                    command "nvim"
+                    size "50%"
+                }
+                pane {
+                    name "lazygit"
+                    command "lazygit"
+                    size "50%"
+                }
             }
         }
     }
