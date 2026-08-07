@@ -37,6 +37,11 @@ if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
         echo "1 x $t"
     done
 fi
+# Emit fake `list-sessions` lines when MOCK_SESSIONS_OUTPUT is set
+# (real zellij 0.44 format, one session per line)
+if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
+    printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
@@ -2732,6 +2737,95 @@ zsh -c "source '$CONDUCTOR_HOME/init.zsh' && mdev testsess" >/dev/null 2>&1
 
 # Restore the real scripts
 mv "$CONDUCTOR_HOME/scripts/update.sh.real" "$CONDUCTOR_HOME/scripts/update.sh"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# ============================================================
+section "54b. mdev attach-or-create (issue #37)"
+# ============================================================
+
+# Section 45 replaced the mock zellij with a list-tabs-only variant; rebuild
+# one that logs calls and serves `list-sessions` from MOCK_SESSIONS_OUTPUT.
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
+    printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+
+# Stub startup helpers so mdev runs without network / real update flows.
+mv "$CONDUCTOR_HOME/scripts/fetch-news.sh" "$CONDUCTOR_HOME/scripts/fetch-news.sh.real"
+mv "$CONDUCTOR_HOME/scripts/check-update.sh" "$CONDUCTOR_HOME/scripts/check-update.sh.real"
+printf '#!/bin/bash\nexit 0\n' > "$CONDUCTOR_HOME/scripts/fetch-news.sh"
+printf '#!/bin/bash\nexit 0\n' > "$CONDUCTOR_HOME/scripts/check-update.sh"
+chmod +x "$CONDUCTOR_HOME/scripts/fetch-news.sh" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+mkdir -p "$HOME/.claude-pending"
+ZLOG="$HOME/.claude-pending/zellij-calls.log"
+MDEV_WORKDIR="$SANDBOX/proj/myapp"
+mkdir -p "$MDEV_WORKDIR"
+
+# 引数なし・セッション不在: ディレクトリ名のみ（タイムスタンプなし）で新規作成
+: > "$ZLOG"
+zsh -c "cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+grep -q "new-session-with-layout .* --session myapp$" "$ZLOG" \
+  && pass "absent session: creates with plain dirname (no timestamp)" \
+  || fail "wrong create call: $(cat "$ZLOG")"
+grep -q "mock-zellij: attach" "$ZLOG" \
+  && fail "absent session: unexpected attach" || pass "absent session: no attach attempted"
+
+# 生存セッションあり: attachし、新規作成しない
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 1h 2m 3s ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+grep -q "mock-zellij: attach myapp$" "$ZLOG" \
+  && pass "alive session: attaches to it" || fail "no attach call: $(cat "$ZLOG")"
+grep -q "new-session-with-layout" "$ZLOG" \
+  && fail "alive session: unexpected new-session" || pass "alive session: no new session created"
+
+# EXITEDセッション: 削除してから新規作成（復元は#36のレジストリが担当）
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 5h ago] (EXITED - attach to resurrect)'; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+grep -q "mock-zellij: delete-session myapp --force" "$ZLOG" \
+  && pass "exited session: deleted before recreation" || fail "no delete-session call: $(cat "$ZLOG")"
+grep -q "new-session-with-layout .* --session myapp$" "$ZLOG" \
+  && pass "exited session: recreated with same name" || fail "no create call: $(cat "$ZLOG")"
+grep -q "mock-zellij: attach" "$ZLOG" \
+  && fail "exited session: unexpected attach (would resurrect stale layout)" \
+  || pass "exited session: zellij resurrection not used"
+
+# 前方一致の別セッションは誤マッチしない（myapp-2 が生きていても myapp は不在扱い）
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp-2 [Created 1h ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+grep -q "new-session-with-layout .* --session myapp$" "$ZLOG" \
+  && pass "prefix-sharing session does not false-match" || fail "prefix false-match: $(cat "$ZLOG")"
+
+# --new: 生存セッションがあってもタイムスタンプ付き名で新規作成
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 1h ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev --new" >/dev/null 2>&1
+grep -Eq "new-session-with-layout .* --session myapp-[0-9]{6}$" "$ZLOG" \
+  && pass "--new forces a fresh timestamped session" || fail "--new wrong call: $(cat "$ZLOG")"
+grep -q "mock-zellij: attach" "$ZLOG" \
+  && fail "--new: unexpected attach" || pass "--new: does not attach"
+
+# 明示名指定: その名前で attach-or-create が働く
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='customsess [Created 1h ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev customsess" >/dev/null 2>&1
+grep -q "mock-zellij: attach customsess$" "$ZLOG" \
+  && pass "explicit name: attaches when alive" || fail "explicit name did not attach: $(cat "$ZLOG")"
+
+# 24文字超のディレクトリ名は truncate される
+LONG_DIR="$SANDBOX/proj/this-is-a-really-long-project-dir"
+mkdir -p "$LONG_DIR"
+: > "$ZLOG"
+zsh -c "cd '$LONG_DIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+MDEV_SESS=$(grep -o -- '--session [^ ]*$' "$ZLOG" | head -1 | cut -d' ' -f2)
+[[ -n "$MDEV_SESS" && "${#MDEV_SESS}" -le 24 ]] \
+  && pass "long dirname truncated to <=24 chars ($MDEV_SESS)" \
+  || fail "session name not truncated: '$MDEV_SESS'"
+
+# Restore the real scripts
+mv "$CONDUCTOR_HOME/scripts/fetch-news.sh.real" "$CONDUCTOR_HOME/scripts/fetch-news.sh"
 mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
 
 # ============================================================

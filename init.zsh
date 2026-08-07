@@ -27,18 +27,62 @@ _conductor_session_name() {
     echo "$name"
 }
 
-# Multi-task session with dashboard.
-#   mdev              start a session (name defaults to <dir>-<HHMMSS>)
-#   mdev <name>       start a session with the given name
+# Multi-task session with dashboard. Attach-or-create: repeated runs from the
+# same directory always come back to the same session instead of piling up
+# timestamped ones (issue #37).
+#   mdev              attach to (or create) the <dir> session
+#   mdev <name>       attach to (or create) the named session
+#   mdev --new [name] force a fresh timestamped session
 #   mdev update       update claude-conductor to the latest release
 mdev() {
     if [[ "$1" == "update" ]]; then
         bash "$CONDUCTOR_HOME/scripts/update.sh"
         return $?
     fi
-    local session_name="${1:-$(basename $(pwd))-$(date +%H%M%S)}"
+
+    local force_new=0
+    if [[ "$1" == "--new" ]]; then
+        force_new=1
+        shift
+    fi
+
+    local base hash_src
+    if [[ -n "$1" ]]; then
+        base="$1"
+        hash_src="$1"
+    else
+        base="$(basename "$(pwd)")"
+        hash_src="$(pwd)"
+    fi
+    (( force_new )) && base="$base-$(date +%H%M%S)"
+    local session_name
+    session_name="$(_conductor_session_name "$base" "$hash_src")"
+
+    # Session state decides the path: alive -> attach; EXITED -> delete and
+    # rebuild from scratch (zellij resurrection would restart task panes as
+    # fresh agent sessions, losing conversations — the task registry restore
+    # of issue #36 brings them back with --resume instead); absent -> create.
+    local state="absent" line
+    line=$(zellij list-sessions --no-formatting 2>/dev/null \
+        | awk -v n="$session_name" '$1 == n {print; exit}')
+    if [[ -n "$line" ]]; then
+        if [[ "$line" == *"EXITED"* ]]; then
+            state="exited"
+        else
+            state="alive"
+        fi
+    fi
+
+    if [[ "$state" == "alive" ]]; then
+        zellij attach "$session_name"
+        return $?
+    fi
+
     bash "$CONDUCTOR_HOME/scripts/fetch-news.sh"
     bash "$CONDUCTOR_HOME/scripts/check-update.sh"
+    if [[ "$state" == "exited" ]]; then
+        zellij delete-session "$session_name" --force 2>/dev/null
+    fi
     zellij --new-session-with-layout "$CONDUCTOR_HOME/layouts/multi.kdl" --session "$session_name"
 }
 
