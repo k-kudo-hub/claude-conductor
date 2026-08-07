@@ -80,6 +80,8 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/registry-lib.sh" ]] && pass "registry-lib.sh installed" || fail "registry-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/restore-session.sh" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"

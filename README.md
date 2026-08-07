@@ -76,9 +76,43 @@ delays startup. Disable it by setting `update_check.enabled` to `false` in
 ### Start a session
 
 ```bash
-mdev              # Multi-task dashboard session
+mdev              # Multi-task dashboard session (attach-or-create)
 dev               # Single dev session (Claude + Neovim + lazygit)
 ```
+
+`mdev` is **attach-or-create**: the default session is named after the current
+directory (no timestamp), so running `mdev` again from the same place always
+brings you back to the same session instead of piling up new ones.
+
+```bash
+mdev              # attach to (or create) the <dir> session
+mdev <name>       # attach to (or create) the named session
+mdev --new        # force a fresh timestamped session (old behavior)
+```
+
+### Session persistence and restore
+
+Two layers keep your tasks alive:
+
+1. **Closing the terminal** — Zellij is client-server: the session and every
+   task keep running detached. `mdev` (or `zs`) reattaches.
+2. **Machine restart / dead session** — the session's processes are gone, but
+   Conductor keeps a **task registry** (`$CONDUCTOR_HOME/tasks/<session>/`)
+   that the Claude/Codex hooks update on every event. When `mdev` finds the
+   session dead (`EXITED`), it rebuilds it from the layout, and the dashboard
+   restores each registered task tab with the agent's own resume
+   (`claude --resume <id>` / `codex resume <id>`), so conversations survive
+   the reboot.
+
+Restore is best-effort and automatic:
+
+- a task whose working directory vanished (e.g. a removed worktree) is dropped
+- a task whose transcript is gone restarts fresh instead of a broken `--resume`
+- deleted tasks (`dd`) never come back — deletion clears their registry entries
+
+> **Note:** a task that has emitted **no hook event yet** (created, but you
+> never sent it a prompt and it never stopped) has no registry entry and is
+> not restored.
 
 ### Test a worktree in isolation
 
@@ -222,6 +256,15 @@ response). Pressing `w` in a task tab toggles between `Waiting` and
 next prompt (via the UserPromptSubmit hook).
 
 Pending files are stored per Zellij session at `~/.claude-pending/{session_name}/`, keyed by Claude Code's `session_id`.
+
+Separately from pending files (which exist only while a task waits for you),
+the same hooks maintain the **task registry** at
+`$CONDUCTOR_HOME/tasks/{session_name}/{session_id}.json` for every task tab's
+whole lifetime. It records the tab, working directory, task type, agent, and
+transcript path; `restore-session.sh` (run at dashboard startup) uses it to
+rebuild task tabs with the agent's resume after the session dies, and task
+deletion removes the entries. Only Conductor-created task tabs are registered —
+the hooks skip Claude sessions running outside a task tab.
 
 ## Uploading work logs (optional)
 
