@@ -1761,6 +1761,33 @@ YAML_COUNT=$(ls "$HOME/.warp/launch_configurations/"mdev-test-*.yaml 2>/dev/null
 rm -f "$MOCK_BIN/open"
 
 # ============================================================
+section "30g. _conductor_session_name (shared truncate helper)"
+# ============================================================
+
+# 24文字以内の名前はそのまま返る
+SN=$(zsh -c "source '$INIT_FILE' && _conductor_session_name 'my-project'" 2>/dev/null) || SN=""
+[[ "$SN" == "my-project" ]] && pass "short name passes through unchanged" || fail "short name changed: $SN"
+
+# ちょうど24文字は境界値としてそのまま返る
+NAME24="abcdefghij-abcdefghij-ab"
+SN=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$NAME24'" 2>/dev/null) || SN=""
+[[ "$SN" == "$NAME24" ]] && pass "24-char name passes through unchanged" || fail "24-char name changed: $SN"
+
+# 24文字超は24文字以内に切り詰められ、決定的（同入力なら同出力）
+LONG_NAME="this-is-a-very-long-session-name"
+SN1=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$LONG_NAME'" 2>/dev/null) || SN1=""
+SN2=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$LONG_NAME'" 2>/dev/null) || SN2=""
+[[ "${#SN1}" -le 24 && -n "$SN1" ]] && pass "long name truncated to <=24 chars ($SN1)" || fail "not truncated: '$SN1' (${#SN1} chars)"
+[[ "$SN1" == "$SN2" ]] && pass "truncation is deterministic" || fail "non-deterministic: $SN1 vs $SN2"
+
+# 同名でもハッシュ源（第2引数）が異なれば別のセッション名になる
+SN_A=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$LONG_NAME' '/path/alpha'" 2>/dev/null) || SN_A=""
+SN_B=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$LONG_NAME' '/path/beta'" 2>/dev/null) || SN_B=""
+[[ -n "$SN_A" && "$SN_A" != "$SN_B" ]] \
+  && pass "distinct hash sources yield distinct names ($SN_A / $SN_B)" \
+  || fail "hash-source collision: '$SN_A' vs '$SN_B'"
+
+# ============================================================
 section "32. task-create-loop.sh default name generation"
 # ============================================================
 

@@ -12,6 +12,21 @@ alias zjk='zellij kill-session'
 
 # --- Session launchers ---
 
+# zellij (>=0.44) rejects session names longer than 24 characters. Truncate,
+# appending a short hash of $2 (default: the name itself) so distinct sources
+# whose names share a prefix don't collapse onto the same session name.
+_conductor_session_name() {
+    local name="$1" hash_src="${2:-$1}"
+    if (( ${#name} > 24 )); then
+        local h
+        h=$(printf '%s' "$hash_src" | cksum | cut -d' ' -f1)
+        h=${h: -4}
+        name="${name:0:19}"
+        name="${name%-}-$h"
+    fi
+    echo "$name"
+}
+
 # Multi-task session with dashboard.
 #   mdev              start a session (name defaults to <dir>-<HHMMSS>)
 #   mdev <name>       start a session with the given name
@@ -84,15 +99,11 @@ mdev-test() {
         echo "mdev-test:   Main-tab panes will run INSTALLED scripts, not this worktree's (partial isolation)." >&2
     fi
 
-    # zellij (>=0.44) rejects session names longer than 24 characters. Truncate,
-    # appending a short hash of the full path so distinct worktrees whose names
-    # share a prefix don't collapse onto the same session name.
-    if (( ${#session} > 24 )); then
-        local wt_hash
-        wt_hash=$(printf '%s' "$wt_path" | cksum | cut -d' ' -f1)
-        wt_hash=${wt_hash: -4}
-        session="${session:0:19}"
-        session="${session%-}-$wt_hash"
+    # Truncate to zellij's 24-char session-name limit (hash keyed by the full
+    # worktree path so prefix-sharing worktrees stay distinct).
+    local full_session="$session"
+    session="$(_conductor_session_name "$session" "$wt_path")"
+    if [[ "$session" != "$full_session" ]]; then
         echo "mdev-test: session name truncated to '$session' (zellij 24-char limit)" >&2
     fi
 
