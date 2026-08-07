@@ -120,6 +120,59 @@ HOOK_CMD=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$HOME/.claude/se
   || fail "hook command does not use CONDUCTOR_HOME: $HOOK_CMD"
 
 # ============================================================
+section "2b. Codex notify merge into ~/.codex/config.toml"
+# ============================================================
+
+# Mock codex so the merge path runs even where codex is not installed
+cat > "$MOCK_BIN/codex" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+chmod +x "$MOCK_BIN/codex"
+
+# Existing config with a table: notify must land BEFORE the table header,
+# otherwise TOML parses it as a key of that table and codex ignores it.
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" << 'TOML'
+[projects."/tmp/foo"]
+trust_level = "trusted"
+TOML
+
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && pass "notify merged into codex config" || fail "notify not merged"
+grep -q 'trust_level = "trusted"' "$HOME/.codex/config.toml" \
+  && pass "existing codex config preserved" || fail "existing codex config lost"
+NOTIFY_LINENO=$(grep -n 'codex-notify.sh' "$HOME/.codex/config.toml" | head -1 | cut -d: -f1)
+TABLE_LINENO=$(grep -n '^\[' "$HOME/.codex/config.toml" | head -1 | cut -d: -f1)
+[[ -n "$NOTIFY_LINENO" && -n "$TABLE_LINENO" && "$NOTIFY_LINENO" -lt "$TABLE_LINENO" ]] \
+  && pass "notify precedes the first TOML table" || fail "notify after table: line $NOTIFY_LINENO vs $TABLE_LINENO"
+
+# Reinstall keeps a single notify line (idempotent)
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+NOTIFY_COUNT=$(grep -c 'codex-notify.sh' "$HOME/.codex/config.toml")
+[[ "$NOTIFY_COUNT" -eq 1 ]] && pass "reinstall keeps a single notify line" || fail "notify duplicated: $NOTIFY_COUNT"
+
+# A notify set by another tool is left untouched
+cat > "$HOME/.codex/config.toml" << 'TOML'
+notify = ["python3", "/somewhere/else.py"]
+TOML
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+grep -q '/somewhere/else.py' "$HOME/.codex/config.toml" \
+  && pass "foreign notify preserved" || fail "foreign notify overwritten"
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && fail "conductor notify added despite foreign notify" || pass "conductor notify not forced over foreign one"
+
+# Missing config.toml is created with the notify line
+rm -f "$HOME/.codex/config.toml"
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && pass "config.toml created with notify" || fail "config.toml not created"
+
+rm -f "$MOCK_BIN/codex"
+
+# ============================================================
 section "3. pending-notify.sh (Notification event)"
 # ============================================================
 
@@ -2658,6 +2711,16 @@ mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check
 section "55. Uninstall"
 # ============================================================
 
+# Seed a codex config holding our notify plus user content: uninstall must
+# strip only the conductor line.
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" << TOML
+notify = ["bash", "$HOME/.claude-conductor/scripts/codex-notify.sh"] # claude-conductor
+
+[projects."/tmp/foo"]
+trust_level = "trusted"
+TOML
+
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
 
 [[ ! -d "$HOME/.claude-conductor" ]] && pass "~/.claude-conductor removed" || fail "~/.claude-conductor still exists"
@@ -2673,3 +2736,9 @@ PRE_AFTER=$(jq -r '.hooks.PreToolUse' "$HOME/.claude/settings.json")
 
 # Check settings.json backup exists
 [[ -f "$HOME/.claude/settings.json.backup" ]] && pass "settings.json backup created" || fail "no backup created"
+
+# Codex notify removed, user content kept
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && fail "codex notify still present after uninstall" || pass "codex notify removed on uninstall"
+grep -q 'trust_level = "trusted"' "$HOME/.codex/config.toml" \
+  && pass "codex user config preserved on uninstall" || fail "codex user config lost"
