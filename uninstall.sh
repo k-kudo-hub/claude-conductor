@@ -31,6 +31,14 @@ if [[ -f "$SETTINGS_FILE" ]]; then
     echo -e "  ${GREEN}✓${NC} Removed hooks (backup: ${SETTINGS_FILE}.backup)"
 fi
 
+# --- Remove Codex notify (only the conductor line) ---
+CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
+if [[ -f "$CODEX_CONFIG" ]] && grep -q "codex-notify.sh" "$CODEX_CONFIG"; then
+    grep -v "codex-notify.sh" "$CODEX_CONFIG" > "${CODEX_CONFIG}.tmp"
+    mv "${CODEX_CONFIG}.tmp" "$CODEX_CONFIG"
+    echo -e "  ${GREEN}✓${NC} Removed Codex notify from $CODEX_CONFIG"
+fi
+
 # --- Remove files ---
 if [[ -d "$CONDUCTOR_HOME" ]]; then
     rm -rf "$CONDUCTOR_HOME"

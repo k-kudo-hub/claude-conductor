@@ -42,6 +42,23 @@ resolve_name() {
     fi
 }
 
+# 設定済みエージェント（config .agents）からタスクで使うものを選ぶ。
+# 未設定なら空を返し従来の単一エージェント経路（.agent.command）を使う。
+# 1件ならfzfを出さず即決、複数ならfzfで選択（キャンセル時は空を返す）。
+select_agent() {
+    local names
+    names=$(agent_names)
+    if [[ -z "$names" ]]; then
+        echo ""
+        return
+    fi
+    if [[ $(printf '%s\n' "$names" | wc -l) -eq 1 ]]; then
+        echo "$names"
+        return
+    fi
+    printf '%s\n' "$names" | fzf --prompt="Agent: "
+}
+
 # 既存タブ名と重複しないよう一意なタブ名を返す。
 # 重複時は -2, -3... を付与する。Zellij外やコマンド失敗時は元の名前をそのまま返す。
 ensure_unique_tab_name() {
@@ -98,6 +115,13 @@ while true; do
                 | fzf --prompt="Task type: " | awk '{print $1}')
             [[ -z "$type" ]] && continue
 
+            # Step 2.5: エージェント選択（.agents 設定時のみ。fzfキャンセルで中断）
+            agent=""
+            if [[ -n "$(agent_names)" ]]; then
+                agent=$(select_agent)
+                [[ -z "$agent" ]] && continue
+            fi
+
             # Step 3: タスク名入力（デフォルト候補を提示）
             default_name=$(generate_default_name "$dir" "$type")
             if skip_name_input_enabled; then
@@ -117,8 +141,8 @@ while true; do
             name=$(ensure_unique_tab_name "$name")
 
             # タスク作成
-            echo -e "  ${GREEN}Creating ${type} task '${name}' in ${dir}...${NC}"
-            create_task "$dir" "$type" "$name"
+            echo -e "  ${GREEN}Creating ${type} task '${name}'${agent:+ (${agent})} in ${dir}...${NC}"
+            create_task "$dir" "$type" "$name" "" "$agent"
             ;;
     esac
 done

@@ -120,6 +120,59 @@ HOOK_CMD=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$HOME/.claude/se
   || fail "hook command does not use CONDUCTOR_HOME: $HOOK_CMD"
 
 # ============================================================
+section "2b. Codex notify merge into ~/.codex/config.toml"
+# ============================================================
+
+# Mock codex so the merge path runs even where codex is not installed
+cat > "$MOCK_BIN/codex" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+chmod +x "$MOCK_BIN/codex"
+
+# Existing config with a table: notify must land BEFORE the table header,
+# otherwise TOML parses it as a key of that table and codex ignores it.
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" << 'TOML'
+[projects."/tmp/foo"]
+trust_level = "trusted"
+TOML
+
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && pass "notify merged into codex config" || fail "notify not merged"
+grep -q 'trust_level = "trusted"' "$HOME/.codex/config.toml" \
+  && pass "existing codex config preserved" || fail "existing codex config lost"
+NOTIFY_LINENO=$(grep -n 'codex-notify.sh' "$HOME/.codex/config.toml" | head -1 | cut -d: -f1)
+TABLE_LINENO=$(grep -n '^\[' "$HOME/.codex/config.toml" | head -1 | cut -d: -f1)
+[[ -n "$NOTIFY_LINENO" && -n "$TABLE_LINENO" && "$NOTIFY_LINENO" -lt "$TABLE_LINENO" ]] \
+  && pass "notify precedes the first TOML table" || fail "notify after table: line $NOTIFY_LINENO vs $TABLE_LINENO"
+
+# Reinstall keeps a single notify line (idempotent)
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+NOTIFY_COUNT=$(grep -c 'codex-notify.sh' "$HOME/.codex/config.toml")
+[[ "$NOTIFY_COUNT" -eq 1 ]] && pass "reinstall keeps a single notify line" || fail "notify duplicated: $NOTIFY_COUNT"
+
+# A notify set by another tool is left untouched
+cat > "$HOME/.codex/config.toml" << 'TOML'
+notify = ["python3", "/somewhere/else.py"]
+TOML
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+grep -q '/somewhere/else.py' "$HOME/.codex/config.toml" \
+  && pass "foreign notify preserved" || fail "foreign notify overwritten"
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && fail "conductor notify added despite foreign notify" || pass "conductor notify not forced over foreign one"
+
+# Missing config.toml is created with the notify line
+rm -f "$HOME/.codex/config.toml"
+echo "n" | bash "$REPO_DIR/install.sh" >/dev/null 2>&1
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && pass "config.toml created with notify" || fail "config.toml not created"
+
+rm -f "$MOCK_BIN/codex"
+
+# ============================================================
 section "3. pending-notify.sh (Notification event)"
 # ============================================================
 
@@ -142,6 +195,17 @@ DIR=$(jq -r '.dir' "$PENDING_DIR/sess-aaa.json")
 
 PTYPE=$(jq -r '.task_type' "$PENDING_DIR/sess-aaa.json")
 [[ "$PTYPE" == "dev" ]] && pass "task_type recorded from TASK_TYPE" || fail "task_type wrong: $PTYPE"
+
+PAGENT=$(jq -r '.agent' "$PENDING_DIR/sess-aaa.json")
+[[ "$PAGENT" == "claude" ]] && pass "agent defaults to claude" || fail "agent wrong: $PAGENT"
+
+# TASK_AGENT env (named-agent tabs) is recorded as-is
+echo '{"session_id":"sess-agent","message":"x","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature TASK_TYPE=dev TASK_AGENT=myclaude \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+PAGENT=$(jq -r '.agent' "$PENDING_DIR/sess-agent.json")
+[[ "$PAGENT" == "myclaude" ]] && pass "agent recorded from TASK_AGENT" || fail "TASK_AGENT not recorded: $PAGENT"
+rm -f "$PENDING_DIR/sess-agent.json"
 
 # ============================================================
 section "4. pending-notify.sh (Stop does not overwrite Notification)"
@@ -262,6 +326,64 @@ FILE_COUNT=$(ls "$PENDING_DIR" 2>/dev/null | wc -l | tr -d ' ')
 [[ "$FILE_COUNT" -eq 1 ]] && pass "no file created without session_id" || fail "unexpected file count: $FILE_COUNT"
 
 # ============================================================
+section "11b. codex-notify.sh (agent-turn-complete -> pending Stop)"
+# ============================================================
+
+CODEX_NOTIFY="$HOME/.claude-conductor/scripts/codex-notify.sh"
+CODEX_PENDING="$HOME/.claude-pending/codex-session"
+[[ -f "$CODEX_NOTIFY" ]] && pass "codex-notify.sh installed" || fail "codex-notify.sh missing"
+
+# A fake CODEX_HOME provides the rollout transcript for the thread
+FAKE_CODEX_HOME="$SANDBOX/fake-codex"
+mkdir -p "$FAKE_CODEX_HOME/sessions/2026/08/07"
+ROLLOUT="$FAKE_CODEX_HOME/sessions/2026/08/07/rollout-2026-08-07T10-00-00-thread-0001.jsonl"
+echo '{}' > "$ROLLOUT"
+
+PAYLOAD='{"type":"agent-turn-complete","thread-id":"thread-0001","turn-id":"t1","cwd":"/tmp/myapp","input-messages":["do it"],"last-assistant-message":"All done here"}'
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task TASK_TYPE=dev TASK_AGENT=codex CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "$PAYLOAD"
+
+CODEX_PENDING_FILE="$CODEX_PENDING/thread-0001.json"
+[[ -f "$CODEX_PENDING_FILE" ]] && pass "pending file keyed by thread-id" || fail "pending file missing"
+[[ "$(jq -r '.event' "$CODEX_PENDING_FILE")" == "Stop" ]] && pass "event recorded as Stop" || fail "event wrong"
+[[ "$(jq -r '.agent' "$CODEX_PENDING_FILE")" == "codex" ]] && pass "agent recorded as codex" || fail "agent wrong"
+[[ "$(jq -r '.tab' "$CODEX_PENDING_FILE")" == "codex-task" ]] && pass "tab from TASK_TAB_NAME" || fail "tab wrong"
+[[ "$(jq -r '.message' "$CODEX_PENDING_FILE")" == "All done here" ]] && pass "message from last-assistant-message" || fail "message wrong"
+[[ "$(jq -r '.dir' "$CODEX_PENDING_FILE")" == "/tmp/myapp" ]] && pass "dir from payload cwd" || fail "dir wrong"
+[[ "$(jq -r '.task_type' "$CODEX_PENDING_FILE")" == "dev" ]] && pass "task_type from env" || fail "task_type wrong"
+[[ "$(jq -r '.claude_session_id' "$CODEX_PENDING_FILE")" == "thread-0001" ]] && pass "session id kept in claude_session_id" || fail "claude_session_id wrong"
+[[ "$(jq -r '.transcript_path' "$CODEX_PENDING_FILE")" == "$ROLLOUT" ]] && pass "transcript resolved from CODEX_HOME sessions" || fail "transcript_path wrong: $(jq -r '.transcript_path' "$CODEX_PENDING_FILE")"
+
+# The payload arrives as the LAST argument (notify argv may carry extras first)
+rm -f "$CODEX_PENDING_FILE"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "ignored-extra-arg" "$PAYLOAD"
+[[ -f "$CODEX_PENDING_FILE" ]] && pass "payload read from last argument" || fail "last-argument payload not handled"
+
+# Other event types are ignored
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" '{"type":"something-else","thread-id":"thread-0002"}'
+[[ ! -f "$CODEX_PENDING/thread-0002.json" ]] && pass "non-turn-complete event ignored" || fail "unexpected pending for other event"
+
+# Missing thread-id is a no-op
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" '{"type":"agent-turn-complete"}'
+CODEX_FILES=$(ls "$CODEX_PENDING" | wc -l | tr -d ' ')
+[[ "$CODEX_FILES" -eq 1 ]] && pass "no file without thread-id" || fail "unexpected files: $CODEX_FILES"
+
+# A Waiting entry is not clobbered by a later turn-complete
+jq '.event = "Waiting"' "$CODEX_PENDING_FILE" > "$CODEX_PENDING_FILE.tmp" && mv "$CODEX_PENDING_FILE.tmp" "$CODEX_PENDING_FILE"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "$PAYLOAD"
+[[ "$(jq -r '.event' "$CODEX_PENDING_FILE")" == "Waiting" ]] && pass "Waiting preserved on turn-complete" || fail "Waiting clobbered"
+
+# Missing tab name falls back to the payload cwd basename
+rm -rf "$CODEX_PENDING"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME= TASK_TYPE= CODEX_HOME="$FAKE_CODEX_HOME" bash "$CODEX_NOTIFY" "$PAYLOAD"
+[[ "$(jq -r '.tab' "$CODEX_PENDING_FILE")" == "myapp" ]] && pass "tab falls back to cwd basename" || fail "tab fallback wrong"
+rm -rf "$CODEX_PENDING" "$FAKE_CODEX_HOME"
+
+# ============================================================
 section "12. config.default.json installed"
 # ============================================================
 
@@ -323,6 +445,45 @@ echo "$SEARCH_DIRS_JSON" | grep -q "projects" && pass "search_dirs contains proj
 # Read search_depth from config
 SEARCH_DEPTH_JSON=$(jq -r '.search_depth' "$CONFIG_FILE")
 [[ "$SEARCH_DEPTH_JSON" == "1" ]] && pass "search_depth is 1" || fail "search_depth wrong: $SEARCH_DEPTH_JSON"
+
+# ============================================================
+section "15b. task-create-loop.sh agent selection (select_agent)"
+# ============================================================
+
+CONDUCTOR_CFG="$HOME/.claude-conductor/config.json"
+TASK_CREATE="$HOME/.claude-conductor/scripts/task-create-loop.sh"
+
+# select_agent is defined when the script is sourced (main_loop must not start)
+( source "$TASK_CREATE" && declare -F select_agent >/dev/null ) \
+  && pass "task-create-loop.sh defines select_agent" || fail "select_agent missing"
+
+# No .agents configured -> empty output (legacy single-agent path)
+jq 'del(.agents)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ -z "$SA" ]] && pass "select_agent empty without .agents" || fail "select_agent = '$SA' without .agents"
+
+# A single configured agent is returned without prompting
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ "$SA" == "claude" ]] && pass "select_agent auto-picks single agent" || fail "select_agent single = '$SA'"
+
+# Multiple agents go through fzf with all candidates offered
+cat > "$MOCK_BIN/fzf" << 'MOCK'
+#!/bin/bash
+tee "$HOME/.claude-pending/fzf-input.log" | head -1
+MOCK
+chmod +x "$MOCK_BIN/fzf"
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}, "codex": {"command": "codex", "resume_args": "resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ "$SA" == "claude" ]] && pass "select_agent returns fzf pick" || fail "select_agent fzf = '$SA'"
+grep -q "codex" "$HOME/.claude-pending/fzf-input.log" \
+  && pass "select_agent offers all agents to fzf" || fail "fzf candidates missing codex"
+rm -f "$MOCK_BIN/fzf" "$HOME/.claude-pending/fzf-input.log"
+
+# Restore the default config for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
 
 # ============================================================
 section "16. layout actions generate correct zellij commands"
@@ -457,6 +618,54 @@ jq '.agent.command = "fdev exec wrapper -- claude"' "$CONDUCTOR_CFG" > "$CONDUCT
 ( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "wrapped-task" ) >/dev/null 2>&1
 grep -q 'TASK_TYPE=dev fdev exec wrapper -- claude' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "multi-word agent command is word-split" || fail "multi-word agent command not split"
+
+# Restore the default config for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# ============================================================
+section "17b3. named agents (.agents) and per-task selection"
+# ============================================================
+
+# config.default.json ships named agent definitions for claude and codex
+jq -e '.agents.claude.command == "claude" and .agents.claude.resume_args == "--resume"' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config defines agents.claude" || fail "agents.claude missing in config.default.json"
+jq -e '.agents.codex.command == "codex" and .agents.codex.resume_args == "resume"' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config defines agents.codex" || fail "agents.codex missing in config.default.json"
+
+# agent_command/agent_resume_args resolve a named agent from .agents
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}, "codex": {"command": "codex", "resume_args": "resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command "codex" )
+[[ "$AC" == "codex" ]] && pass "agent_command resolves named agent" || fail "agent_command(codex) = '$AC'"
+AR=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_resume_args "codex" )
+[[ "$AR" == "resume" ]] && pass "agent_resume_args resolves named agent" || fail "agent_resume_args(codex) = '$AR'"
+
+# Without a name the legacy .agent.command path still wins
+jq '.agent = {"command": "legacy-cli", "resume_args": "--continue"}' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command )
+[[ "$AC" == "legacy-cli" ]] && pass "agent_command keeps legacy fallback" || fail "agent_command() = '$AC'"
+
+# An agent name missing from .agents falls back to the name as the command
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command "somecli" )
+[[ "$AC" == "somecli" ]] && pass "unknown agent name falls back to itself" || fail "agent_command(somecli) = '$AC'"
+
+# agent_names lists the configured agent keys (one per line)
+AN=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_names )
+[[ "$AN" == $'claude\ncodex' ]] && pass "agent_names lists configured agents" || fail "agent_names = '$AN'"
+
+# create_task with an agent argument launches that agent and exports TASK_AGENT
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-tab" "" "codex" ) >/dev/null 2>&1
+grep -q 'action new-tab -n codex-tab --cwd /tmp/proj -- env TASK_TAB_NAME=codex-tab TASK_TYPE=dev TASK_AGENT=codex codex' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task launches named agent with TASK_AGENT" || fail "create_task ignored agent argument"
+
+# create_task with an agent + resume id uses that agent's resume_args
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-res" "sess-abc" "codex" ) >/dev/null 2>&1
+grep -q 'TASK_TYPE=dev TASK_AGENT=codex codex resume sess-abc' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task resumes via named agent resume_args" || fail "create_task agent resume broken"
 
 # Restore the default config for subsequent tests
 cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
@@ -747,6 +956,28 @@ ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-ou
 
 MERGED_NONE=$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')
 [[ "$MERGED_NONE" == "false" ]] && pass "merged marker false without merge" || fail "merged marker unexpectedly set: $MERGED_NONE"
+
+# ============================================================
+section "25b. record-output.sh (agent carried into daily log)"
+# ============================================================
+
+cat > "$PENDING_DIR/sess-agent-rec.json" << EOF
+{
+  "tab": "agent-rec-test",
+  "session": "test-session",
+  "claude_session_id": "sess-agent-rec",
+  "message": "done",
+  "event": "Stop",
+  "time": "10:00:01",
+  "agent": "codex"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "agent-rec-test"
+
+AGENT_REC=$(tail -1 "$DAILY_FILE" | jq -r '.agent')
+[[ "$AGENT_REC" == "codex" ]] && pass "agent carried into daily log" || fail "agent not carried: $AGENT_REC"
+rm -f "$PENDING_DIR/sess-agent-rec.json"
 
 # ============================================================
 section "26a. record-output.sh (token cost calculation with cache tokens)"
@@ -1077,6 +1308,90 @@ DUP_RESTORED=$(jq -s '[.[] | select(.restored == true)] | length' "$DUP_FILE")
 [[ "$DUP_RESTORED" == "1" ]] && pass "exactly one duplicate marked restored" || fail "wrong restored count: $DUP_RESTORED"
 DUP_REMAIN=$(jq -s '[.[] | select((.restored // false) != true)] | length' "$DUP_FILE")
 [[ "$DUP_REMAIN" == "1" ]] && pass "sibling entry still available in Done" || fail "sibling count wrong: $DUP_REMAIN"
+
+# ============================================================
+section "26h. restore-task.sh (codex agent resume)"
+# ============================================================
+
+CXR_SESSION="codex-restore"
+CXR_DIR="$HOME/.claude-conductor/daily/$CXR_SESSION"
+mkdir -p "$CXR_DIR"
+CXR_TODAY=$(date '+%Y-%m-%d')
+CXR_FILE="$CXR_DIR/$CXR_TODAY.jsonl"
+CXR_AT="${CXR_TODAY}T12:00:00+0900"
+CXR_PROJ="$SANDBOX/cxproj"
+mkdir -p "$CXR_PROJ"
+CXR_ROLLOUT="$SANDBOX/cx-rollout.jsonl"
+echo '{}' > "$CXR_ROLLOUT"
+
+cat > "$CXR_FILE" << JSONL
+{"tab":"cx-task","session":"$CXR_SESSION","completed_at":"$CXR_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$CXR_PROJ","task_type":"dev","claude_session_id":"thread-cx1","transcript_path":"$CXR_ROLLOUT","agent":"codex"}
+JSONL
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+CXR_RC=0
+ZELLIJ_SESSION_NAME="$CXR_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "cx-task" "$CXR_SESSION" "$CXR_AT" || CXR_RC=$?
+[[ $CXR_RC -eq 0 ]] && pass "codex restore exits 0" || fail "codex restore exit wrong: $CXR_RC"
+grep -q "action new-tab -n cx-task --cwd $CXR_PROJ -- env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex resume thread-cx1" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "codex restore resumes via codex resume <id>" || fail "codex restore command wrong"
+
+# ============================================================
+section "26i. record-output.sh (codex rollout parsing)"
+# ============================================================
+
+CXP_TRANSCRIPT="$SANDBOX/codex-rollout.jsonl"
+cat > "$CXP_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-07T20:44:09.850Z","type":"session_meta","payload":{"id":"thread-cx2","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-07T20:44:09.851Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-07T20:44:09.900Z","type":"event_msg","payload":{"type":"user_message","message":"fix the bug"}}
+{"timestamp":"2026-08-07T20:44:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"c1","status":"completed","call_id":"call1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"npm test\"});"}}
+{"timestamp":"2026-08-07T20:44:10.100Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call1","output":"ok"}}
+{"timestamp":"2026-08-07T20:44:10.200Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
+{"timestamp":"2026-08-07T20:44:11.000Z","type":"event_msg","payload":{"type":"user_message","message":"now merge it"}}
+{"timestamp":"2026-08-07T20:44:12.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"c2","status":"completed","call_id":"call2","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"gh pr merge 12 --squash\"});"}}
+{"timestamp":"2026-08-07T20:44:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500000,"cached_input_tokens":500000,"cache_write_input_tokens":200000,"output_tokens":100000,"reasoning_output_tokens":0,"total_tokens":1600000}}}}
+{"timestamp":"2026-08-07T20:44:13.100Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"merged"}}
+ROLLOUT
+
+cat > "$PENDING_DIR/thread-cx2.json" << EOF
+{
+  "tab": "cx-parse-test",
+  "session": "test-session",
+  "claude_session_id": "thread-cx2",
+  "message": "merged",
+  "event": "Stop",
+  "time": "20:44:13",
+  "transcript_path": "$CXP_TRANSCRIPT",
+  "dir": "/tmp/myapp",
+  "task_type": "dev",
+  "agent": "codex"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cx-parse-test"
+
+CXP_REC=$(tail -1 "$DAILY_FILE")
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_turns')" == "2" ]] && pass "codex turns counted from user_message" || fail "codex turns wrong: $(echo "$CXP_REC" | jq -r '.summary.total_turns')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_tool_calls')" == "2" ]] && pass "codex tool calls counted (outputs excluded)" || fail "codex tool calls wrong: $(echo "$CXP_REC" | jq -r '.summary.total_tool_calls')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.tools_used[0]')" == "exec" ]] && pass "codex tool names recorded" || fail "codex tools_used wrong"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.model')" == "gpt-5.6-sol" ]] && pass "codex model from turn_context" || fail "codex model wrong: $(echo "$CXP_REC" | jq -r '.summary.model')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_input_tokens')" == "1000000" ]] && pass "codex non-cached input tokens" || fail "codex input tokens wrong: $(echo "$CXP_REC" | jq -r '.summary.total_input_tokens')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.cache_read_tokens')" == "500000" ]] && pass "codex cached tokens recorded" || fail "codex cache tokens wrong"
+# 1M*$5 + 0.1M*$30 + 0.5M*$0.5 + 0.2M*$6.25 = 5 + 3 + 0.25 + 1.25 = 9.5
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_cost_usd')" == "9.5" ]] && pass "codex cost from gpt-5.6-sol pricing" || fail "codex cost wrong: $(echo "$CXP_REC" | jq -r '.summary.total_cost_usd')"
+[[ "$(echo "$CXP_REC" | jq -r '.markers.merged')" == "true" ]] && pass "codex merged marker from gh pr merge" || fail "codex merged marker wrong"
+[[ "$(echo "$CXP_REC" | jq -r '.agent')" == "codex" ]] && pass "codex agent in daily entry" || fail "codex agent missing"
+
+# An unknown model yields a null cost instead of borrowing claude pricing
+CXP2_TRANSCRIPT="$SANDBOX/codex-rollout-unknown.jsonl"
+sed 's/gpt-5.6-sol/gpt-unknown-model/' "$CXP_TRANSCRIPT" > "$CXP2_TRANSCRIPT"
+cat > "$PENDING_DIR/thread-cx3.json" << EOF
+{"tab":"cx-unknown-test","session":"test-session","claude_session_id":"thread-cx3","message":"done","event":"Stop","time":"20:45:00","transcript_path":"$CXP2_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cx-unknown-test"
+CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
+[[ "$CXP2_COST" == "null" ]] && pass "unknown codex model -> null cost" || fail "unknown model cost wrong: $CXP2_COST"
+rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
 section "26. fetch-news.sh (successful fetch)"
@@ -1610,6 +1925,52 @@ DASH_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="active-task waiting-task" ZELLI
 echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
 echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
 echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
+
+# ============================================================
+section "37b. dashboard-loop.sh (jump clears codex pending, keeps claude)"
+# ============================================================
+
+# codex has no UserPromptSubmit hook: jumping to the tab must clear its entry.
+# claude entries are cleared by hooks, so a jump must leave them in place.
+JC_DIR="$HOME/.claude-pending/jump-session"
+mkdir -p "$JC_DIR"
+echo '{"tab":"codex-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:00","agent":"codex"}' > "$JC_DIR/cx.json"
+echo '{"tab":"claude-task","session":"jump-session","message":"done","event":"Stop","time":"10:01:00","agent":"claude"}' > "$JC_DIR/cl.json"
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+( printf '1'; sleep 3 ) | MOCK_TABS="codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+
+grep -q 'action go-to-tab-name codex-task' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "jump goes to selected tab" || fail "jump did not switch tab"
+[[ ! -f "$JC_DIR/cx.json" ]] && pass "codex pending cleared on jump" || fail "codex pending not cleared"
+[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending untouched by codex jump" || fail "claude pending removed unexpectedly"
+
+# Jumping to a claude task keeps its entry (hooks own the lifecycle)
+( printf '1'; sleep 3 ) | MOCK_TABS="claude-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+grep -q 'action go-to-tab-name claude-task' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "jump goes to claude tab" || fail "jump did not switch to claude tab"
+[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending kept on jump" || fail "claude pending cleared on jump"
+
+# An entry without an agent field (older claude pending) is treated as claude
+echo '{"tab":"old-task","session":"jump-session","message":"done","event":"Stop","time":"10:02:00"}' > "$JC_DIR/old.json"
+( printf '1'; sleep 3 ) | MOCK_TABS="old-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+[[ -f "$JC_DIR/old.json" ]] && pass "agent-less pending treated as claude" || fail "agent-less pending cleared"
+rm -rf "$JC_DIR"
 
 # ============================================================
 section "38. waiting-loop.sh (shows only Waiting tasks)"
@@ -2350,6 +2711,16 @@ mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check
 section "55. Uninstall"
 # ============================================================
 
+# Seed a codex config holding our notify plus user content: uninstall must
+# strip only the conductor line.
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" << TOML
+notify = ["bash", "$HOME/.claude-conductor/scripts/codex-notify.sh"] # claude-conductor
+
+[projects."/tmp/foo"]
+trust_level = "trusted"
+TOML
+
 bash "$REPO_DIR/uninstall.sh" 2>/dev/null
 
 [[ ! -d "$HOME/.claude-conductor" ]] && pass "~/.claude-conductor removed" || fail "~/.claude-conductor still exists"
@@ -2365,3 +2736,9 @@ PRE_AFTER=$(jq -r '.hooks.PreToolUse' "$HOME/.claude/settings.json")
 
 # Check settings.json backup exists
 [[ -f "$HOME/.claude/settings.json.backup" ]] && pass "settings.json backup created" || fail "no backup created"
+
+# Codex notify removed, user content kept
+grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
+  && fail "codex notify still present after uninstall" || pass "codex notify removed on uninstall"
+grep -q 'trust_level = "trusted"' "$HOME/.codex/config.toml" \
+  && pass "codex user config preserved on uninstall" || fail "codex user config lost"

@@ -100,6 +100,38 @@ else
 fi
 echo ""
 
+# --- Configure Codex notify (optional) ---
+# codex reads `notify` from the user-global config only (project-local notify
+# is ignored). codex-notify.sh bridges agent-turn-complete events into the
+# conductor pending files, which is what makes Dashboard / Waiting / Done work
+# for codex tasks. The key must sit ABOVE any [table] header: TOML would
+# otherwise attach it to that table and codex would ignore it.
+echo -e "${BOLD}Configuring Codex notify...${NC}"
+if command -v codex &>/dev/null; then
+    CODEX_CONFIG_DIR="${CODEX_HOME:-$HOME/.codex}"
+    CODEX_CONFIG="$CODEX_CONFIG_DIR/config.toml"
+    NOTIFY_LINE="notify = [\"bash\", \"$CONDUCTOR_HOME/scripts/codex-notify.sh\"] # claude-conductor"
+    if [[ -f "$CODEX_CONFIG" ]] && grep -q "codex-notify.sh" "$CODEX_CONFIG"; then
+        echo -e "  ${GREEN}✓${NC} Codex notify already configured"
+    elif [[ -f "$CODEX_CONFIG" ]] && grep -qE '^[[:space:]]*notify[[:space:]]*=' "$CODEX_CONFIG"; then
+        echo -e "  ${YELLOW}?${NC} $CODEX_CONFIG already sets notify (another tool); left untouched."
+        echo -e "    To bridge codex tasks into the dashboard, have your notify program"
+        echo -e "    also invoke: $CONDUCTOR_HOME/scripts/codex-notify.sh '<payload-json>'"
+    else
+        mkdir -p "$CODEX_CONFIG_DIR"
+        if [[ -f "$CODEX_CONFIG" ]]; then
+            printf '%s\n\n' "$NOTIFY_LINE" | cat - "$CODEX_CONFIG" > "${CODEX_CONFIG}.tmp"
+            mv "${CODEX_CONFIG}.tmp" "$CODEX_CONFIG"
+        else
+            printf '%s\n' "$NOTIFY_LINE" > "$CODEX_CONFIG"
+        fi
+        echo -e "  ${GREEN}✓${NC} Codex notify added to $CODEX_CONFIG"
+    fi
+else
+    echo -e "  ${YELLOW}?${NC} codex not found; skipping (optional)"
+fi
+echo ""
+
 # --- Shell setup ---
 INIT_LINE='source "$HOME/.claude-conductor/init.zsh"'
 

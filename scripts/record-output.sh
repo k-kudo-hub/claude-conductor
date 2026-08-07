@@ -36,6 +36,7 @@ MESSAGE=""
 DIR=""
 TASK_TYPE=""
 CLAUDE_SESSION_ID=""
+AGENT=""
 FOUND=false
 
 for f in "$PENDING_DIR"/*.json; do
@@ -48,6 +49,7 @@ for f in "$PENDING_DIR"/*.json; do
     DIR=$(jq -r '.dir // empty' "$f" 2>/dev/null)
     TASK_TYPE=$(jq -r '.task_type // empty' "$f" 2>/dev/null)
     CLAUDE_SESSION_ID=$(jq -r '.claude_session_id // empty' "$f" 2>/dev/null)
+    AGENT=$(jq -r '.agent // empty' "$f" 2>/dev/null)
     FOUND=true
     break
 done
@@ -59,9 +61,92 @@ fi
 COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 OUT=""
 
-if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex" ]; then
+    # Codex rollout jsonl: turns are user_message events, tool calls are
+    # response_items whose type ends in "_call" (custom_tool_call etc.),
+    # usage is the cumulative total of the last token_count event, and the
+    # model comes from turn_context. Unknown models yield a null cost rather
+    # than borrowing claude pricing.
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" '
+        ([.[] | select(.type == "event_msg" and .payload.type == "user_message")] | length) as $turns |
+        [.[] | select(.type == "response_item") | .payload | select(.type != null) | select(.type | test("_call$"))] as $tools |
+        ($tools | length) as $calls |
+        ($tools | [.[] | .name // .type] | unique) as $used |
+        ([.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage | select(. != null)] | last) as $usage |
+        ((($usage.input_tokens // 0) - ($usage.cached_input_tokens // 0)) ) as $in |
+        ($usage.output_tokens // 0) as $out |
+        ($usage.cached_input_tokens // 0) as $cache_read |
+        ($usage.cache_write_input_tokens // 0) as $cache_write |
+        ([.[] | select(.type == "turn_context") | .payload.model | select(. != null)] | last // "unknown") as $model |
+        ($pricing[$model] // null) as $p |
+        (if $p == null then null else
+            (
+                ($in * $p.input) +
+                ($out * $p.output) +
+                ($cache_read * ($p.cache_hit // 0)) +
+                ($cache_write * ($p.cache_write // 0))
+            ) / 1000000
+        end) as $cost |
+        ($tools | [.[] | ((.input // .arguments // "") | tostring) | select(test("gh\\s+pr\\s+merge"))] | length > 0) as $has_merged |
+        {
+            tab: $tab,
+            session: $session,
+            completed_at: $completed_at,
+            message: $message,
+            summary: {
+                total_turns: $turns,
+                total_tool_calls: $calls,
+                tools_used: $used,
+                model: $model,
+                speed: "standard",
+                total_input_tokens: $in,
+                total_output_tokens: $out,
+                cache_read_tokens: $cache_read,
+                cache_write_tokens: $cache_write,
+                total_cost_usd: (if $cost == null then null else ($cost * 1000000 | round | . / 1000000) end)
+            },
+            markers: {
+                merged: $has_merged,
+                slack: false,
+                doc: false
+            },
+            agent: $agent
+        }
+        + (if $dir != "" then {dir: $dir} else {} end)
+        + (if $task_type != "" then {task_type: $task_type} else {} end)
+        + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+    ' "$TRANSCRIPT_PATH" 2>/dev/null)
+
+    if [ -z "$RECORD" ]; then
+        RECORD=$(jq -n -c \
+            --arg tab "$TAB_NAME" \
+            --arg session "$SESSION_NAME" \
+            --arg completed_at "$COMPLETED_AT" \
+            --arg message "${MESSAGE:-Parse failed}" \
+            --arg dir "$DIR" \
+            --arg task_type "$TASK_TYPE" \
+            --arg claude_session_id "$CLAUDE_SESSION_ID" \
+            --arg transcript_path "$TRANSCRIPT_PATH" \
+            --arg agent "$AGENT" \
+            '{
+                tab: $tab,
+                session: $session,
+                completed_at: $completed_at,
+                message: $message,
+                summary: null,
+                markers: { merged: false, slack: false, doc: false },
+                agent: $agent
+            }
+            + (if $dir != "" then {dir: $dir} else {} end)
+            + (if $task_type != "" then {task_type: $task_type} else {} end)
+            + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
+            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
+    fi
+    OUT="$RECORD"
+elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract session summary, markers, and cost in a single jq pass
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --argjson pricing "$PRICING_JSON" '. as $all |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" '. as $all |
         ([.[] | select(.type == "user")] | length) as $turns |
         [.[] | .message.content[]? | select(.type == "tool_use")] as $tools |
         ($tools | length) as $calls |
@@ -118,6 +203,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         + (if $task_type != "" then {task_type: $task_type} else {} end)
         + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
         + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+        + (if $agent != "" then {agent: $agent} else {} end)
     ' "$TRANSCRIPT_PATH" 2>/dev/null)
 
     if [ -n "$RECORD" ]; then
@@ -132,6 +218,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             --arg task_type "$TASK_TYPE" \
             --arg claude_session_id "$CLAUDE_SESSION_ID" \
             --arg transcript_path "$TRANSCRIPT_PATH" \
+            --arg agent "$AGENT" \
             '{
                 tab: $tab,
                 session: $session,
@@ -143,7 +230,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             + (if $dir != "" then {dir: $dir} else {} end)
             + (if $task_type != "" then {task_type: $task_type} else {} end)
             + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
-            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
+            + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+            + (if $agent != "" then {agent: $agent} else {} end)')
     fi
 else
     OUT=$(jq -n -c \
@@ -155,6 +243,7 @@ else
         --arg task_type "$TASK_TYPE" \
         --arg claude_session_id "$CLAUDE_SESSION_ID" \
         --arg transcript_path "$TRANSCRIPT_PATH" \
+        --arg agent "$AGENT" \
         '{
             tab: $tab,
             session: $session,
@@ -166,7 +255,8 @@ else
         + (if $dir != "" then {dir: $dir} else {} end)
         + (if $task_type != "" then {task_type: $task_type} else {} end)
         + (if $claude_session_id != "" then {claude_session_id: $claude_session_id} else {} end)
-        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)')
+        + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+        + (if $agent != "" then {agent: $agent} else {} end)')
 fi
 
 # Append under the daily-log lock, held only for the write itself so the hold

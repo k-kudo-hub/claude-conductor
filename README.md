@@ -151,29 +151,47 @@ The Done pane lists today's completed tasks. Restore one back to the dashboard t
 
 A restored task is recreated in its original directory and task type, resuming its previous Claude Code conversation (`claude --resume`) when the session is still available — otherwise a fresh session starts. Once the tab is recreated, its daily-log entry is marked `restored` so it no longer appears in the Done pane. If the original directory no longer exists (e.g. the worktree was removed), the task stays in the Done pane instead of being lost.
 
-## Using a different agent CLI (optional)
+## Agents: Claude Code and Codex
 
-By default, task tabs and the `dev` session launch `claude`. Set `agent.command` in
-`~/.claude-conductor/config.json` to launch any other CLI instead (e.g. Codex):
+Task tabs can run either Claude Code or [Codex CLI](https://developers.openai.com/codex/cli).
+The default config defines both under `agents` in `~/.claude-conductor/config.json`:
 
 ```json
 {
-  "agent": {
-    "command": "codex",
-    "resume_args": "resume"
+  "agents": {
+    "claude": { "command": "claude", "resume_args": "--resume" },
+    "codex":  { "command": "codex",  "resume_args": "resume" }
   }
 }
 ```
 
-| Key | Description |
-|-----|-------------|
-| `command` | Command used to launch the agent (default `claude`). The string is word-split, so wrapper invocations like `"fdev secrets exec my-header -- claude"` work |
-| `resume_args` | Argument(s) inserted between the command and the session id when restoring a Done task (default `--resume`, i.e. `claude --resume <id>`; Codex uses `resume`) |
+When two or more agents are configured, task creation asks which one to use
+(fzf) after the task type; with a single entry it is picked automatically.
+Tasks with different agents can coexist in one session. `command` is word-split,
+so wrapper invocations like `"fdev secrets exec my-header -- claude"` work;
+`resume_args` sits between the command and the session id when a Done task is
+restored (`claude --resume <id>` / `codex resume <id>`).
 
-> **Note:** The dashboard's pending/waiting states, Done-task restore, and cost
-> tracking are driven by Claude Code's hooks (`session_id`, transcript, etc.).
-> With a non-Claude agent the tabs and layouts still work, but those
-> hook-driven features stay inactive.
+Codex integration is wired at install time: `install.sh` registers
+`codex-notify.sh` as `notify` in `~/.codex/config.toml` (user-global — codex
+ignores project-local `notify`). The bridge converts each `agent-turn-complete`
+event into the same pending file the Claude hooks write, so the Dashboard,
+Waiting pane, Done pane (with turn/token/cost stats parsed from the codex
+rollout), and restore all work for codex tasks. If `notify` is already set by
+another tool, the installer leaves it untouched and prints how to chain the
+bridge manually.
+
+**Codex limitations** — codex only emits `agent-turn-complete`, so compared to
+Claude Code tasks:
+
+- Permission/approval waits are not shown on the dashboard (no Notification
+  equivalent); only completed turns appear.
+- There is no auto-return to Main when you answer, and a codex pending entry
+  cannot be cleared by a prompt-submit hook. Instead, jumping to the tab from
+  the dashboard (number key) clears it.
+
+The legacy single-agent form (`agent.command` / `agent.resume_args`) is still
+honored when `agents` is absent.
 
 ## How it works
 
@@ -183,6 +201,10 @@ Claude Code (task tab)
   ├─ Stop hook          → creates pending file → dashboard shows it
   ├─ PostToolUse hook   → clears Notification pending → auto-return to Main
   └─ UserPromptSubmit   → clears pending → auto-return to Main
+
+Codex (task tab)
+  └─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
+     cleared when you jump to the tab from the dashboard
 
 Task tab control bar
   └─ w key → waiting-toggle.sh flips event between Waiting and Notification
