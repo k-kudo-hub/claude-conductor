@@ -1540,6 +1540,114 @@ CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
 rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
+section "26j. restore-session.sh (rebuild tasks from registry)"
+# ============================================================
+
+# 別プロセスとして走るrestore-session.shに見せるため、query-tab-names /
+# list-sessions も扱う上位互換モックへ差し替える（従来挙動は維持）
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
+    echo "ID X NAME"
+    for t in $MOCK_TABS; do
+        echo "1 x $t"
+    done
+fi
+if [[ "$1" == "action" && "$2" == "query-tab-names" && -n "$MOCK_TAB_NAMES" ]]; then
+    printf '%s\n' "$MOCK_TAB_NAMES"
+fi
+if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
+    printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+
+RS="$HOME/.claude-conductor/scripts/restore-session.sh"
+[[ -f "$RS" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
+RS_CALLS="$HOME/.claude-pending/zellij-calls.log"
+source "$HOME/.claude-conductor/scripts/registry-lib.sh"
+
+RS_DIR1="$SANDBOX/rs-work/alpha"
+RS_DIR2="$SANDBOX/rs-work/beta"
+mkdir -p "$RS_DIR1" "$RS_DIR2"
+RS_TRANSCRIPT="$SANDBOX/rs-transcript.jsonl"
+echo '{"x":1}' > "$RS_TRANSCRIPT"
+
+# transcriptが残っているタスクは --resume 付きで再生成される
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-1" "alpha-dev" "$RS_DIR1" "" "" "$RS_TRANSCRIPT"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+grep -q "new-tab -n alpha-dev --cwd $RS_DIR1 -- env TASK_TAB_NAME=alpha-dev TASK_TYPE= claude --resume rs-sid-1" "$RS_CALLS" \
+  && pass "task recreated with --resume when transcript exists" || fail "no resume recreation: $(grep new-tab "$RS_CALLS")"
+grep -q "go-to-tab-name Main" "$RS_CALLS" \
+  && pass "focus returns to Main after restore" || fail "did not return to Main"
+
+# transcriptが消えているタスクは新規セッションで再生成される（壊れた--resumeをしない）
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-2" "beta-dev" "$RS_DIR2" "" "" "/nonexistent/transcript.jsonl"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+grep -q "new-tab -n beta-dev --cwd $RS_DIR2 -- env TASK_TAB_NAME=beta-dev TASK_TYPE= claude$" "$RS_CALLS" \
+  && pass "missing transcript -> fresh session (no broken --resume)" || fail "wrong recreation: $(grep new-tab "$RS_CALLS")"
+
+# 既に存在するタブは再生成しない（エントリは保持）
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-3" "alive-tab" "$RS_DIR1" "" "" ""
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main
+alive-tab" bash "$RS"
+grep -q "new-tab" "$RS_CALLS" \
+  && fail "recreated a tab that already exists" || pass "existing tab skipped"
+[[ -f "$CONDUCTOR_HOME/tasks/rs-sess/rs-sid-3.json" ]] \
+  && pass "skipped entry kept in registry" || fail "entry dropped for live tab"
+
+# dirが消えたエントリは破棄され、再生成もされない
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-4" "gone-dir" "$SANDBOX/rs-work/removed" "" "" ""
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+grep -q "new-tab" "$RS_CALLS" \
+  && fail "recreated a task whose dir vanished" || pass "vanished dir not recreated"
+[[ ! -f "$CONDUCTOR_HOME/tasks/rs-sess/rs-sid-4.json" ]] \
+  && pass "vanished-dir entry dropped from registry" || fail "stale entry remains"
+
+# 同一タブに複数エントリ（resume再開でsidが変わった場合）: 最新updated_atのみ再生成
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-old" "dup-tab" "$RS_DIR1" "" "" "$RS_TRANSCRIPT"
+jq '.updated_at = "2020-01-01T00:00:00+0000"' "$CONDUCTOR_HOME/tasks/rs-sess/rs-old.json" > "$CONDUCTOR_HOME/tasks/rs-sess/rs-old.json.tmp" \
+  && mv "$CONDUCTOR_HOME/tasks/rs-sess/rs-old.json.tmp" "$CONDUCTOR_HOME/tasks/rs-sess/rs-old.json"
+registry_upsert "rs-sess" "rs-new" "dup-tab" "$RS_DIR1" "" "" "$RS_TRANSCRIPT"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+NEW_TAB_COUNT=$(grep -c "new-tab" "$RS_CALLS")
+[[ "$NEW_TAB_COUNT" == "1" ]] && pass "duplicate tab entries restored once" || fail "restored $NEW_TAB_COUNT times"
+grep -q -- "--resume rs-new" "$RS_CALLS" \
+  && pass "newest entry's session id wins" || fail "stale sid used: $(grep new-tab "$RS_CALLS")"
+
+# レジストリが空なら何もしない（zellijも呼ばない）
+rm -rf "$CONDUCTOR_HOME/tasks"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess bash "$RS"
+[[ ! -s "$RS_CALLS" ]] && pass "empty registry is a silent no-op" || fail "unexpected zellij calls: $(cat "$RS_CALLS")"
+
+# ============================================================
+section "26k. dashboard-loop.sh triggers restore on startup"
+# ============================================================
+
+# ダッシュボード起動時にrestore-session.shが呼ばれ、タスクが再生成される
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-5" "dash-restore" "$RS_DIR1" "" "" ""
+: > "$RS_CALLS"
+CONDUCTOR_DASHBOARD_ONCE=1 ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" \
+  bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1
+grep -q "new-tab -n dash-restore" "$RS_CALLS" \
+  && pass "dashboard startup restores registered tasks" || fail "dashboard did not restore: $(cat "$RS_CALLS")"
+
+rm -rf "$CONDUCTOR_HOME/tasks" "$HOME/.claude-pending/rs-sess"
+
+# ============================================================
 section "26. fetch-news.sh (successful fetch)"
 # ============================================================
 

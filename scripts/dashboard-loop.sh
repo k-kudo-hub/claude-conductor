@@ -9,6 +9,10 @@ SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 mkdir -p "$PENDING_DIR"
 
+# Rebuild tasks registered for this session before the first render
+# (issue #36). No-op when the registry is empty or the tabs already exist.
+bash "$CONDUCTOR_HOME/scripts/restore-session.sh" 2>/dev/null
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
