@@ -119,6 +119,14 @@ screen_update_pending() {
                     rm -f "$f"
                 fi
             done
+            # A blocked/idle -> working transition means the user answered
+            # inside the tab (approved, or submitted a prompt): mirror the
+            # claude PostToolUse / UserPromptSubmit auto-return to Main.
+            # Not on the first observation (prev empty) so a dashboard
+            # restart mid-turn never yanks the focus.
+            if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
+                zellij action go-to-tab-name Main 2>/dev/null || true
+            fi
             ;;
         idle)
             # The approval dialog is gone (answered inside the tab).

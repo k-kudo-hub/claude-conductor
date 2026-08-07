@@ -230,7 +230,10 @@ and matches its bottom lines against the agent's `patterns`:
   tab as `Notification` — approval waits show up on the dashboard just like
   Claude Code permission prompts.
 - A line matching `patterns.working` (default: the codex `esc to interrupt`
-  spinner) clears the tab's pending entries — the turn is running again.
+  spinner) clears the tab's pending entries — the turn is running again. When
+  this is a transition from blocked/idle (you approved or submitted a prompt
+  inside the tab), focus auto-returns to Main like the Claude Code hooks do,
+  within one poll (up to 2 seconds).
 - Anything else counts as idle. A screen that stops matching `working` becomes
   a `Stop` (done) entry, unless the `notify` bridge already recorded one.
   Unknown dialogs deliberately fall back to idle, never to blocked, so a new
@@ -239,10 +242,10 @@ and matches its bottom lines against the agent's `patterns`:
 **Codex limitations** — codex has no prompt-submit hook, so compared to
 Claude Code tasks:
 
-- There is no auto-return to Main when you answer, and a codex pending entry
-  cannot be cleared by a prompt-submit hook. Instead, jumping to the tab from
-  the dashboard (number key) clears it (screen detection also clears it as
-  soon as the turn visibly resumes).
+- Auto-return to Main and pending cleanup ride on screen detection instead of
+  hooks: they happen on the next dashboard poll (up to 2 seconds) after the
+  turn visibly resumes, not instantly. Jumping to the tab from the dashboard
+  (number key) still clears the entry immediately.
 
 The legacy single-agent form (`agent.command` / `agent.resume_args`) is still
 honored when `agents` is absent.
@@ -261,7 +264,8 @@ Codex (task tab)
   │  cleared when you jump to the tab from the dashboard
   └─ screen detection (dashboard poll) → dump-screen + pattern match
        approval prompt → pending file (Notification)
-       spinner        → clears the tab's pending files
+       spinner        → clears the tab's pending files; auto-return to Main
+                        when the user just answered (blocked/idle → working)
        turn end       → pending file (Stop) unless notify already wrote one
 
 Task tab control bar
