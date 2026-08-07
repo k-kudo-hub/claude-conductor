@@ -795,6 +795,43 @@ grep -q 'TASK_TYPE=dev TASK_AGENT=codex codex resume sess-abc' "$HOME/.claude-pe
 cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
 
 # ============================================================
+section "17b4. agent detection method and screen patterns"
+# ============================================================
+
+# config.default.json ships detection definitions: claude=hooks, codex=screen
+jq -e '.agents.claude.detection == "hooks"' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config sets agents.claude.detection=hooks" || fail "agents.claude.detection missing"
+jq -e '.agents.codex.detection == "screen"' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config sets agents.codex.detection=screen" || fail "agents.codex.detection missing"
+jq -e '(.agents.codex.patterns.blocked | length) >= 1 and (.agents.codex.patterns.working | length) >= 1' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config ships codex blocked/working patterns" || fail "agents.codex.patterns missing"
+
+# agent_detection resolves the configured method and defaults to hooks
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "codex" )
+[[ "$AD" == "screen" ]] && pass "agent_detection resolves screen agent" || fail "agent_detection(codex) = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "claude" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection resolves hooks agent" || fail "agent_detection(claude) = '$AD'"
+jq 'del(.agents.codex.detection)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "codex" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection defaults to hooks when unset" || fail "agent_detection default = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection treats agent-less as hooks" || fail "agent_detection('') = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "somecli" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection treats unknown agent as hooks" || fail "agent_detection(somecli) = '$AD'"
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# agent_patterns lists the configured regexes one per line
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "blocked" )
+echo "$AP" | grep -q 'Would you like to run the following command' \
+  && pass "agent_patterns lists blocked patterns" || fail "agent_patterns(codex, blocked) = '$AP'"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "working" )
+echo "$AP" | grep -q ' to interrupt' \
+  && pass "agent_patterns lists working patterns" || fail "agent_patterns(codex, working) = '$AP'"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "claude" "blocked" )
+[[ -z "$AP" ]] && pass "agent_patterns empty for pattern-less agent" || fail "agent_patterns(claude) = '$AP'"
+
+# ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
 # ============================================================
 
