@@ -905,6 +905,28 @@ MERGED_NONE=$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')
 [[ "$MERGED_NONE" == "false" ]] && pass "merged marker false without merge" || fail "merged marker unexpectedly set: $MERGED_NONE"
 
 # ============================================================
+section "25b. record-output.sh (agent carried into daily log)"
+# ============================================================
+
+cat > "$PENDING_DIR/sess-agent-rec.json" << EOF
+{
+  "tab": "agent-rec-test",
+  "session": "test-session",
+  "claude_session_id": "sess-agent-rec",
+  "message": "done",
+  "event": "Stop",
+  "time": "10:00:01",
+  "agent": "codex"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "agent-rec-test"
+
+AGENT_REC=$(tail -1 "$DAILY_FILE" | jq -r '.agent')
+[[ "$AGENT_REC" == "codex" ]] && pass "agent carried into daily log" || fail "agent not carried: $AGENT_REC"
+rm -f "$PENDING_DIR/sess-agent-rec.json"
+
+# ============================================================
 section "26a. record-output.sh (token cost calculation with cache tokens)"
 # ============================================================
 
@@ -1233,6 +1255,90 @@ DUP_RESTORED=$(jq -s '[.[] | select(.restored == true)] | length' "$DUP_FILE")
 [[ "$DUP_RESTORED" == "1" ]] && pass "exactly one duplicate marked restored" || fail "wrong restored count: $DUP_RESTORED"
 DUP_REMAIN=$(jq -s '[.[] | select((.restored // false) != true)] | length' "$DUP_FILE")
 [[ "$DUP_REMAIN" == "1" ]] && pass "sibling entry still available in Done" || fail "sibling count wrong: $DUP_REMAIN"
+
+# ============================================================
+section "26h. restore-task.sh (codex agent resume)"
+# ============================================================
+
+CXR_SESSION="codex-restore"
+CXR_DIR="$HOME/.claude-conductor/daily/$CXR_SESSION"
+mkdir -p "$CXR_DIR"
+CXR_TODAY=$(date '+%Y-%m-%d')
+CXR_FILE="$CXR_DIR/$CXR_TODAY.jsonl"
+CXR_AT="${CXR_TODAY}T12:00:00+0900"
+CXR_PROJ="$SANDBOX/cxproj"
+mkdir -p "$CXR_PROJ"
+CXR_ROLLOUT="$SANDBOX/cx-rollout.jsonl"
+echo '{}' > "$CXR_ROLLOUT"
+
+cat > "$CXR_FILE" << JSONL
+{"tab":"cx-task","session":"$CXR_SESSION","completed_at":"$CXR_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$CXR_PROJ","task_type":"dev","claude_session_id":"thread-cx1","transcript_path":"$CXR_ROLLOUT","agent":"codex"}
+JSONL
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+CXR_RC=0
+ZELLIJ_SESSION_NAME="$CXR_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "cx-task" "$CXR_SESSION" "$CXR_AT" || CXR_RC=$?
+[[ $CXR_RC -eq 0 ]] && pass "codex restore exits 0" || fail "codex restore exit wrong: $CXR_RC"
+grep -q "action new-tab -n cx-task --cwd $CXR_PROJ -- env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex resume thread-cx1" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "codex restore resumes via codex resume <id>" || fail "codex restore command wrong"
+
+# ============================================================
+section "26i. record-output.sh (codex rollout parsing)"
+# ============================================================
+
+CXP_TRANSCRIPT="$SANDBOX/codex-rollout.jsonl"
+cat > "$CXP_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-07T20:44:09.850Z","type":"session_meta","payload":{"id":"thread-cx2","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-07T20:44:09.851Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-07T20:44:09.900Z","type":"event_msg","payload":{"type":"user_message","message":"fix the bug"}}
+{"timestamp":"2026-08-07T20:44:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"c1","status":"completed","call_id":"call1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"npm test\"});"}}
+{"timestamp":"2026-08-07T20:44:10.100Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call1","output":"ok"}}
+{"timestamp":"2026-08-07T20:44:10.200Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
+{"timestamp":"2026-08-07T20:44:11.000Z","type":"event_msg","payload":{"type":"user_message","message":"now merge it"}}
+{"timestamp":"2026-08-07T20:44:12.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"c2","status":"completed","call_id":"call2","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"gh pr merge 12 --squash\"});"}}
+{"timestamp":"2026-08-07T20:44:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500000,"cached_input_tokens":500000,"cache_write_input_tokens":200000,"output_tokens":100000,"reasoning_output_tokens":0,"total_tokens":1600000}}}}
+{"timestamp":"2026-08-07T20:44:13.100Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"merged"}}
+ROLLOUT
+
+cat > "$PENDING_DIR/thread-cx2.json" << EOF
+{
+  "tab": "cx-parse-test",
+  "session": "test-session",
+  "claude_session_id": "thread-cx2",
+  "message": "merged",
+  "event": "Stop",
+  "time": "20:44:13",
+  "transcript_path": "$CXP_TRANSCRIPT",
+  "dir": "/tmp/myapp",
+  "task_type": "dev",
+  "agent": "codex"
+}
+EOF
+
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cx-parse-test"
+
+CXP_REC=$(tail -1 "$DAILY_FILE")
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_turns')" == "2" ]] && pass "codex turns counted from user_message" || fail "codex turns wrong: $(echo "$CXP_REC" | jq -r '.summary.total_turns')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_tool_calls')" == "2" ]] && pass "codex tool calls counted (outputs excluded)" || fail "codex tool calls wrong: $(echo "$CXP_REC" | jq -r '.summary.total_tool_calls')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.tools_used[0]')" == "exec" ]] && pass "codex tool names recorded" || fail "codex tools_used wrong"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.model')" == "gpt-5.6-sol" ]] && pass "codex model from turn_context" || fail "codex model wrong: $(echo "$CXP_REC" | jq -r '.summary.model')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_input_tokens')" == "1000000" ]] && pass "codex non-cached input tokens" || fail "codex input tokens wrong: $(echo "$CXP_REC" | jq -r '.summary.total_input_tokens')"
+[[ "$(echo "$CXP_REC" | jq -r '.summary.cache_read_tokens')" == "500000" ]] && pass "codex cached tokens recorded" || fail "codex cache tokens wrong"
+# 1M*$5 + 0.1M*$30 + 0.5M*$0.5 + 0.2M*$6.25 = 5 + 3 + 0.25 + 1.25 = 9.5
+[[ "$(echo "$CXP_REC" | jq -r '.summary.total_cost_usd')" == "9.5" ]] && pass "codex cost from gpt-5.6-sol pricing" || fail "codex cost wrong: $(echo "$CXP_REC" | jq -r '.summary.total_cost_usd')"
+[[ "$(echo "$CXP_REC" | jq -r '.markers.merged')" == "true" ]] && pass "codex merged marker from gh pr merge" || fail "codex merged marker wrong"
+[[ "$(echo "$CXP_REC" | jq -r '.agent')" == "codex" ]] && pass "codex agent in daily entry" || fail "codex agent missing"
+
+# An unknown model yields a null cost instead of borrowing claude pricing
+CXP2_TRANSCRIPT="$SANDBOX/codex-rollout-unknown.jsonl"
+sed 's/gpt-5.6-sol/gpt-unknown-model/' "$CXP_TRANSCRIPT" > "$CXP2_TRANSCRIPT"
+cat > "$PENDING_DIR/thread-cx3.json" << EOF
+{"tab":"cx-unknown-test","session":"test-session","claude_session_id":"thread-cx3","message":"done","event":"Stop","time":"20:45:00","transcript_path":"$CXP2_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cx-unknown-test"
+CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
+[[ "$CXP2_COST" == "null" ]] && pass "unknown codex model -> null cost" || fail "unknown model cost wrong: $CXP2_COST"
+rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
 section "26. fetch-news.sh (successful fetch)"

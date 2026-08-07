@@ -48,6 +48,7 @@ DIR=$(echo "$ENTRY" | jq -r '.dir // empty')
 TASK_TYPE=$(echo "$ENTRY" | jq -r '.task_type // empty')
 CLAUDE_SESSION_ID=$(echo "$ENTRY" | jq -r '.claude_session_id // empty')
 TRANSCRIPT_PATH=$(echo "$ENTRY" | jq -r '.transcript_path // empty')
+AGENT=$(echo "$ENTRY" | jq -r '.agent // empty')
 
 # Without a working directory the tab cannot be recreated (entry predates dir recording).
 if [ -z "$DIR" ]; then
@@ -67,10 +68,11 @@ if [ -n "$CLAUDE_SESSION_ID" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT
     RESUME_ID="$CLAUDE_SESSION_ID"
 fi
 
-# Recreate the tab. A missing task_type falls back to no special layout.
+# Recreate the tab. A missing task_type falls back to no special layout;
+# a missing agent falls back to the legacy single-agent path (claude).
 # Only mark the entry restored if the tab was actually created, otherwise the
 # task would vanish from the Done pane with no working tab to show for it.
-if ! create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID"; then
+if ! create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID" "$AGENT"; then
     exit 4
 fi
 
