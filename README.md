@@ -193,8 +193,14 @@ The default config defines both under `agents` in `~/.claude-conductor/config.js
 ```json
 {
   "agents": {
-    "claude": { "command": "claude", "resume_args": "--resume" },
-    "codex":  { "command": "codex",  "resume_args": "resume" }
+    "claude": { "command": "claude", "resume_args": "--resume", "detection": "hooks" },
+    "codex":  {
+      "command": "codex", "resume_args": "resume", "detection": "screen",
+      "patterns": {
+        "blocked": ["Would you like to run the following command\\?", "..."],
+        "working": [" to interrupt"]
+      }
+    }
   }
 }
 ```
@@ -215,14 +221,28 @@ rollout), and restore all work for codex tasks. If `notify` is already set by
 another tool, the installer leaves it untouched and prints how to chain the
 bridge manually.
 
-**Codex limitations** — codex only emits `agent-turn-complete`, so compared to
+**Screen-based state detection** — codex has no lifecycle hooks, so its state
+is detected from the screen instead (`"detection": "screen"`): every dashboard
+poll snapshots the agent pane (`zellij action dump-screen`, no focus change)
+and matches its bottom lines against the agent's `patterns`:
+
+- A line matching `patterns.blocked` (a known approval prompt) surfaces the
+  tab as `Notification` — approval waits show up on the dashboard just like
+  Claude Code permission prompts.
+- A line matching `patterns.working` (default: the codex `esc to interrupt`
+  spinner) clears the tab's pending entries — the turn is running again.
+- Anything else counts as idle. A screen that stops matching `working` becomes
+  a `Stop` (done) entry, unless the `notify` bridge already recorded one.
+  Unknown dialogs deliberately fall back to idle, never to blocked, so a new
+  codex UI screen cannot spam the dashboard with false approvals.
+
+**Codex limitations** — codex has no prompt-submit hook, so compared to
 Claude Code tasks:
 
-- Permission/approval waits are not shown on the dashboard (no Notification
-  equivalent); only completed turns appear.
 - There is no auto-return to Main when you answer, and a codex pending entry
   cannot be cleared by a prompt-submit hook. Instead, jumping to the tab from
-  the dashboard (number key) clears it.
+  the dashboard (number key) clears it (screen detection also clears it as
+  soon as the turn visibly resumes).
 
 The legacy single-agent form (`agent.command` / `agent.resume_args`) is still
 honored when `agents` is absent.
@@ -237,8 +257,12 @@ Claude Code (task tab)
   └─ UserPromptSubmit   → clears pending → auto-return to Main
 
 Codex (task tab)
-  └─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
-     cleared when you jump to the tab from the dashboard
+  ├─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
+  │  cleared when you jump to the tab from the dashboard
+  └─ screen detection (dashboard poll) → dump-screen + pattern match
+       approval prompt → pending file (Notification)
+       spinner        → clears the tab's pending files
+       turn end       → pending file (Stop) unless notify already wrote one
 
 Task tab control bar
   └─ w key → waiting-toggle.sh flips event between Waiting and Notification
