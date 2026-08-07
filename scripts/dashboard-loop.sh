@@ -9,6 +9,12 @@ SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 mkdir -p "$PENDING_DIR"
 
+# Screen-based state detection for hook-less agents (issue #28): each poll
+# snapshots their panes and maps approval prompts / turn ends onto the same
+# pending files the hooks write.
+# shellcheck source=scripts/screen-detect-lib.sh
+. "$CONDUCTOR_HOME/scripts/screen-detect-lib.sh"
+
 # Rebuild tasks registered for this session before the first render
 # (issue #36). No-op when the registry is empty or the tabs already exist.
 bash "$CONDUCTOR_HOME/scripts/restore-session.sh" 2>/dev/null
@@ -28,6 +34,10 @@ render() {
     tabs=()
     pfiles=()
     local i=1
+
+    # Detect hook-less agent states before reading the pending files so the
+    # list below already reflects this poll's screen observations.
+    screen_detect_tick "$SESSION_NAME" 2>/dev/null
 
     # Display pending items sorted by Zellij tab position
     local tab_order
@@ -131,10 +141,13 @@ while true; do
                     fi
                 done
                 # Deletion is committed: drop the task's registry entries so a
-                # later session restore does not resurrect it (issue #36).
+                # later session restore does not resurrect it (issue #36),
+                # and its screen-detection state so a same-named future tab
+                # starts fresh.
                 # shellcheck source=scripts/registry-lib.sh
                 . "$CONDUCTOR_HOME/scripts/registry-lib.sh"
                 registry_remove_by_tab "$SESSION_NAME" "$target_tab"
+                rm -f "$PENDING_DIR/.screen-state/$(_screen_tab_slug "$target_tab")"
                 # Match the tab name as everything past the id/position columns,
                 # so names containing spaces still resolve to the right tab id.
                 tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
@@ -145,11 +158,16 @@ while true; do
             fi
         elif [[ "$key" =~ [1-9] ]] && [[ $key -le $count ]]; then
             zellij action go-to-tab-name "${tabs[$((key-1))]}" 2>/dev/null
-            # Hook-less agents (codex) have no UserPromptSubmit to clear the
-            # entry when the user replies, so jumping to the tab counts as
-            # handling it. claude entries stay: their hooks own the lifecycle.
+            # An entry is cleared on jump only for agents with neither hooks
+            # nor screen detection — nothing else would ever clear it. claude
+            # hooks and screen detection own their lifecycles: a screen
+            # Notification stays until the turn visibly resumes (like a
+            # claude permission prompt stays until answered), so deleting it
+            # here would just have the next poll recreate it.
             jump_file="${pfiles[$((key-1))]}"
-            if [[ -f "$jump_file" && "$(jq -r '.agent // "claude"' "$jump_file" 2>/dev/null)" != "claude" ]]; then
+            jump_agent=$(jq -r '.agent // "claude"' "$jump_file" 2>/dev/null)
+            if [[ -f "$jump_file" && "$jump_agent" != "claude" \
+                  && "$(agent_detection "$jump_agent")" != "screen" ]]; then
                 rm -f "$jump_file"
             fi
         fi

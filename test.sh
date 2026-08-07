@@ -46,6 +46,14 @@ fi
 if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
     printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
 fi
+# Emit a fake `list-panes -t -c -j` JSON array when MOCK_PANES_JSON is set
+if [[ "$1" == "action" && "$2" == "list-panes" && -n "$MOCK_PANES_JSON" ]]; then
+    printf '%s\n' "$MOCK_PANES_JSON"
+fi
+# Emit a fake `dump-screen -p terminal_N` from $MOCK_SCREEN_DIR/terminal_N.txt
+if [[ "$1" == "action" && "$2" == "dump-screen" && -n "$MOCK_SCREEN_DIR" ]]; then
+    cat "$MOCK_SCREEN_DIR/$4.txt" 2>/dev/null
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
@@ -551,6 +559,37 @@ CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/co
 # config.default.json should be updated
 [[ -f "$HOME/.claude-conductor/config.default.json" ]] && pass "config.default.json updated on reinstall" || fail "config.default.json missing after reinstall"
 
+# 後から追加されたagentキー（detection / patterns, issue #28）は再インストールで
+# 既存configへ補完される。ユーザー設定値は上書きしない
+jq 'del(.agents.codex.detection) | del(.agents.codex.patterns)
+    | .agents.codex.command = "my-codex"
+    | .agents.claude.detection = "screen"' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+[[ "$(jq -r '.agents.codex.detection' "$HOME/.claude-conductor/config.json")" == "screen" ]] \
+  && pass "missing detection filled from defaults on reinstall" || fail "detection not migrated"
+jq -e '(.agents.codex.patterns.blocked | length) >= 1' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "missing patterns filled from defaults on reinstall" || fail "patterns not migrated"
+[[ "$(jq -r '.agents.codex.command' "$HOME/.claude-conductor/config.json")" == "my-codex" ]] \
+  && pass "user agent command preserved by migration" || fail "user command overwritten"
+[[ "$(jq -r '.agents.claude.detection' "$HOME/.claude-conductor/config.json")" == "screen" ]] \
+  && pass "user-set detection not overwritten by migration" || fail "user detection overwritten"
+CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/config.json")
+[[ "$CUSTOM_TYPE" == "Custom task" ]] && pass "custom task type survives migration" || fail "custom type lost in migration"
+
+# agents未定義のレガシーconfigは変更されない（agentsキーを生やさない）
+jq 'del(.agents)' "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+jq -e 'has("agents") | not' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "legacy config without agents untouched" || fail "agents key injected into legacy config"
+
+# 以降のセクションが期待するagent定義を復元（custom task typeは維持）
+jq --slurpfile DEF "$HOME/.claude-conductor/config.default.json" '.agents = $DEF[0].agents' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+
 # ============================================================
 section "15. task-create-loop.sh reads task types from config"
 # ============================================================
@@ -793,6 +832,361 @@ grep -q 'TASK_TYPE=dev TASK_AGENT=codex codex resume sess-abc' "$HOME/.claude-pe
 
 # Restore the default config for subsequent tests
 cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# ============================================================
+section "17b4. agent detection method and screen patterns"
+# ============================================================
+
+# config.default.json ships detection definitions: claude=hooks, codex=screen
+jq -e '.agents.claude.detection == "hooks"' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config sets agents.claude.detection=hooks" || fail "agents.claude.detection missing"
+jq -e '.agents.codex.detection == "screen"' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config sets agents.codex.detection=screen" || fail "agents.codex.detection missing"
+jq -e '(.agents.codex.patterns.blocked | length) >= 1 and (.agents.codex.patterns.working | length) >= 1' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config ships codex blocked/working patterns" || fail "agents.codex.patterns missing"
+
+# agent_detection resolves the configured method and defaults to hooks
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "codex" )
+[[ "$AD" == "screen" ]] && pass "agent_detection resolves screen agent" || fail "agent_detection(codex) = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "claude" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection resolves hooks agent" || fail "agent_detection(claude) = '$AD'"
+jq 'del(.agents.codex.detection)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "codex" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection defaults to hooks when unset" || fail "agent_detection default = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection treats agent-less as hooks" || fail "agent_detection('') = '$AD'"
+AD=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_detection "somecli" )
+[[ "$AD" == "hooks" ]] && pass "agent_detection treats unknown agent as hooks" || fail "agent_detection(somecli) = '$AD'"
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# agent_patterns lists the configured regexes one per line
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "blocked" )
+echo "$AP" | grep -q 'Would you like to run the following command' \
+  && pass "agent_patterns lists blocked patterns" || fail "agent_patterns(codex, blocked) = '$AP'"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "working" )
+echo "$AP" | grep -q ' to interrupt' \
+  && pass "agent_patterns lists working patterns" || fail "agent_patterns(codex, working) = '$AP'"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "claude" "blocked" )
+[[ -z "$AP" ]] && pass "agent_patterns empty for pattern-less agent" || fail "agent_patterns(claude) = '$AP'"
+
+# ============================================================
+section "17b5. screen-detect-lib.sh (dump classification)"
+# ============================================================
+
+SDL="$HOME/.claude-conductor/scripts/screen-detect-lib.sh"
+[[ -f "$SDL" ]] && pass "screen-detect-lib.sh installed" || fail "screen-detect-lib.sh missing"
+
+# 実機のcodex v0.147.0から採取したdump-screen抜粋（末尾はビューポートの
+# 空行パディング込み）。分類は空行を除いた末尾バッファに対して行う
+SDL_FIX="$SANDBOX/screen-fixtures"
+mkdir -p "$SDL_FIX"
+cat > "$SDL_FIX/blocked-command.txt" << 'EOF'
+• Running touch probe.txt
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  $ touch probe.txt
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `touch probe.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+EOF
+cat > "$SDL_FIX/blocked-edit.txt" << 'EOF'
+• Edited probe.txt (+1 -0)
+    1 +hello
+
+
+  Would you like to make the following edits?
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for these files (a)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+EOF
+cat > "$SDL_FIX/working.txt" << 'EOF'
+• Ran touch probe.txt
+  └ (no output)
+
+• Working (3s • esc to interrupt)
+
+
+› Summarize recent commits
+
+  gpt-5.6-sol default · ~/projects/claude-conductor
+
+
+EOF
+cat > "$SDL_FIX/idle.txt" << 'EOF'
+• probe.txt をカレントディレクトリに作成しました。
+
+───────────────────────────────────────────
+
+
+› Summarize recent commits
+
+  gpt-5.6-sol default · ~/projects/claude-conductor
+
+
+
+EOF
+cat > "$SDL_FIX/unknown-prompt.txt" << 'EOF'
+  Some brand-new dialog this version added
+
+› 1. Do the thing
+  2. Do not
+
+  Press y to continue or n to abort
+EOF
+# 20行超の承認ダイアログ: 質問行は末尾窓の外だが承認フッターは見えている
+cat > "$SDL_FIX/long-dialog.txt" << 'EOF'
+  line01
+  line02
+  line03
+  line04
+  line05
+  line06
+  line07
+  line08
+  line09
+  line10
+  line11
+  line12
+  line13
+  line14
+  line15
+  line16
+  line17
+  line18
+› 1. Yes, proceed (y)
+  2. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+EOF
+# エージェント出力がパターン文字列を引用しているだけの画面（誤blocked/working防止）
+cat > "$SDL_FIX/transcript-echo.txt" << 'EOF'
+• The config lists "Would you like to run the following command?" as a pattern
+  and the spinner text mentions esc to interrupt somewhere in prose.
+
+› Summarize recent commits
+
+  gpt-5.6-sol default · ~/projects/claude-conductor
+EOF
+
+# 既知の承認プロンプトは blocked（一致行がメッセージとして返る）
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-command.txt")" )
+[[ "$(echo "$CLS" | cut -f1)" == "blocked" ]] && pass "command approval classified blocked" || fail "classify(command) = '$CLS'"
+echo "$CLS" | cut -f2 | grep -q "Would you like to run the following command?" \
+  && pass "blocked classification returns matched line" || fail "blocked matched line = '$CLS'"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-edit.txt")" )
+[[ "$(echo "$CLS" | cut -f1)" == "blocked" ]] && pass "edit approval classified blocked" || fail "classify(edit) = '$CLS'"
+
+# 実行中マーカーは working
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/working.txt")" )
+[[ "$CLS" == "working" ]] && pass "spinner screen classified working" || fail "classify(working) = '$CLS'"
+
+# マーカーなしは idle
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/idle.txt")" )
+[[ "$CLS" == "idle" ]] && pass "composer screen classified idle" || fail "classify(idle) = '$CLS'"
+
+# herdr方式の厳格性: 未知のダイアログは blocked にせず idle に倒す
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/unknown-prompt.txt")" )
+[[ "$CLS" == "idle" ]] && pass "unknown dialog falls back to idle" || fail "classify(unknown) = '$CLS'"
+
+# 質問行が末尾窓から押し出された長い承認ダイアログはフッターで blocked
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/long-dialog.txt")" )
+[[ "$(echo "$CLS" | cut -f1)" == "blocked" ]] && pass "long dialog blocked via footer" || fail "classify(long) = '$CLS'"
+
+# トランスクリプト中の引用ではblocked/working判定しない（行頭アンカー）
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/transcript-echo.txt")" )
+[[ "$CLS" == "idle" ]] && pass "quoted pattern text stays idle" || fail "classify(echo) = '$CLS'"
+
+# パターン未定義のagentは常に idle
+CLS=$( source "$SDL" && screen_classify "claude" "$(cat "$SDL_FIX/blocked-command.txt")" )
+[[ "$CLS" == "idle" ]] && pass "pattern-less agent always idle" || fail "classify(claude) = '$CLS'"
+
+# ============================================================
+section "17b6. screen-detect-lib.sh (pending lifecycle)"
+# ============================================================
+
+SDL_SESS="sdl-sess"
+SDL_DIR="$HOME/.claude-pending/$SDL_SESS"
+rm -rf "$SDL_DIR"
+mkdir -p "$SDL_DIR"
+
+# blocked は screen-<slug>.json に Notification を書く
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "Would you like to run the following command?" )
+SDL_SLUG=$( source "$SDL" && _screen_tab_slug "cx-task" )
+SDL_F="$SDL_DIR/screen-$SDL_SLUG.json"
+[[ -f "$SDL_F" ]] && pass "blocked writes screen pending" || fail "screen pending not written"
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Notification" ]] && pass "blocked pending is Notification" || fail "event = $(jq -r '.event' "$SDL_F" 2>/dev/null)"
+[[ "$(jq -r '.agent' "$SDL_F" 2>/dev/null)" == "codex" ]] && pass "screen pending carries agent" || fail "agent missing in screen pending"
+[[ "$(jq -r '.tab' "$SDL_F" 2>/dev/null)" == "cx-task" ]] && pass "screen pending carries tab" || fail "tab missing in screen pending"
+
+# blocked が続いても既存エントリを保持する（初回検出時刻を維持）
+jq '.time = "00:00:00"' "$SDL_F" > "$SDL_F.tmp" && mv "$SDL_F.tmp" "$SDL_F"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "Would you like to run the following command?" )
+[[ "$(jq -r '.time' "$SDL_F" 2>/dev/null)" == "00:00:00" ]] && pass "repeated blocked keeps first entry" || fail "blocked entry rewritten"
+
+# working はそのタブのpending（notify由来のStopも含む）を消す
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:00:00","agent":"codex"}' > "$SDL_DIR/thread-1.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ ! -f "$SDL_F" ]] && pass "working clears screen pending" || fail "screen pending survived working"
+[[ ! -f "$SDL_DIR/thread-1.json" ]] && pass "working clears notify Stop pending" || fail "notify pending survived working"
+
+# working直後の idle は Stop を書く（turn完了のフォールバック）
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "working->idle writes Stop" || fail "no Stop after working->idle"
+rm -f "$SDL_F"
+
+# 起動直後など、workingを経ていない idle は何も書かない（新規タブの誤done防止）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "fresh idle writes nothing" || fail "fresh idle wrote pending"
+
+# notify由来のStopが既にあるタブでは idle でも重複Stopを書かない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:05:00","agent":"codex"}' > "$SDL_DIR/thread-2.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "idle defers to existing notify Stop" || fail "duplicate Stop written"
+[[ -f "$SDL_DIR/thread-2.json" ]] && pass "notify Stop untouched by idle" || fail "notify Stop removed"
+rm -f "$SDL_DIR/thread-2.json"
+
+# blocked解消後の idle は Notification を消す（タブ内で直接回答したケース）
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:06:00","agent":"codex"}' > "$SDL_DIR/thread-3.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" != "Notification" ]] && pass "idle clears stale Notification" || fail "stale Notification kept"
+rm -f "$SDL_DIR"/*.json
+
+# Waitingで退避中のタブには一切触らない
+rm -rf "$SDL_DIR/.screen-state"
+echo '{"tab":"cx-task","session":"sdl-sess","message":"parked","event":"Waiting","time":"09:00:00","agent":"codex"}' > "$SDL_DIR/park.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+[[ ! -f "$SDL_F" ]] && pass "Waiting tab blocks new Notification" || fail "Notification written over Waiting"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives working" || fail "Waiting entry deleted"
+rm -f "$SDL_DIR/park.json"
+
+# blocked→working遷移はMainへ自動復帰する（Claudeの権限承認後の
+# PostToolUse復帰に相当。タブ内で回答した合図なので引き戻す）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "blocked->working returns to Main" || fail "no auto-return after approval"
+
+# idle→working遷移（新しいプロンプト送信）もMainへ自動復帰する
+echo "idle" > "$SDL_DIR/.screen-state/$SDL_SLUG"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "idle->working returns to Main" || fail "no auto-return after prompt submit"
+
+# working継続では発火しない（毎ポーリングで引き戻さない）
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "working->working re-triggered auto-return" || pass "no auto-return while working continues"
+
+# 初回観測がworking（ターン中のconductor再起動など）では復帰しない
+rm -rf "$SDL_DIR/.screen-state"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "first observation triggered auto-return" || pass "no auto-return on first observation"
+
+# タブ名はファイル名向けにサニタイズされる
+( source "$SDL" && screen_update_pending "$SDL_SESS" "#28 fix" "codex" "blocked" "approval" )
+SDL_S=$(ls "$SDL_DIR"/screen-*.json 2>/dev/null | head -1)
+[[ -n "$SDL_S" ]] && pass "special-char tab name sanitized" || fail "no pending for special-char tab"
+[[ "$(jq -r '.tab' "$SDL_S" 2>/dev/null)" == "#28 fix" ]] && pass "sanitized pending keeps original tab" || fail "tab mangled in pending"
+rm -rf "$SDL_DIR"
+mkdir -p "$SDL_DIR"
+
+# マルチバイトの同文字数タブ名（tr -c では全バイトが_化して衝突する）が
+# 別ファイルになる（cksumサフィックスで区別）
+SLUG_A=$( source "$SDL" && _screen_tab_slug "設計" )
+SLUG_B=$( source "$SDL" && _screen_tab_slug "実装" )
+[[ "$SLUG_A" != "$SLUG_B" ]] && pass "multibyte tab names get distinct slugs" || fail "slug collision: $SLUG_A"
+SLUG_A=$( source "$SDL" && _screen_tab_slug "a b" )
+SLUG_B=$( source "$SDL" && _screen_tab_slug "a_b" )
+[[ "$SLUG_A" != "$SLUG_B" ]] && pass "'a b' and 'a_b' get distinct slugs" || fail "slug collision: $SLUG_A"
+
+# registryにエントリがあるタブのscreen由来pendingは dir / task_type /
+# transcript_path を引き継ぐ（dd時のupload-logやDone復元が壊れないように）
+SDL_TR="$SANDBOX/sdl-transcript.jsonl"
+echo '{"x":1}' > "$SDL_TR"
+( source "$HOME/.claude-conductor/scripts/registry-lib.sh" \
+    && registry_upsert "$SDL_SESS" "sdl-sid-1" "cx-task" "/tmp/proj" "dev" "codex" "$SDL_TR" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+[[ "$(jq -r '.dir' "$SDL_F" 2>/dev/null)" == "/tmp/proj" ]] && pass "screen pending carries dir from registry" || fail "dir missing: $(cat "$SDL_F" 2>/dev/null)"
+[[ "$(jq -r '.task_type' "$SDL_F" 2>/dev/null)" == "dev" ]] && pass "screen pending carries task_type" || fail "task_type missing"
+[[ "$(jq -r '.transcript_path' "$SDL_F" 2>/dev/null)" == "$SDL_TR" ]] && pass "screen pending carries transcript_path" || fail "transcript_path missing"
+rm -rf "$CONDUCTOR_HOME/tasks/$SDL_SESS"
+rm -f "$SDL_F"
+
+# screen由来Stopの後からnotify由来Stopが届いたら、次のidle観測で自ら消えて
+# 二重done表示に収束する
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] || fail "precondition: screen Stop not written"
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:07:00","agent":"codex"}' > "$SDL_DIR/thread-4.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "late notify Stop absorbs screen Stop" || fail "duplicate Stop persisted"
+[[ -f "$SDL_DIR/thread-4.json" ]] && pass "notify Stop survives convergence" || fail "notify Stop removed"
+rm -f "$SDL_DIR"/*.json
+
+# create_task は同名タブの残留 .screen-state を消してから作る
+# （削除済みタスクの working を新タブが引き継ぐと偽の Task complete が付く）
+mkdir -p "$SDL_DIR/.screen-state"
+echo "working" > "$SDL_DIR/.screen-state/$SDL_SLUG"
+( export ZELLIJ_SESSION_NAME="$SDL_SESS"
+  source "$HOME/.claude-conductor/scripts/task-lib.sh" \
+    && create_task "/tmp/proj" "dev" "cx-task" "" "codex" ) >/dev/null 2>&1
+[[ ! -f "$SDL_DIR/.screen-state/$SDL_SLUG" ]] && pass "create_task clears stale screen state" || fail "stale screen state survived recreation"
+rm -rf "$SDL_DIR"
+
+# ============================================================
+section "17b7. screen-detect-lib.sh (tick over live panes)"
+# ============================================================
+
+SDL_SESS2="sdl-tick"
+SDL_DIR2="$HOME/.claude-pending/$SDL_SESS2"
+rm -rf "$SDL_DIR2"
+mkdir -p "$SDL_DIR2"
+SDL_PANES='[
+  {"id":0,"is_plugin":true,"tab_name":"cx-task","title":"tab-bar"},
+  {"id":5,"is_plugin":false,"tab_name":"cx-task","terminal_command":"env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex","title":"codex"},
+  {"id":6,"is_plugin":false,"tab_name":"cx-task","terminal_command":"bash task-control.sh cx-task","title":"bar"},
+  {"id":7,"is_plugin":false,"tab_name":"cl-task","terminal_command":"env TASK_TAB_NAME=cl-task TASK_TYPE=dev TASK_AGENT=claude claude","title":"claude"}
+]'
+mkdir -p "$SDL_FIX/tick"
+cp "$SDL_FIX/blocked-command.txt" "$SDL_FIX/tick/terminal_5.txt"
+cp "$SDL_FIX/idle.txt" "$SDL_FIX/tick/terminal_7.txt"
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+( export MOCK_PANES_JSON="$SDL_PANES" MOCK_SCREEN_DIR="$SDL_FIX/tick"
+  source "$SDL" && screen_detect_tick "$SDL_SESS2" )
+
+[[ "$(jq -r '.event' "$SDL_DIR2/screen-$SDL_SLUG.json" 2>/dev/null)" == "Notification" ]] \
+  && pass "tick surfaces codex approval as Notification" || fail "tick wrote no Notification"
+grep -q 'dump-screen -p terminal_5' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "tick dumps the codex agent pane" || fail "codex pane not dumped"
+grep -q 'dump-screen -p terminal_7' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "hooks agent pane dumped (must skip claude)" || pass "hooks agent pane skipped"
+grep -q 'dump-screen -p terminal_6' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "non-agent pane dumped" || pass "non-agent pane skipped"
+rm -rf "$SDL_DIR2"
 
 # ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
@@ -1578,6 +1972,12 @@ fi
 if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
     printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
 fi
+if [[ "$1" == "action" && "$2" == "list-panes" && -n "$MOCK_PANES_JSON" ]]; then
+    printf '%s\n' "$MOCK_PANES_JSON"
+fi
+if [[ "$1" == "action" && "$2" == "dump-screen" && -n "$MOCK_SCREEN_DIR" ]]; then
+    cat "$MOCK_SCREEN_DIR/$4.txt" 2>/dev/null
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 
@@ -2235,28 +2635,42 @@ echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly show
 echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
 
 # ============================================================
-section "37b. dashboard-loop.sh (jump clears codex pending, keeps claude)"
+section "37b. dashboard-loop.sh (jump clears only lifecycle-less pendings)"
 # ============================================================
 
-# codex has no UserPromptSubmit hook: jumping to the tab must clear its entry.
-# claude entries are cleared by hooks, so a jump must leave them in place.
+# ジャンプでクリアするのは「hooksもscreen検出も持たないagent」のみ。
+# claudeはhooksが、screen方式agent（codex）はscreen検出がライフサイクルを
+# 持つため、ジャンプでは消さない（消しても次ポーリングで再生成されるだけ）。
 JC_DIR="$HOME/.claude-pending/jump-session"
 mkdir -p "$JC_DIR"
-echo '{"tab":"codex-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:00","agent":"codex"}' > "$JC_DIR/cx.json"
+echo '{"tab":"somecli-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:00","agent":"somecli"}' > "$JC_DIR/sc.json"
+echo '{"tab":"codex-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:30","agent":"codex"}' > "$JC_DIR/cx.json"
 echo '{"tab":"claude-task","session":"jump-session","message":"done","event":"Stop","time":"10:01:00","agent":"claude"}' > "$JC_DIR/cl.json"
 
 : > "$HOME/.claude-pending/zellij-calls.log"
-( printf '1'; sleep 3 ) | MOCK_TABS="codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
+( printf '1'; sleep 3 ) | MOCK_TABS="somecli-task codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
     bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
 JC_PID=$!
 sleep 2
 kill "$JC_PID" 2>/dev/null || true
 wait "$JC_PID" 2>/dev/null || true
 
-grep -q 'action go-to-tab-name codex-task' "$HOME/.claude-pending/zellij-calls.log" \
+grep -q 'action go-to-tab-name somecli-task' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "jump goes to selected tab" || fail "jump did not switch tab"
-[[ ! -f "$JC_DIR/cx.json" ]] && pass "codex pending cleared on jump" || fail "codex pending not cleared"
-[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending untouched by codex jump" || fail "claude pending removed unexpectedly"
+[[ ! -f "$JC_DIR/sc.json" ]] && pass "hook-less non-screen pending cleared on jump" || fail "somecli pending not cleared"
+[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending untouched by jump" || fail "claude pending removed unexpectedly"
+
+# screen方式agent（codex, detection=screen）のエントリはジャンプで消さない
+( printf '1'; sleep 3 ) | MOCK_TABS="codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+grep -q 'action go-to-tab-name codex-task' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "jump goes to codex tab" || fail "jump did not switch to codex tab"
+[[ -f "$JC_DIR/cx.json" ]] && pass "screen-agent pending kept on jump" || fail "codex pending cleared on jump"
+rm -f "$JC_DIR/cx.json"
 
 # Jumping to a claude task keeps its entry (hooks own the lifecycle)
 ( printf '1'; sleep 3 ) | MOCK_TABS="claude-task" ZELLIJ_SESSION_NAME=jump-session \
@@ -2279,6 +2693,44 @@ kill "$JC_PID" 2>/dev/null || true
 wait "$JC_PID" 2>/dev/null || true
 [[ -f "$JC_DIR/old.json" ]] && pass "agent-less pending treated as claude" || fail "agent-less pending cleared"
 rm -rf "$JC_DIR"
+
+# ============================================================
+section "37c. dashboard-loop.sh (screen detection in the poll)"
+# ============================================================
+
+# screen方式agentのタブはポーリング内で dump-screen され、承認待ちが
+# そのままpending一覧に載る（issue #28）。ONCE経路でも検出が走ること
+SD_DIR="$HOME/.claude-pending/sd-session"
+rm -rf "$SD_DIR"
+mkdir -p "$SD_DIR"
+SD_PANES='[
+  {"id":0,"is_plugin":true,"tab_name":"codex-scr","title":"tab-bar"},
+  {"id":5,"is_plugin":false,"tab_name":"codex-scr","terminal_command":"env TASK_TAB_NAME=codex-scr TASK_TYPE=dev TASK_AGENT=codex codex","title":"codex"}
+]'
+mkdir -p "$SDL_FIX/dash"
+cp "$SDL_FIX/blocked-command.txt" "$SDL_FIX/dash/terminal_5.txt"
+
+SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+
+SD_SLUG=$( source "$SDL" && _screen_tab_slug "codex-scr" )
+[[ -f "$SD_DIR/screen-$SD_SLUG.json" ]] && pass "poll writes screen Notification pending" || fail "screen pending not created by poll"
+echo "$SD_OUT" | grep -q "codex-scr" && pass "screen-detected approval listed in dashboard" || fail "approval not listed: $SD_OUT"
+echo "$SD_OUT" | grep -q "Would you like to run the following command?" \
+  && pass "dashboard shows the matched approval line" || fail "approval message missing"
+
+# workingに戻ればポーリングがpendingを消し、Mainへ自動復帰する
+cp "$SDL_FIX/working.txt" "$SDL_FIX/dash/terminal_5.txt"
+: > "$HOME/.claude-pending/zellij-calls.log"
+SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+[[ ! -f "$SD_DIR/screen-$SD_SLUG.json" ]] && pass "poll clears pending when agent works again" || fail "pending survived working"
+echo "$SD_OUT" | grep -q "All tasks running" && pass "dashboard back to all-running" || fail "dashboard still lists task"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "poll auto-returns to Main when turn resumes" || fail "no auto-return in poll"
+rm -rf "$SD_DIR"
 
 # ============================================================
 section "38. waiting-loop.sh (shows only Waiting tasks)"

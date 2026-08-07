@@ -51,6 +51,41 @@ agent_names() {
     jq -r '.agents // {} | keys_unsorted[]' "$(load_config)" 2>/dev/null
 }
 
+# State detection method for an agent: "hooks" (Claude Code lifecycle hooks
+# own the pending files) or "screen" (issue #28: the dashboard polls the
+# tab's screen and matches config .agents.<name>.patterns). Anything not
+# explicitly configured as "screen" falls back to hooks so agent-less legacy
+# tabs and unknown agents are never screen-scanned.
+agent_detection() {
+    local agent="$1" method=""
+    if [[ -n "$agent" ]]; then
+        method=$(jq -r --arg a "$agent" '.agents[$a].detection // empty' "$(load_config)" 2>/dev/null)
+    fi
+    [[ -z "$method" ]] && method="hooks"
+    echo "$method"
+}
+
+# Screen-detection regexes (grep -E) for one state ("blocked" / "working"),
+# one per line. Empty output means the agent defines no patterns for that
+# state and it can never be classified as such.
+agent_patterns() {
+    local agent="$1" state="$2"
+    [[ -z "$agent" ]] && return 0
+    jq -r --arg a "$agent" --arg s "$state" \
+        '.agents[$a].patterns[$s] // [] | .[]' "$(load_config)" 2>/dev/null
+}
+
+# Tab name -> filesystem-safe slug keying a tab's screen-detection files
+# (pending + last-state). tr -c mangles multibyte names byte-wise, so two
+# Japanese tab names would collide on the sanitized part alone — the cksum
+# suffix keeps distinct names distinct.
+_screen_tab_slug() {
+    local safe hash
+    safe=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_')
+    hash=$(printf '%s' "$1" | cksum | awk '{print $1}')
+    printf '%s-%s' "$safe" "$hash"
+}
+
 apply_layout() {
     local dir="$1"
     local type="$2"
@@ -107,6 +142,12 @@ create_task() {
 
     local -a agent_cmd
     read -r -a agent_cmd <<< "$(agent_command "$agent")"
+
+    # A tab recreated under a previous task's name must not inherit that
+    # task's screen-detection state: a stale "working" would fake an instant
+    # Stop (or a stale "blocked" an unwanted jump to Main) on the new tab's
+    # first poll.
+    rm -f "$HOME/.claude-pending/${ZELLIJ_SESSION_NAME:-unknown}/.screen-state/$(_screen_tab_slug "$name")"
 
     # TASK_AGENT rides along only for named agents, so tabs on the legacy
     # single-agent path keep their exact env (and pending files stay

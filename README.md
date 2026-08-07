@@ -34,7 +34,9 @@ Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zell
 ## Requirements
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-- [Zellij](https://zellij.dev/) ≥ 0.40
+- [Zellij](https://zellij.dev/) ≥ 0.40 (≥ 0.44 for screen-based agent state
+  detection — codex approval waits on the dashboard need `zellij action
+  list-panes`, added in 0.44)
 - [jq](https://jqlang.github.io/jq/)
 - [fzf](https://github.com/junegunn/fzf)
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) (macOS, optional)
@@ -193,8 +195,14 @@ The default config defines both under `agents` in `~/.claude-conductor/config.js
 ```json
 {
   "agents": {
-    "claude": { "command": "claude", "resume_args": "--resume" },
-    "codex":  { "command": "codex",  "resume_args": "resume" }
+    "claude": { "command": "claude", "resume_args": "--resume", "detection": "hooks" },
+    "codex":  {
+      "command": "codex", "resume_args": "resume", "detection": "screen",
+      "patterns": {
+        "blocked": ["Would you like to run the following command\\?", "..."],
+        "working": [" to interrupt"]
+      }
+    }
   }
 }
 ```
@@ -215,14 +223,33 @@ rollout), and restore all work for codex tasks. If `notify` is already set by
 another tool, the installer leaves it untouched and prints how to chain the
 bridge manually.
 
-**Codex limitations** — codex only emits `agent-turn-complete`, so compared to
+**Screen-based state detection** — codex has no lifecycle hooks, so its state
+is detected from the screen instead (`"detection": "screen"`): every dashboard
+poll snapshots the agent pane (`zellij action dump-screen`, no focus change)
+and matches its bottom lines against the agent's `patterns`:
+
+- A line matching `patterns.blocked` (a known approval prompt) surfaces the
+  tab as `Notification` — approval waits show up on the dashboard just like
+  Claude Code permission prompts.
+- A line matching `patterns.working` (default: the codex `esc to interrupt`
+  spinner) clears the tab's pending entries — the turn is running again. When
+  this is a transition from blocked/idle (you approved or submitted a prompt
+  inside the tab), focus auto-returns to Main like the Claude Code hooks do,
+  within one poll (up to 2 seconds).
+- Anything else counts as idle. A screen that stops matching `working` becomes
+  a `Stop` (done) entry, unless the `notify` bridge already recorded one.
+  Unknown dialogs deliberately fall back to idle, never to blocked, so a new
+  codex UI screen cannot spam the dashboard with false approvals.
+
+**Codex limitations** — codex has no prompt-submit hook, so compared to
 Claude Code tasks:
 
-- Permission/approval waits are not shown on the dashboard (no Notification
-  equivalent); only completed turns appear.
-- There is no auto-return to Main when you answer, and a codex pending entry
-  cannot be cleared by a prompt-submit hook. Instead, jumping to the tab from
-  the dashboard (number key) clears it.
+- Auto-return to Main and pending cleanup ride on screen detection instead of
+  hooks: they happen on the next dashboard poll (up to 2 seconds) after the
+  turn visibly resumes, not instantly. Like a claude permission prompt, a
+  screen-detected approval stays listed until you actually answer it —
+  jumping to the tab alone does not clear it. (Entries for agents with
+  neither hooks nor screen detection are still cleared by the jump itself.)
 
 The legacy single-agent form (`agent.command` / `agent.resume_args`) is still
 honored when `agents` is absent.
@@ -237,8 +264,13 @@ Claude Code (task tab)
   └─ UserPromptSubmit   → clears pending → auto-return to Main
 
 Codex (task tab)
-  └─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
-     cleared when you jump to the tab from the dashboard
+  ├─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
+  │  cleared when you jump to the tab from the dashboard
+  └─ screen detection (dashboard poll) → dump-screen + pattern match
+       approval prompt → pending file (Notification)
+       spinner        → clears the tab's pending files; auto-return to Main
+                        when the user just answered (blocked/idle → working)
+       turn end       → pending file (Stop) unless notify already wrote one
 
 Task tab control bar
   └─ w key → waiting-toggle.sh flips event between Waiting and Notification
