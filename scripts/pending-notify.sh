@@ -28,6 +28,17 @@ TASK_TYPE="${TASK_TYPE:-}"
 
 PENDING_FILE="$PENDING_DIR/${CLAUDE_SESSION_ID}.json"
 
+# Keep the task registry current so the session can be rebuilt with --resume
+# after a restart (issue #36). Only conductor-created task tabs (they always
+# carry TASK_TAB_NAME) are registered — these hooks fire for every Claude Code
+# session on the machine, including ones outside conductor.
+if [ -n "$ZELLIJ_SESSION_NAME" ] && [ -n "$TASK_TAB_NAME" ]; then
+    # shellcheck source=scripts/registry-lib.sh
+    . "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/registry-lib.sh"
+    registry_upsert "$SESSION_NAME" "$CLAUDE_SESSION_ID" "$TAB_NAME" \
+        "$DIR" "$TASK_TYPE" "${TASK_AGENT:-claude}" "$TRANSCRIPT_PATH"
+fi
+
 # Don't overwrite a Notification or Waiting pending with a Stop event
 if [ -f "$PENDING_FILE" ] && [ "$HOOK_EVENT" = "Stop" ]; then
     EXISTING_EVENT=$(jq -r '.event' "$PENDING_FILE" 2>/dev/null)

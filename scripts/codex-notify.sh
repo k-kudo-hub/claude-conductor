@@ -55,6 +55,15 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ ! -f "$TRANSCRIPT_PATH" ]; then
     TRANSCRIPT_PATH=""
 fi
 
+# Keep the task registry current for restart restore (issue #36), guarded to
+# conductor task tabs like pending-notify.sh.
+if [ -n "$ZELLIJ_SESSION_NAME" ] && [ -n "$TASK_TAB_NAME" ]; then
+    # shellcheck source=scripts/registry-lib.sh
+    . "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/registry-lib.sh"
+    registry_upsert "$SESSION_NAME" "$THREAD_ID" "$TAB_NAME" \
+        "$DIR" "$TASK_TYPE" "${TASK_AGENT:-codex}" "$TRANSCRIPT_PATH"
+fi
+
 mkdir -p "$PENDING_DIR"
 PENDING_FILE="$PENDING_DIR/${THREAD_ID}.json"
 

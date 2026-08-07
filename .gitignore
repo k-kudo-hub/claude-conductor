@@ -9,5 +9,6 @@ config.json
 # CONDUCTOR_HOME としてリポジトリ／worktree を使う場合（mdev-test 等）の実行時生成物
 /daily/
 /news/
+/tasks/
 /upload-cache/
 /VERSION

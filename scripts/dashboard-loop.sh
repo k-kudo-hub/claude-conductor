@@ -9,6 +9,10 @@ SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
 mkdir -p "$PENDING_DIR"
 
+# Rebuild tasks registered for this session before the first render
+# (issue #36). No-op when the registry is empty or the tabs already exist.
+bash "$CONDUCTOR_HOME/scripts/restore-session.sh" 2>/dev/null
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -126,6 +130,11 @@ while true; do
                         rm -f "$f"
                     fi
                 done
+                # Deletion is committed: drop the task's registry entries so a
+                # later session restore does not resurrect it (issue #36).
+                # shellcheck source=scripts/registry-lib.sh
+                . "$CONDUCTOR_HOME/scripts/registry-lib.sh"
+                registry_remove_by_tab "$SESSION_NAME" "$target_tab"
                 # Match the tab name as everything past the id/position columns,
                 # so names containing spaces still resolve to the right tab id.
                 tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \

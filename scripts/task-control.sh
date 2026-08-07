@@ -83,6 +83,13 @@ while true; do
                         rm -f "$f"
                     fi
                 done
+                # Deletion is committed (upload succeeded or was skipped):
+                # drop the task's registry entries so a later session restore
+                # does not resurrect it (issue #36). By tab, not sid — a
+                # --resume restart leaves multiple entries per tab.
+                # shellcheck source=scripts/registry-lib.sh
+                . "$CONDUCTOR_HOME/scripts/registry-lib.sh"
+                registry_remove_by_tab "$SESSION_NAME" "$TAB_NAME"
                 # Close this task's own tab by id, not the active tab: the
                 # synchronous upload can take seconds, during which the active
                 # tab may have switched (e.g. auto-routing to Main), so
