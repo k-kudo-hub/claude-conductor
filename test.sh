@@ -325,6 +325,45 @@ SEARCH_DEPTH_JSON=$(jq -r '.search_depth' "$CONFIG_FILE")
 [[ "$SEARCH_DEPTH_JSON" == "1" ]] && pass "search_depth is 1" || fail "search_depth wrong: $SEARCH_DEPTH_JSON"
 
 # ============================================================
+section "15b. task-create-loop.sh agent selection (select_agent)"
+# ============================================================
+
+CONDUCTOR_CFG="$HOME/.claude-conductor/config.json"
+TASK_CREATE="$HOME/.claude-conductor/scripts/task-create-loop.sh"
+
+# select_agent is defined when the script is sourced (main_loop must not start)
+( source "$TASK_CREATE" && declare -F select_agent >/dev/null ) \
+  && pass "task-create-loop.sh defines select_agent" || fail "select_agent missing"
+
+# No .agents configured -> empty output (legacy single-agent path)
+jq 'del(.agents)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ -z "$SA" ]] && pass "select_agent empty without .agents" || fail "select_agent = '$SA' without .agents"
+
+# A single configured agent is returned without prompting
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ "$SA" == "claude" ]] && pass "select_agent auto-picks single agent" || fail "select_agent single = '$SA'"
+
+# Multiple agents go through fzf with all candidates offered
+cat > "$MOCK_BIN/fzf" << 'MOCK'
+#!/bin/bash
+tee "$HOME/.claude-pending/fzf-input.log" | head -1
+MOCK
+chmod +x "$MOCK_BIN/fzf"
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}, "codex": {"command": "codex", "resume_args": "resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+SA=$( source "$TASK_CREATE" && select_agent )
+[[ "$SA" == "claude" ]] && pass "select_agent returns fzf pick" || fail "select_agent fzf = '$SA'"
+grep -q "codex" "$HOME/.claude-pending/fzf-input.log" \
+  && pass "select_agent offers all agents to fzf" || fail "fzf candidates missing codex"
+rm -f "$MOCK_BIN/fzf" "$HOME/.claude-pending/fzf-input.log"
+
+# Restore the default config for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# ============================================================
 section "16. layout actions generate correct zellij commands"
 # ============================================================
 
