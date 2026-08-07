@@ -46,6 +46,14 @@ fi
 if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
     printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
 fi
+# Emit a fake `list-panes -t -c -j` JSON array when MOCK_PANES_JSON is set
+if [[ "$1" == "action" && "$2" == "list-panes" && -n "$MOCK_PANES_JSON" ]]; then
+    printf '%s\n' "$MOCK_PANES_JSON"
+fi
+# Emit a fake `dump-screen -p terminal_N` from $MOCK_SCREEN_DIR/terminal_N.txt
+if [[ "$1" == "action" && "$2" == "dump-screen" && -n "$MOCK_SCREEN_DIR" ]]; then
+    cat "$MOCK_SCREEN_DIR/$4.txt" 2>/dev/null
+fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
@@ -832,6 +840,207 @@ AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "cl
 [[ -z "$AP" ]] && pass "agent_patterns empty for pattern-less agent" || fail "agent_patterns(claude) = '$AP'"
 
 # ============================================================
+section "17b5. screen-detect-lib.sh (dump classification)"
+# ============================================================
+
+SDL="$HOME/.claude-conductor/scripts/screen-detect-lib.sh"
+[[ -f "$SDL" ]] && pass "screen-detect-lib.sh installed" || fail "screen-detect-lib.sh missing"
+
+# 実機のcodex v0.147.0から採取したdump-screen抜粋（末尾はビューポートの
+# 空行パディング込み）。分類は空行を除いた末尾バッファに対して行う
+SDL_FIX="$SANDBOX/screen-fixtures"
+mkdir -p "$SDL_FIX"
+cat > "$SDL_FIX/blocked-command.txt" << 'EOF'
+• Running touch probe.txt
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  $ touch probe.txt
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `touch probe.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+EOF
+cat > "$SDL_FIX/blocked-edit.txt" << 'EOF'
+• Edited probe.txt (+1 -0)
+    1 +hello
+
+
+  Would you like to make the following edits?
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for these files (a)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+EOF
+cat > "$SDL_FIX/working.txt" << 'EOF'
+• Ran touch probe.txt
+  └ (no output)
+
+• Working (3s • esc to interrupt)
+
+
+› Summarize recent commits
+
+  gpt-5.6-sol default · ~/projects/claude-conductor
+
+
+EOF
+cat > "$SDL_FIX/idle.txt" << 'EOF'
+• probe.txt をカレントディレクトリに作成しました。
+
+───────────────────────────────────────────
+
+
+› Summarize recent commits
+
+  gpt-5.6-sol default · ~/projects/claude-conductor
+
+
+
+EOF
+cat > "$SDL_FIX/unknown-prompt.txt" << 'EOF'
+  Some brand-new dialog this version added
+
+› 1. Do the thing
+  2. Do not
+
+  Press enter to confirm or esc to cancel
+EOF
+
+# 既知の承認プロンプトは blocked（一致行がメッセージとして返る）
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-command.txt")" )
+[[ "$(echo "$CLS" | cut -f1)" == "blocked" ]] && pass "command approval classified blocked" || fail "classify(command) = '$CLS'"
+echo "$CLS" | cut -f2 | grep -q "Would you like to run the following command?" \
+  && pass "blocked classification returns matched line" || fail "blocked matched line = '$CLS'"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-edit.txt")" )
+[[ "$(echo "$CLS" | cut -f1)" == "blocked" ]] && pass "edit approval classified blocked" || fail "classify(edit) = '$CLS'"
+
+# 実行中マーカーは working
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/working.txt")" )
+[[ "$CLS" == "working" ]] && pass "spinner screen classified working" || fail "classify(working) = '$CLS'"
+
+# マーカーなしは idle
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/idle.txt")" )
+[[ "$CLS" == "idle" ]] && pass "composer screen classified idle" || fail "classify(idle) = '$CLS'"
+
+# herdr方式の厳格性: 未知のダイアログは blocked にせず idle に倒す
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/unknown-prompt.txt")" )
+[[ "$CLS" == "idle" ]] && pass "unknown dialog falls back to idle" || fail "classify(unknown) = '$CLS'"
+
+# パターン未定義のagentは常に idle
+CLS=$( source "$SDL" && screen_classify "claude" "$(cat "$SDL_FIX/blocked-command.txt")" )
+[[ "$CLS" == "idle" ]] && pass "pattern-less agent always idle" || fail "classify(claude) = '$CLS'"
+
+# ============================================================
+section "17b6. screen-detect-lib.sh (pending lifecycle)"
+# ============================================================
+
+SDL_SESS="sdl-sess"
+SDL_DIR="$HOME/.claude-pending/$SDL_SESS"
+rm -rf "$SDL_DIR"
+mkdir -p "$SDL_DIR"
+
+# blocked は screen-<tab>.json に Notification を書く
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "Would you like to run the following command?" )
+SDL_F="$SDL_DIR/screen-cx-task.json"
+[[ -f "$SDL_F" ]] && pass "blocked writes screen pending" || fail "screen pending not written"
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Notification" ]] && pass "blocked pending is Notification" || fail "event = $(jq -r '.event' "$SDL_F" 2>/dev/null)"
+[[ "$(jq -r '.agent' "$SDL_F" 2>/dev/null)" == "codex" ]] && pass "screen pending carries agent" || fail "agent missing in screen pending"
+[[ "$(jq -r '.tab' "$SDL_F" 2>/dev/null)" == "cx-task" ]] && pass "screen pending carries tab" || fail "tab missing in screen pending"
+
+# blocked が続いても既存エントリを保持する（初回検出時刻を維持）
+jq '.time = "00:00:00"' "$SDL_F" > "$SDL_F.tmp" && mv "$SDL_F.tmp" "$SDL_F"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "Would you like to run the following command?" )
+[[ "$(jq -r '.time' "$SDL_F" 2>/dev/null)" == "00:00:00" ]] && pass "repeated blocked keeps first entry" || fail "blocked entry rewritten"
+
+# working はそのタブのpending（notify由来のStopも含む）を消す
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:00:00","agent":"codex"}' > "$SDL_DIR/thread-1.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ ! -f "$SDL_F" ]] && pass "working clears screen pending" || fail "screen pending survived working"
+[[ ! -f "$SDL_DIR/thread-1.json" ]] && pass "working clears notify Stop pending" || fail "notify pending survived working"
+
+# working直後の idle は Stop を書く（turn完了のフォールバック）
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "working->idle writes Stop" || fail "no Stop after working->idle"
+rm -f "$SDL_F"
+
+# 起動直後など、workingを経ていない idle は何も書かない（新規タブの誤done防止）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "fresh idle writes nothing" || fail "fresh idle wrote pending"
+
+# notify由来のStopが既にあるタブでは idle でも重複Stopを書かない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:05:00","agent":"codex"}' > "$SDL_DIR/thread-2.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "idle defers to existing notify Stop" || fail "duplicate Stop written"
+[[ -f "$SDL_DIR/thread-2.json" ]] && pass "notify Stop untouched by idle" || fail "notify Stop removed"
+rm -f "$SDL_DIR/thread-2.json"
+
+# blocked解消後の idle は Notification を消す（タブ内で直接回答したケース）
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:06:00","agent":"codex"}' > "$SDL_DIR/thread-3.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" != "Notification" ]] && pass "idle clears stale Notification" || fail "stale Notification kept"
+rm -f "$SDL_DIR"/*.json
+
+# Waitingで退避中のタブには一切触らない
+rm -rf "$SDL_DIR/.screen-state"
+echo '{"tab":"cx-task","session":"sdl-sess","message":"parked","event":"Waiting","time":"09:00:00","agent":"codex"}' > "$SDL_DIR/park.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+[[ ! -f "$SDL_F" ]] && pass "Waiting tab blocks new Notification" || fail "Notification written over Waiting"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives working" || fail "Waiting entry deleted"
+rm -f "$SDL_DIR/park.json"
+
+# タブ名はファイル名向けにサニタイズされる
+( source "$SDL" && screen_update_pending "$SDL_SESS" "#28 fix" "codex" "blocked" "approval" )
+SDL_S=$(ls "$SDL_DIR"/screen-*.json 2>/dev/null | head -1)
+[[ -n "$SDL_S" ]] && pass "special-char tab name sanitized" || fail "no pending for special-char tab"
+[[ "$(jq -r '.tab' "$SDL_S" 2>/dev/null)" == "#28 fix" ]] && pass "sanitized pending keeps original tab" || fail "tab mangled in pending"
+rm -rf "$SDL_DIR"
+
+# ============================================================
+section "17b7. screen-detect-lib.sh (tick over live panes)"
+# ============================================================
+
+SDL_SESS2="sdl-tick"
+SDL_DIR2="$HOME/.claude-pending/$SDL_SESS2"
+rm -rf "$SDL_DIR2"
+mkdir -p "$SDL_DIR2"
+SDL_PANES='[
+  {"id":0,"is_plugin":true,"tab_name":"cx-task","title":"tab-bar"},
+  {"id":5,"is_plugin":false,"tab_name":"cx-task","terminal_command":"env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex","title":"codex"},
+  {"id":6,"is_plugin":false,"tab_name":"cx-task","terminal_command":"bash task-control.sh cx-task","title":"bar"},
+  {"id":7,"is_plugin":false,"tab_name":"cl-task","terminal_command":"env TASK_TAB_NAME=cl-task TASK_TYPE=dev TASK_AGENT=claude claude","title":"claude"}
+]'
+mkdir -p "$SDL_FIX/tick"
+cp "$SDL_FIX/blocked-command.txt" "$SDL_FIX/tick/terminal_5.txt"
+cp "$SDL_FIX/idle.txt" "$SDL_FIX/tick/terminal_7.txt"
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+( export MOCK_PANES_JSON="$SDL_PANES" MOCK_SCREEN_DIR="$SDL_FIX/tick"
+  source "$SDL" && screen_detect_tick "$SDL_SESS2" )
+
+[[ "$(jq -r '.event' "$SDL_DIR2/screen-cx-task.json" 2>/dev/null)" == "Notification" ]] \
+  && pass "tick surfaces codex approval as Notification" || fail "tick wrote no Notification"
+grep -q 'dump-screen -p terminal_5' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "tick dumps the codex agent pane" || fail "codex pane not dumped"
+grep -q 'dump-screen -p terminal_7' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "hooks agent pane dumped (must skip claude)" || pass "hooks agent pane skipped"
+grep -q 'dump-screen -p terminal_6' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "non-agent pane dumped" || pass "non-agent pane skipped"
+rm -rf "$SDL_DIR2"
+
+# ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
 # ============================================================
 
@@ -1614,6 +1823,12 @@ if [[ "$1" == "action" && "$2" == "query-tab-names" && -n "$MOCK_TAB_NAMES" ]]; 
 fi
 if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
     printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
+fi
+if [[ "$1" == "action" && "$2" == "list-panes" && -n "$MOCK_PANES_JSON" ]]; then
+    printf '%s\n' "$MOCK_PANES_JSON"
+fi
+if [[ "$1" == "action" && "$2" == "dump-screen" && -n "$MOCK_SCREEN_DIR" ]]; then
+    cat "$MOCK_SCREEN_DIR/$4.txt" 2>/dev/null
 fi
 MOCK
 chmod +x "$MOCK_BIN/zellij"
