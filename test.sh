@@ -262,6 +262,64 @@ FILE_COUNT=$(ls "$PENDING_DIR" 2>/dev/null | wc -l | tr -d ' ')
 [[ "$FILE_COUNT" -eq 1 ]] && pass "no file created without session_id" || fail "unexpected file count: $FILE_COUNT"
 
 # ============================================================
+section "11b. codex-notify.sh (agent-turn-complete -> pending Stop)"
+# ============================================================
+
+CODEX_NOTIFY="$HOME/.claude-conductor/scripts/codex-notify.sh"
+CODEX_PENDING="$HOME/.claude-pending/codex-session"
+[[ -f "$CODEX_NOTIFY" ]] && pass "codex-notify.sh installed" || fail "codex-notify.sh missing"
+
+# A fake CODEX_HOME provides the rollout transcript for the thread
+FAKE_CODEX_HOME="$SANDBOX/fake-codex"
+mkdir -p "$FAKE_CODEX_HOME/sessions/2026/08/07"
+ROLLOUT="$FAKE_CODEX_HOME/sessions/2026/08/07/rollout-2026-08-07T10-00-00-thread-0001.jsonl"
+echo '{}' > "$ROLLOUT"
+
+PAYLOAD='{"type":"agent-turn-complete","thread-id":"thread-0001","turn-id":"t1","cwd":"/tmp/myapp","input-messages":["do it"],"last-assistant-message":"All done here"}'
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task TASK_TYPE=dev TASK_AGENT=codex CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "$PAYLOAD"
+
+CODEX_PENDING_FILE="$CODEX_PENDING/thread-0001.json"
+[[ -f "$CODEX_PENDING_FILE" ]] && pass "pending file keyed by thread-id" || fail "pending file missing"
+[[ "$(jq -r '.event' "$CODEX_PENDING_FILE")" == "Stop" ]] && pass "event recorded as Stop" || fail "event wrong"
+[[ "$(jq -r '.agent' "$CODEX_PENDING_FILE")" == "codex" ]] && pass "agent recorded as codex" || fail "agent wrong"
+[[ "$(jq -r '.tab' "$CODEX_PENDING_FILE")" == "codex-task" ]] && pass "tab from TASK_TAB_NAME" || fail "tab wrong"
+[[ "$(jq -r '.message' "$CODEX_PENDING_FILE")" == "All done here" ]] && pass "message from last-assistant-message" || fail "message wrong"
+[[ "$(jq -r '.dir' "$CODEX_PENDING_FILE")" == "/tmp/myapp" ]] && pass "dir from payload cwd" || fail "dir wrong"
+[[ "$(jq -r '.task_type' "$CODEX_PENDING_FILE")" == "dev" ]] && pass "task_type from env" || fail "task_type wrong"
+[[ "$(jq -r '.claude_session_id' "$CODEX_PENDING_FILE")" == "thread-0001" ]] && pass "session id kept in claude_session_id" || fail "claude_session_id wrong"
+[[ "$(jq -r '.transcript_path' "$CODEX_PENDING_FILE")" == "$ROLLOUT" ]] && pass "transcript resolved from CODEX_HOME sessions" || fail "transcript_path wrong: $(jq -r '.transcript_path' "$CODEX_PENDING_FILE")"
+
+# The payload arrives as the LAST argument (notify argv may carry extras first)
+rm -f "$CODEX_PENDING_FILE"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "ignored-extra-arg" "$PAYLOAD"
+[[ -f "$CODEX_PENDING_FILE" ]] && pass "payload read from last argument" || fail "last-argument payload not handled"
+
+# Other event types are ignored
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" '{"type":"something-else","thread-id":"thread-0002"}'
+[[ ! -f "$CODEX_PENDING/thread-0002.json" ]] && pass "non-turn-complete event ignored" || fail "unexpected pending for other event"
+
+# Missing thread-id is a no-op
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" '{"type":"agent-turn-complete"}'
+CODEX_FILES=$(ls "$CODEX_PENDING" | wc -l | tr -d ' ')
+[[ "$CODEX_FILES" -eq 1 ]] && pass "no file without thread-id" || fail "unexpected files: $CODEX_FILES"
+
+# A Waiting entry is not clobbered by a later turn-complete
+jq '.event = "Waiting"' "$CODEX_PENDING_FILE" > "$CODEX_PENDING_FILE.tmp" && mv "$CODEX_PENDING_FILE.tmp" "$CODEX_PENDING_FILE"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME=codex-task CODEX_HOME="$FAKE_CODEX_HOME" \
+    bash "$CODEX_NOTIFY" "$PAYLOAD"
+[[ "$(jq -r '.event' "$CODEX_PENDING_FILE")" == "Waiting" ]] && pass "Waiting preserved on turn-complete" || fail "Waiting clobbered"
+
+# Missing tab name falls back to the payload cwd basename
+rm -rf "$CODEX_PENDING"
+ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME= TASK_TYPE= CODEX_HOME="$FAKE_CODEX_HOME" bash "$CODEX_NOTIFY" "$PAYLOAD"
+[[ "$(jq -r '.tab' "$CODEX_PENDING_FILE")" == "myapp" ]] && pass "tab falls back to cwd basename" || fail "tab fallback wrong"
+rm -rf "$CODEX_PENDING" "$FAKE_CODEX_HOME"
+
+# ============================================================
 section "12. config.default.json installed"
 # ============================================================
 
