@@ -18,16 +18,8 @@ CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
 # shellcheck source=scripts/lock-lib.sh
 source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
-# shellcheck source=scripts/registry-lib.sh
-source "$CONDUCTOR_HOME/scripts/registry-lib.sh"
 
 mkdir -p "$DAILY_DIR"
-
-# The tab is being deleted: drop its task-registry entries so the task is not
-# resurrected on the next session restore (issue #36). By tab, not sid — a
-# --resume restart changes the session id, leaving multiple entries per tab.
-# This must run even when no pending file remains (early exit below).
-registry_remove_by_tab "$SESSION_NAME" "$TAB_NAME"
 
 # Load pricing from config (fallback to config.default.json)
 PRICING_JSON=""

@@ -54,7 +54,15 @@ mdev() {
         base="$(basename "$(pwd)")"
         hash_src="$(pwd)"
     fi
-    (( force_new )) && base="$base-$(date +%H%M%S)"
+    # --new: timestamp both the name and the hash source — for long names the
+    # timestamp is truncated away, and only the hash keeps the session distinct
+    # from the default one.
+    if (( force_new )); then
+        local ts
+        ts="$(date +%H%M%S)"
+        base="$base-$ts"
+        hash_src="$hash_src-$ts"
+    fi
     local session_name
     session_name="$(_conductor_session_name "$base" "$hash_src")"
 
@@ -82,6 +90,9 @@ mdev() {
     bash "$CONDUCTOR_HOME/scripts/check-update.sh"
     if [[ "$state" == "exited" ]]; then
         zellij delete-session "$session_name" --force 2>/dev/null
+        # The session died, so every pending entry predates it. Clear them —
+        # otherwise stale rows shadow the tasks the registry restore recreates.
+        rm -rf "$HOME/.claude-pending/$session_name"
     fi
     zellij --new-session-with-layout "$CONDUCTOR_HOME/layouts/multi.kdl" --session "$session_name"
 }

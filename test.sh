@@ -4,6 +4,10 @@
 
 set -e
 
+# Conductorのタスクタブ内から実行しても、create_taskがexportするタブ環境
+# （TASK_*）とZellijのセッション変数がテストへ漏れないよう除去する
+unset TASK_TAB_NAME TASK_TYPE TASK_AGENT ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID
+
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX=$(mktemp -d)
 export HOME="$SANDBOX"
@@ -990,30 +994,42 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
-section "22b. record-output.sh removes registry entries (task deletion)"
+section "22b. task deletion removes registry entries (dd-commit only)"
 # ============================================================
 
-# タスク削除時、そのタブのレジストリエントリが全て除去される
-# （--resume再開でsidが変わり同一タブに複数エントリが残るケースも一掃）
 source "$HOME/.claude-conductor/scripts/registry-lib.sh"
+TC22="$HOME/.claude-conductor/scripts/task-control.sh"
 registry_upsert "test-session" "del-sid-1" "del-tab" "/tmp/d" "dev" "claude" ""
 registry_upsert "test-session" "del-sid-2" "del-tab" "/tmp/d" "dev" "claude" ""
 registry_upsert "test-session" "keep-sid" "keep-tab" "/tmp/d" "dev" "claude" ""
 cat > "$PENDING_DIR/del-sid-2.json" << 'EOF'
 { "tab":"del-tab","session":"test-session","message":"done","event":"Stop","time":"10:00:00","claude_session_id":"del-sid-2" }
 EOF
+
+# record-output.sh 単体ではレジストリを消さない
+# （アップロード失敗で削除がキャンセルされるとタブは生き続けるため）
 ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "del-tab"
+[[ -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-1.json" && -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-2.json" ]] \
+  && pass "record-output alone keeps registry entries" || fail "record-output removed registry prematurely"
+
+# dd確定（task-control.sh）でタブの全レジストリエントリが除去される
+# （--resume再開でsidが変わり同一タブに複数エントリが残るケースも一掃）
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "del-tab" >/dev/null 2>&1
 [[ ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-1.json" && ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-2.json" ]] \
-  && pass "deletion removes all registry entries for the tab" || fail "registry entries remain after deletion"
+  && pass "dd-commit removes all registry entries for the tab" || fail "registry entries remain after dd"
 [[ -f "$CONDUCTOR_HOME/tasks/test-session/keep-sid.json" ]] \
   && pass "other tab's registry entry kept" || fail "unrelated registry entry removed"
 
-# pendingファイルが無い削除経路でもレジストリは除去される
+# pendingファイルが無いタブのddでもレジストリは除去される
 registry_upsert "test-session" "orphan-sid" "orphan-tab" "/tmp/d" "" "" ""
 rm -f "$PENDING_DIR"/*.json
-ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "orphan-tab"
+printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "orphan-tab" >/dev/null 2>&1
 [[ ! -f "$CONDUCTOR_HOME/tasks/test-session/orphan-sid.json" ]] \
   && pass "registry removed even without a pending file" || fail "orphan registry entry remains"
+
+# dashboard-loop.sh の d+数字 削除経路にも除去が組み込まれている
+grep -q 'registry_remove_by_tab' "$HOME/.claude-conductor/scripts/dashboard-loop.sh" \
+  && pass "dashboard-loop deletion path removes registry" || fail "dashboard-loop missing registry removal"
 
 rm -rf "$CONDUCTOR_HOME/tasks"
 
@@ -1633,6 +1649,15 @@ rm -rf "$CONDUCTOR_HOME/tasks"
 : > "$RS_CALLS"
 ZELLIJ_SESSION_NAME=rs-sess bash "$RS"
 [[ ! -s "$RS_CALLS" ]] && pass "empty registry is a silent no-op" || fail "unexpected zellij calls: $(cat "$RS_CALLS")"
+
+# 壊れたJSONエントリが混ざっていても他タスクの復元は続行される
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-6" "gamma-dev" "$RS_DIR1" "" "" "$RS_TRANSCRIPT"
+echo '{broken json' > "$CONDUCTOR_HOME/tasks/rs-sess/corrupt.json"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+grep -q "new-tab -n gamma-dev" "$RS_CALLS" \
+  && pass "corrupt registry entry does not abort restore" || fail "restore aborted on corrupt entry: $(cat "$RS_CALLS")"
 
 # ============================================================
 section "26k. dashboard-loop.sh triggers restore on startup"
@@ -3074,6 +3099,32 @@ MDEV_SESS=$(grep -o -- '--session [^ ]*$' "$ZLOG" | head -1 | cut -d' ' -f2)
 [[ -n "$MDEV_SESS" && "${#MDEV_SESS}" -le 24 ]] \
   && pass "long dirname truncated to <=24 chars ($MDEV_SESS)" \
   || fail "session name not truncated: '$MDEV_SESS'"
+
+# 長いディレクトリ名でも --new は通常セッション名と衝突しない
+# （タイムスタンプがtruncateで落ちても、ハッシュで区別される）
+: > "$ZLOG"
+zsh -c "cd '$LONG_DIR' && source '$INIT_FILE' && mdev --new" >/dev/null 2>&1
+MDEV_NEW_SESS=$(grep -o -- '--session [^ ]*$' "$ZLOG" | head -1 | cut -d' ' -f2)
+[[ -n "$MDEV_NEW_SESS" && "${#MDEV_NEW_SESS}" -le 24 && "$MDEV_NEW_SESS" != "$MDEV_SESS" ]] \
+  && pass "--new on long dirname yields a distinct session ($MDEV_NEW_SESS)" \
+  || fail "--new collided with default session: '$MDEV_NEW_SESS' vs '$MDEV_SESS'"
+
+# EXITED再構築時にそのセッションのstale pendingを掃除する
+mkdir -p "$HOME/.claude-pending/myapp"
+echo '{"tab":"stale-tab"}' > "$HOME/.claude-pending/myapp/stale-sid.json"
+: > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 5h ago] (EXITED - attach to resurrect)'; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ -z "$(ls -A "$HOME/.claude-pending/myapp" 2>/dev/null)" ]] \
+  && pass "exited rebuild clears stale pending for the session" \
+  || fail "stale pending remains: $(ls "$HOME/.claude-pending/myapp")"
+
+# 生存セッションへのattachではpendingを消さない
+mkdir -p "$HOME/.claude-pending/myapp"
+echo '{"tab":"live-tab"}' > "$HOME/.claude-pending/myapp/live-sid.json"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 1h ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ -f "$HOME/.claude-pending/myapp/live-sid.json" ]] \
+  && pass "alive attach keeps pending intact" || fail "pending removed on alive attach"
+rm -rf "$HOME/.claude-pending/myapp"
 
 # Restore the real scripts
 mv "$CONDUCTOR_HOME/scripts/fetch-news.sh.real" "$CONDUCTOR_HOME/scripts/fetch-news.sh"

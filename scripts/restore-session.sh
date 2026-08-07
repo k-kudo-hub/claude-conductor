@@ -62,7 +62,11 @@ while IFS= read -r entry; do
         RESTORED=$((RESTORED + 1))
     fi
 done <<EOF
-$(cat "$REG_DIR"/*.json 2>/dev/null | jq -sc 'group_by(.tab) | map(max_by(.updated_at // "")) | .[]' 2>/dev/null)
+$(for f in "$REG_DIR"/*.json; do
+    # Validate per file: jq -s is all-or-nothing, and one corrupt entry
+    # (e.g. truncated by a full disk) must not silently disable restore.
+    jq -c . "$f" 2>/dev/null
+done | jq -sc 'group_by(.tab) | map(max_by(.updated_at // "")) | .[]' 2>/dev/null)
 EOF
 
 # create_task leaves focus on the last recreated tab; end on the dashboard.

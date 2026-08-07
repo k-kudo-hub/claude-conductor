@@ -130,6 +130,11 @@ while true; do
                         rm -f "$f"
                     fi
                 done
+                # Deletion is committed: drop the task's registry entries so a
+                # later session restore does not resurrect it (issue #36).
+                # shellcheck source=scripts/registry-lib.sh
+                . "$CONDUCTOR_HOME/scripts/registry-lib.sh"
+                registry_remove_by_tab "$SESSION_NAME" "$target_tab"
                 # Match the tab name as everything past the id/position columns,
                 # so names containing spaces still resolve to the right tab id.
                 tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
