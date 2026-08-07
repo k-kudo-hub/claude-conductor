@@ -1001,6 +1001,35 @@ echo '{"tab":"cx-task","session":"sdl-sess","message":"parked","event":"Waiting"
 [[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives working" || fail "Waiting entry deleted"
 rm -f "$SDL_DIR/park.json"
 
+# blocked→working遷移はMainへ自動復帰する（Claudeの権限承認後の
+# PostToolUse復帰に相当。タブ内で回答した合図なので引き戻す）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "blocked->working returns to Main" || fail "no auto-return after approval"
+
+# idle→working遷移（新しいプロンプト送信）もMainへ自動復帰する
+echo "idle" > "$SDL_DIR/.screen-state/cx-task"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "idle->working returns to Main" || fail "no auto-return after prompt submit"
+
+# working継続では発火しない（毎ポーリングで引き戻さない）
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "working->working re-triggered auto-return" || pass "no auto-return while working continues"
+
+# 初回観測がworking（ターン中のconductor再起動など）では復帰しない
+rm -rf "$SDL_DIR/.screen-state"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "first observation triggered auto-return" || pass "no auto-return on first observation"
+
 # タブ名はファイル名向けにサニタイズされる
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "#28 fix" "codex" "blocked" "approval" )
 SDL_S=$(ls "$SDL_DIR"/screen-*.json 2>/dev/null | head -1)
@@ -2557,13 +2586,16 @@ echo "$SD_OUT" | grep -q "codex-scr" && pass "screen-detected approval listed in
 echo "$SD_OUT" | grep -q "Would you like to run the following command?" \
   && pass "dashboard shows the matched approval line" || fail "approval message missing"
 
-# workingに戻ればポーリングがpendingを消す
+# workingに戻ればポーリングがpendingを消し、Mainへ自動復帰する
 cp "$SDL_FIX/working.txt" "$SDL_FIX/dash/terminal_5.txt"
+: > "$HOME/.claude-pending/zellij-calls.log"
 SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
     MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
     bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
 [[ ! -f "$SD_DIR/screen-codex-scr.json" ]] && pass "poll clears pending when agent works again" || fail "pending survived working"
 echo "$SD_OUT" | grep -q "All tasks running" && pass "dashboard back to all-running" || fail "dashboard still lists task"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "poll auto-returns to Main when turn resumes" || fail "no auto-return in poll"
 rm -rf "$SD_DIR"
 
 # ============================================================
