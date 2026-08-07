@@ -141,10 +141,13 @@ while true; do
                     fi
                 done
                 # Deletion is committed: drop the task's registry entries so a
-                # later session restore does not resurrect it (issue #36).
+                # later session restore does not resurrect it (issue #36),
+                # and its screen-detection state so a same-named future tab
+                # starts fresh.
                 # shellcheck source=scripts/registry-lib.sh
                 . "$CONDUCTOR_HOME/scripts/registry-lib.sh"
                 registry_remove_by_tab "$SESSION_NAME" "$target_tab"
+                rm -f "$PENDING_DIR/.screen-state/$(_screen_tab_slug "$target_tab")"
                 # Match the tab name as everything past the id/position columns,
                 # so names containing spaces still resolve to the right tab id.
                 tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
@@ -155,11 +158,16 @@ while true; do
             fi
         elif [[ "$key" =~ [1-9] ]] && [[ $key -le $count ]]; then
             zellij action go-to-tab-name "${tabs[$((key-1))]}" 2>/dev/null
-            # Hook-less agents (codex) have no UserPromptSubmit to clear the
-            # entry when the user replies, so jumping to the tab counts as
-            # handling it. claude entries stay: their hooks own the lifecycle.
+            # An entry is cleared on jump only for agents with neither hooks
+            # nor screen detection — nothing else would ever clear it. claude
+            # hooks and screen detection own their lifecycles: a screen
+            # Notification stays until the turn visibly resumes (like a
+            # claude permission prompt stays until answered), so deleting it
+            # here would just have the next poll recreate it.
             jump_file="${pfiles[$((key-1))]}"
-            if [[ -f "$jump_file" && "$(jq -r '.agent // "claude"' "$jump_file" 2>/dev/null)" != "claude" ]]; then
+            jump_agent=$(jq -r '.agent // "claude"' "$jump_file" 2>/dev/null)
+            if [[ -f "$jump_file" && "$jump_agent" != "claude" \
+                  && "$(agent_detection "$jump_agent")" != "screen" ]]; then
                 rm -f "$jump_file"
             fi
         fi

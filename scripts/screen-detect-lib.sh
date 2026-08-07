@@ -51,14 +51,29 @@ screen_classify() {
     echo "idle"
 }
 
-# Tab name -> filesystem-safe slug shared by the pending file and the
-# last-state file.
-_screen_tab_slug() {
-    printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_'
+# Latest registry entry for the tab, as "dir<TAB>task_type<TAB>transcript".
+# Screen-generated pendings borrow these fields so downstream consumers
+# (upload-log.sh needs transcript_path, restore-task.sh needs dir) keep
+# working when a screen entry is the only pending left for the tab.
+_screen_registry_lookup() {
+    local session="$1" tab="$2" f best="" best_t=0 t
+    for f in "$CONDUCTOR_HOME/tasks/$session"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(jq -r '.tab // empty' "$f" 2>/dev/null)" == "$tab" ]] || continue
+        t=$(stat -f %m "$f" 2>/dev/null || echo 0)
+        if [[ "$t" -ge "$best_t" ]]; then
+            best="$f"
+            best_t="$t"
+        fi
+    done
+    [[ -n "$best" ]] || return 0
+    jq -r '[.dir // "", .task_type // "", .transcript_path // ""] | @tsv' "$best" 2>/dev/null || true
 }
 
 _screen_write_pending() {
     local file="$1" tab="$2" session="$3" slug="$4" message="$5" event="$6" agent="$7"
+    local dir="" task_type="" transcript=""
+    IFS=$'\t' read -r dir task_type transcript <<< "$(_screen_registry_lookup "$session" "$tab")"
     jq -n \
         --arg tab "$tab" \
         --arg session "$session" \
@@ -67,7 +82,13 @@ _screen_write_pending() {
         --arg event "$event" \
         --arg time "$(date '+%H:%M:%S')" \
         --arg agent "$agent" \
-        '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time, agent: $agent}' \
+        --arg dir "$dir" \
+        --arg task_type "$task_type" \
+        --arg transcript_path "$transcript" \
+        '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time, agent: $agent}
+         + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
+         + (if $dir != "" then {dir: $dir} else {} end)
+         + (if $task_type != "" then {task_type: $task_type} else {} end)' \
         > "$file"
 }
 
@@ -132,6 +153,19 @@ screen_update_pending() {
             # The approval dialog is gone (answered inside the tab).
             if [[ -f "$screen_file" && "$(jq -r '.event' "$screen_file" 2>/dev/null)" == "Notification" ]]; then
                 rm -f "$screen_file"
+            fi
+            # Converge duplicated done states: the notify bridge can land its
+            # Stop seconds after ours (sqlite + sessions-tree lookups), and a
+            # doubled entry would also break the w-key Waiting toggle. Once
+            # any other pending exists for the tab, our Stop is redundant.
+            if [[ -f "$screen_file" && "$(jq -r '.event' "$screen_file" 2>/dev/null)" == "Stop" ]]; then
+                for f in "$pending_dir"/*.json; do
+                    [[ -f "$f" && "$f" != "$screen_file" ]] || continue
+                    if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$tab" ]]; then
+                        rm -f "$screen_file"
+                        break
+                    fi
+                done
             fi
             # Stop only on a working->idle transition: a freshly created tab
             # idles at the composer and must not appear as done. Skip when

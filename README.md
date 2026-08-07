@@ -34,7 +34,9 @@ Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zell
 ## Requirements
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-- [Zellij](https://zellij.dev/) ≥ 0.40
+- [Zellij](https://zellij.dev/) ≥ 0.40 (≥ 0.44 for screen-based agent state
+  detection — codex approval waits on the dashboard need `zellij action
+  list-panes`, added in 0.44)
 - [jq](https://jqlang.github.io/jq/)
 - [fzf](https://github.com/junegunn/fzf)
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) (macOS, optional)
@@ -244,8 +246,10 @@ Claude Code tasks:
 
 - Auto-return to Main and pending cleanup ride on screen detection instead of
   hooks: they happen on the next dashboard poll (up to 2 seconds) after the
-  turn visibly resumes, not instantly. Jumping to the tab from the dashboard
-  (number key) still clears the entry immediately.
+  turn visibly resumes, not instantly. Like a claude permission prompt, a
+  screen-detected approval stays listed until you actually answer it —
+  jumping to the tab alone does not clear it. (Entries for agents with
+  neither hooks nor screen detection are still cleared by the jump itself.)
 
 The legacy single-agent form (`agent.command` / `agent.resume_args`) is still
 honored when `agents` is absent.

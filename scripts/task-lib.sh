@@ -75,6 +75,17 @@ agent_patterns() {
         '.agents[$a].patterns[$s] // [] | .[]' "$(load_config)" 2>/dev/null
 }
 
+# Tab name -> filesystem-safe slug keying a tab's screen-detection files
+# (pending + last-state). tr -c mangles multibyte names byte-wise, so two
+# Japanese tab names would collide on the sanitized part alone — the cksum
+# suffix keeps distinct names distinct.
+_screen_tab_slug() {
+    local safe hash
+    safe=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_')
+    hash=$(printf '%s' "$1" | cksum | awk '{print $1}')
+    printf '%s-%s' "$safe" "$hash"
+}
+
 apply_layout() {
     local dir="$1"
     local type="$2"
@@ -131,6 +142,12 @@ create_task() {
 
     local -a agent_cmd
     read -r -a agent_cmd <<< "$(agent_command "$agent")"
+
+    # A tab recreated under a previous task's name must not inherit that
+    # task's screen-detection state: a stale "working" would fake an instant
+    # Stop (or a stale "blocked" an unwanted jump to Main) on the new tab's
+    # first poll.
+    rm -f "$HOME/.claude-pending/${ZELLIJ_SESSION_NAME:-unknown}/.screen-state/$(_screen_tab_slug "$name")"
 
     # TASK_AGENT rides along only for named agents, so tabs on the legacy
     # single-agent path keep their exact env (and pending files stay

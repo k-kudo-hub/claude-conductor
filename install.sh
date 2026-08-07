@@ -72,6 +72,22 @@ cp "$REPO_DIR"/config.default.json "$CONDUCTOR_HOME/config.default.json"
 # config.json はユーザーカスタマイズを保護（初回のみコピー）
 if [[ ! -f "$CONDUCTOR_HOME/config.json" ]]; then
     cp "$REPO_DIR"/config.default.json "$CONDUCTOR_HOME/config.json"
+else
+    # 後から追加されたエージェント項目（detection / patterns, issue #28）を
+    # 既存configへ補完する。無いとスクリーン検出が無言で無効のままになる。
+    # ユーザーが設定済みの値は一切上書きしない（デフォルトは不足キーのみ埋める）。
+    jq --slurpfile DEF "$CONDUCTOR_HOME/config.default.json" '
+        if .agents then
+            .agents |= with_entries(
+                . as $e
+                | .value = ((($DEF[0].agents[$e.key] // {})
+                             | {detection, patterns}
+                             | with_entries(select(.value != null)))
+                            + $e.value))
+        else . end' \
+        "$CONDUCTOR_HOME/config.json" > "$CONDUCTOR_HOME/config.json.tmp" \
+        && mv "$CONDUCTOR_HOME/config.json.tmp" "$CONDUCTOR_HOME/config.json" \
+        || rm -f "$CONDUCTOR_HOME/config.json.tmp"
 fi
 
 echo -e "  ${GREEN}✓${NC} Scripts"

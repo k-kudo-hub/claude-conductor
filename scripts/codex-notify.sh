@@ -7,9 +7,10 @@
 #
 # Translates the event into the same pending-file shape pending-notify.sh
 # writes for a Stop hook, so Dashboard / Waiting / Done work for codex tasks
-# unchanged. Codex has no Notification / UserPromptSubmit equivalents:
-# approval waits are not surfaced, and the dashboard clears codex pending
-# entries on jump instead of on prompt submit.
+# unchanged. Codex has no Notification / UserPromptSubmit equivalents; those
+# lifecycle points are covered by screen detection (screen-detect-lib.sh,
+# issue #28), which surfaces approval waits and clears entries when the turn
+# visibly resumes.
 
 SESSION_NAME="${ZELLIJ_SESSION_NAME:-unknown}"
 PENDING_DIR="$HOME/.claude-pending/$SESSION_NAME"
