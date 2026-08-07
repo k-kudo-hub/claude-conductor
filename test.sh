@@ -446,6 +446,62 @@ registry_remove_by_tab "reg-sess" "tab-x" 2>/dev/null || true
 rm -rf "$CONDUCTOR_HOME/tasks"
 
 # ============================================================
+section "11d. hooks upsert the task registry"
+# ============================================================
+
+# pending-notify.sh (Notification) がレジストリへupsertする
+echo '{"session_id":"reg-hook-1","message":"Approval needed","hook_event_name":"Notification","transcript_path":"/tmp/reg-t1.jsonl","cwd":"/tmp/reg-dir1"}' \
+  | ZELLIJ_SESSION_NAME=reg-hooks TASK_TAB_NAME=reg-tab TASK_TYPE=dev TASK_AGENT=claude \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+RH_FILE="$CONDUCTOR_HOME/tasks/reg-hooks/reg-hook-1.json"
+[[ -f "$RH_FILE" ]] && pass "pending-notify upserts registry entry" || fail "no registry entry from pending-notify"
+[[ "$(jq -r '.tab' "$RH_FILE" 2>/dev/null)" == "reg-tab" ]] && pass "registry entry has tab" || fail "wrong tab: $(cat "$RH_FILE" 2>/dev/null)"
+[[ "$(jq -r '.dir' "$RH_FILE" 2>/dev/null)" == "/tmp/reg-dir1" ]] && pass "registry entry has dir" || fail "wrong dir"
+[[ "$(jq -r '.agent' "$RH_FILE" 2>/dev/null)" == "claude" ]] && pass "registry entry has agent" || fail "wrong agent"
+
+# 応答後もタスクは生きている: pending-resolve.sh はpendingを消しつつレジストリはupsertする
+echo '{"session_id":"reg-hook-1","transcript_path":"/tmp/reg-t1b.jsonl","cwd":"/tmp/reg-dir1"}' \
+  | ZELLIJ_SESSION_NAME=reg-hooks TASK_TAB_NAME=reg-tab TASK_TYPE=dev TASK_AGENT=claude \
+    bash "$HOME/.claude-conductor/scripts/pending-resolve.sh"
+[[ -f "$RH_FILE" ]] && pass "pending-resolve keeps registry entry" || fail "registry entry lost on resolve"
+[[ "$(jq -r '.transcript_path' "$RH_FILE" 2>/dev/null)" == "/tmp/reg-t1b.jsonl" ]] \
+  && pass "pending-resolve refreshes transcript_path" || fail "transcript not refreshed: $(cat "$RH_FILE" 2>/dev/null)"
+
+# codex-notify.sh もthread-idでレジストリへupsertする
+REG_CODEX_HOME="$SANDBOX/reg-codex-home"
+mkdir -p "$REG_CODEX_HOME/sessions"
+echo '{"x":1}' > "$REG_CODEX_HOME/sessions/rollout-reg-thread-9.jsonl"
+ZELLIJ_SESSION_NAME=reg-hooks TASK_TAB_NAME=reg-codex-tab TASK_TYPE=review CODEX_HOME="$REG_CODEX_HOME" \
+    bash "$HOME/.claude-conductor/scripts/codex-notify.sh" \
+    '{"type":"agent-turn-complete","thread-id":"reg-thread-9","cwd":"/tmp/reg-dir2","last-assistant-message":"done"}'
+RC_FILE="$CONDUCTOR_HOME/tasks/reg-hooks/reg-thread-9.json"
+[[ -f "$RC_FILE" ]] && pass "codex-notify upserts registry entry" || fail "no registry entry from codex-notify"
+[[ "$(jq -r '.agent' "$RC_FILE" 2>/dev/null)" == "codex" ]] && pass "codex entry has agent codex" || fail "wrong agent: $(cat "$RC_FILE" 2>/dev/null)"
+[[ "$(jq -r '.transcript_path' "$RC_FILE" 2>/dev/null)" == "$REG_CODEX_HOME/sessions/rollout-reg-thread-9.jsonl" ]] \
+  && pass "codex entry has rollout transcript" || fail "wrong transcript"
+
+# TASK_TAB_NAME が無い（conductor外のセッション）は登録しない
+echo '{"session_id":"reg-outside","message":"m","hook_event_name":"Stop","cwd":"/tmp/elsewhere"}' \
+  | ZELLIJ_SESSION_NAME=reg-hooks TASK_TAB_NAME= \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+[[ ! -f "$CONDUCTOR_HOME/tasks/reg-hooks/reg-outside.json" ]] \
+  && pass "non-conductor session not registered (no TASK_TAB_NAME)" || fail "registered outside task tab"
+
+# ZELLIJ_SESSION_NAME が無い場合も登録しない
+echo '{"session_id":"reg-nozellij","message":"m","hook_event_name":"Stop","cwd":"/tmp/x"}' \
+  | ZELLIJ_SESSION_NAME= TASK_TAB_NAME=some-tab \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+[[ ! -d "$CONDUCTOR_HOME/tasks/unknown" ]] \
+  && pass "no registry outside zellij" || fail "registered under unknown session"
+
+# pendingファイル側の既存挙動が保たれている（レジストリ追加による回帰なし）
+[[ -f "$HOME/.claude-pending/reg-hooks/reg-thread-9.json" ]] \
+  && pass "codex pending file still written" || fail "codex pending regression"
+
+# 後続セクションを汚さないよう掃除
+rm -rf "$CONDUCTOR_HOME/tasks" "$HOME/.claude-pending/reg-hooks"
+
+# ============================================================
 section "12. config.default.json installed"
 # ============================================================
 
