@@ -51,6 +51,30 @@ agent_names() {
     jq -r '.agents // {} | keys_unsorted[]' "$(load_config)" 2>/dev/null
 }
 
+# State detection method for an agent: "hooks" (Claude Code lifecycle hooks
+# own the pending files) or "screen" (issue #28: the dashboard polls the
+# tab's screen and matches config .agents.<name>.patterns). Anything not
+# explicitly configured as "screen" falls back to hooks so agent-less legacy
+# tabs and unknown agents are never screen-scanned.
+agent_detection() {
+    local agent="$1" method=""
+    if [[ -n "$agent" ]]; then
+        method=$(jq -r --arg a "$agent" '.agents[$a].detection // empty' "$(load_config)" 2>/dev/null)
+    fi
+    [[ -z "$method" ]] && method="hooks"
+    echo "$method"
+}
+
+# Screen-detection regexes (grep -E) for one state ("blocked" / "working"),
+# one per line. Empty output means the agent defines no patterns for that
+# state and it can never be classified as such.
+agent_patterns() {
+    local agent="$1" state="$2"
+    [[ -z "$agent" ]] && return 0
+    jq -r --arg a "$agent" --arg s "$state" \
+        '.agents[$a].patterns[$s] // [] | .[]' "$(load_config)" 2>/dev/null
+}
+
 apply_layout() {
     local dir="$1"
     local type="$2"

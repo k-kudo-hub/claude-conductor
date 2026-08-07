@@ -8,11 +8,21 @@
   "agents": {
     "claude": {
       "command": "claude",
-      "resume_args": "--resume"
+      "resume_args": "--resume",
+      "detection": "hooks"
     },
     "codex": {
       "command": "codex",
-      "resume_args": "resume"
+      "resume_args": "resume",
+      "detection": "screen",
+      "patterns": {
+        "blocked": [
+          "Would you like to run the following command\\?",
+          "Would you like to make the following edits\\?",
+          "Would you like to grant these permissions\\?"
+        ],
+        "working": [" to interrupt"]
+      }
     }
   },
   "upload": {
