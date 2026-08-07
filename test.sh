@@ -389,6 +389,63 @@ ZELLIJ_SESSION_NAME=codex-session TASK_TAB_NAME= TASK_TYPE= CODEX_HOME="$FAKE_CO
 rm -rf "$CODEX_PENDING" "$FAKE_CODEX_HOME"
 
 # ============================================================
+section "11c. registry-lib.sh (task registry upsert/remove)"
+# ============================================================
+
+REG_LIB="$HOME/.claude-conductor/scripts/registry-lib.sh"
+[[ -f "$REG_LIB" ]] && pass "registry-lib.sh installed" || fail "registry-lib.sh missing"
+
+# upsert が全フィールド入りのJSONエントリを作成する
+if source "$REG_LIB" 2>/dev/null; then
+    pass "registry-lib.sh sourced (functions only)"
+else
+    fail "registry-lib.sh failed to source"
+fi
+registry_upsert "reg-sess" "sid-1" "tab-one" "/tmp/dir1" "dev" "claude" "/tmp/t1.jsonl" 2>/dev/null || true
+REG_FILE="$CONDUCTOR_HOME/tasks/reg-sess/sid-1.json"
+[[ -f "$REG_FILE" ]] && pass "upsert creates registry entry" || fail "no registry entry created"
+[[ "$(jq -r '.tab' "$REG_FILE" 2>/dev/null)" == "tab-one" ]] && pass "entry records tab" || fail "wrong tab: $(cat "$REG_FILE" 2>/dev/null)"
+[[ "$(jq -r '.dir' "$REG_FILE" 2>/dev/null)" == "/tmp/dir1" ]] && pass "entry records dir" || fail "wrong dir"
+[[ "$(jq -r '.task_type' "$REG_FILE" 2>/dev/null)" == "dev" ]] && pass "entry records task_type" || fail "wrong task_type"
+[[ "$(jq -r '.agent' "$REG_FILE" 2>/dev/null)" == "claude" ]] && pass "entry records agent" || fail "wrong agent"
+[[ "$(jq -r '.transcript_path' "$REG_FILE" 2>/dev/null)" == "/tmp/t1.jsonl" ]] && pass "entry records transcript_path" || fail "wrong transcript_path"
+
+# 同じsidへのupsertは上書き（タブ名変更が反映される）
+registry_upsert "reg-sess" "sid-1" "tab-renamed" "/tmp/dir1" "dev" "claude" "/tmp/t1.jsonl" 2>/dev/null || true
+[[ "$(jq -r '.tab' "$REG_FILE" 2>/dev/null)" == "tab-renamed" ]] && pass "upsert overwrites existing entry" || fail "entry not updated"
+
+# セッションごとにディレクトリが分離される
+registry_upsert "reg-other" "sid-1" "other-tab" "/tmp/dir2" "" "" "" 2>/dev/null || true
+[[ -f "$CONDUCTOR_HOME/tasks/reg-other/sid-1.json" ]] && pass "sessions get separate registry dirs" || fail "no per-session dir"
+[[ "$(jq -r '.tab' "$REG_FILE" 2>/dev/null)" == "tab-renamed" ]] && pass "other session upsert does not touch first entry" || fail "cross-session clobber"
+
+# 空フィールドはキー自体が省略される（restore側の // empty 判定を単純に保つ）
+[[ "$(jq -r 'has("task_type")' "$CONDUCTOR_HOME/tasks/reg-other/sid-1.json" 2>/dev/null)" == "false" ]] \
+  && pass "empty optional fields omitted" || fail "empty field not omitted"
+
+# session/sid が無い呼び出しはno-op
+registry_upsert "" "no-sess" "t" "" "" "" "" 2>/dev/null || true
+registry_upsert "reg-sess" "" "t" "" "" "" "" 2>/dev/null || true
+[[ ! -f "$CONDUCTOR_HOME/tasks/no-sess.json" ]] && pass "upsert without session is a no-op" || fail "created entry without session"
+
+# remove は該当エントリのみ削除
+registry_remove "reg-sess" "sid-1" 2>/dev/null || true
+[[ ! -f "$REG_FILE" ]] && pass "remove deletes the entry" || fail "entry not removed"
+[[ -f "$CONDUCTOR_HOME/tasks/reg-other/sid-1.json" ]] && pass "remove leaves other sessions intact" || fail "other session entry removed"
+
+# remove_by_tab はタブ名一致の全エントリを削除（pendingが無い削除経路用）
+registry_upsert "reg-sess" "sid-2" "tab-x" "/tmp/d" "" "" "" 2>/dev/null || true
+registry_upsert "reg-sess" "sid-3" "tab-x" "/tmp/d" "" "" "" 2>/dev/null || true
+registry_upsert "reg-sess" "sid-4" "tab-keep" "/tmp/d" "" "" "" 2>/dev/null || true
+registry_remove_by_tab "reg-sess" "tab-x" 2>/dev/null || true
+[[ ! -f "$CONDUCTOR_HOME/tasks/reg-sess/sid-2.json" && ! -f "$CONDUCTOR_HOME/tasks/reg-sess/sid-3.json" ]] \
+  && pass "remove_by_tab deletes all matching entries" || fail "tab entries not removed"
+[[ -f "$CONDUCTOR_HOME/tasks/reg-sess/sid-4.json" ]] && pass "remove_by_tab keeps other tabs" || fail "unrelated entry removed"
+
+# 後続セクションを汚さないよう掃除
+rm -rf "$CONDUCTOR_HOME/tasks"
+
+# ============================================================
 section "12. config.default.json installed"
 # ============================================================
 
