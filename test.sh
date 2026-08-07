@@ -143,6 +143,17 @@ DIR=$(jq -r '.dir' "$PENDING_DIR/sess-aaa.json")
 PTYPE=$(jq -r '.task_type' "$PENDING_DIR/sess-aaa.json")
 [[ "$PTYPE" == "dev" ]] && pass "task_type recorded from TASK_TYPE" || fail "task_type wrong: $PTYPE"
 
+PAGENT=$(jq -r '.agent' "$PENDING_DIR/sess-aaa.json")
+[[ "$PAGENT" == "claude" ]] && pass "agent defaults to claude" || fail "agent wrong: $PAGENT"
+
+# TASK_AGENT env (named-agent tabs) is recorded as-is
+echo '{"session_id":"sess-agent","message":"x","hook_event_name":"Notification","cwd":"/tmp/myapp"}' \
+  | ZELLIJ_SESSION_NAME=test-session TASK_TAB_NAME=api-feature TASK_TYPE=dev TASK_AGENT=myclaude \
+    bash "$HOME/.claude-conductor/scripts/pending-notify.sh"
+PAGENT=$(jq -r '.agent' "$PENDING_DIR/sess-agent.json")
+[[ "$PAGENT" == "myclaude" ]] && pass "agent recorded from TASK_AGENT" || fail "TASK_AGENT not recorded: $PAGENT"
+rm -f "$PENDING_DIR/sess-agent.json"
+
 # ============================================================
 section "4. pending-notify.sh (Stop does not overwrite Notification)"
 # ============================================================
@@ -1755,6 +1766,52 @@ DASH_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="active-task waiting-task" ZELLI
 echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
 echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
 echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
+
+# ============================================================
+section "37b. dashboard-loop.sh (jump clears codex pending, keeps claude)"
+# ============================================================
+
+# codex has no UserPromptSubmit hook: jumping to the tab must clear its entry.
+# claude entries are cleared by hooks, so a jump must leave them in place.
+JC_DIR="$HOME/.claude-pending/jump-session"
+mkdir -p "$JC_DIR"
+echo '{"tab":"codex-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:00","agent":"codex"}' > "$JC_DIR/cx.json"
+echo '{"tab":"claude-task","session":"jump-session","message":"done","event":"Stop","time":"10:01:00","agent":"claude"}' > "$JC_DIR/cl.json"
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+( printf '1'; sleep 3 ) | MOCK_TABS="codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+
+grep -q 'action go-to-tab-name codex-task' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "jump goes to selected tab" || fail "jump did not switch tab"
+[[ ! -f "$JC_DIR/cx.json" ]] && pass "codex pending cleared on jump" || fail "codex pending not cleared"
+[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending untouched by codex jump" || fail "claude pending removed unexpectedly"
+
+# Jumping to a claude task keeps its entry (hooks own the lifecycle)
+( printf '1'; sleep 3 ) | MOCK_TABS="claude-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+grep -q 'action go-to-tab-name claude-task' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "jump goes to claude tab" || fail "jump did not switch to claude tab"
+[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending kept on jump" || fail "claude pending cleared on jump"
+
+# An entry without an agent field (older claude pending) is treated as claude
+echo '{"tab":"old-task","session":"jump-session","message":"done","event":"Stop","time":"10:02:00"}' > "$JC_DIR/old.json"
+( printf '1'; sleep 3 ) | MOCK_TABS="old-task" ZELLIJ_SESSION_NAME=jump-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
+JC_PID=$!
+sleep 2
+kill "$JC_PID" 2>/dev/null || true
+wait "$JC_PID" 2>/dev/null || true
+[[ -f "$JC_DIR/old.json" ]] && pass "agent-less pending treated as claude" || fail "agent-less pending cleared"
+rm -rf "$JC_DIR"
 
 # ============================================================
 section "38. waiting-loop.sh (shows only Waiting tasks)"

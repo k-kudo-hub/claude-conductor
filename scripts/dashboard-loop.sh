@@ -17,10 +17,12 @@ DIM='\033[2m'
 NC='\033[0m'
 
 tabs=()
+pfiles=()
 count=0
 
 render() {
     tabs=()
+    pfiles=()
     local i=1
 
     # Display pending items sorted by Zellij tab position
@@ -54,6 +56,7 @@ render() {
             echo ""
 
             tabs+=("$ftab")
+            pfiles+=("$f")
             i=$((i + 1))
         done
     done
@@ -133,6 +136,13 @@ while true; do
             fi
         elif [[ "$key" =~ [1-9] ]] && [[ $key -le $count ]]; then
             zellij action go-to-tab-name "${tabs[$((key-1))]}" 2>/dev/null
+            # Hook-less agents (codex) have no UserPromptSubmit to clear the
+            # entry when the user replies, so jumping to the tab counts as
+            # handling it. claude entries stay: their hooks own the lifecycle.
+            jump_file="${pfiles[$((key-1))]}"
+            if [[ -f "$jump_file" && "$(jq -r '.agent // "claude"' "$jump_file" 2>/dev/null)" != "claude" ]]; then
+                rm -f "$jump_file"
+            fi
         fi
     fi
 done

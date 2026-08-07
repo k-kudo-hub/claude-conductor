@@ -46,7 +46,8 @@ jq -n \
     --arg transcript_path "$TRANSCRIPT_PATH" \
     --arg dir "$DIR" \
     --arg task_type "$TASK_TYPE" \
-    '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time}
+    --arg agent "${TASK_AGENT:-claude}" \
+    '{tab: $tab, session: $session, claude_session_id: $claude_session_id, message: $message, event: $event, time: $time, agent: $agent}
      + (if $transcript_path != "" then {transcript_path: $transcript_path} else {} end)
      + (if $dir != "" then {dir: $dir} else {} end)
      + (if $task_type != "" then {task_type: $task_type} else {} end)' \
