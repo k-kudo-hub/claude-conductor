@@ -988,6 +988,34 @@ LINE_COUNT_AFTER=$(wc -l < "$DAILY_FILE" | tr -d ' ')
 [[ "$LINE_COUNT_AFTER" == "2" ]] && pass "no record added without pending" || fail "unexpected record added: $LINE_COUNT_AFTER"
 
 # ============================================================
+section "22b. record-output.sh removes registry entries (task deletion)"
+# ============================================================
+
+# タスク削除時、そのタブのレジストリエントリが全て除去される
+# （--resume再開でsidが変わり同一タブに複数エントリが残るケースも一掃）
+source "$HOME/.claude-conductor/scripts/registry-lib.sh"
+registry_upsert "test-session" "del-sid-1" "del-tab" "/tmp/d" "dev" "claude" ""
+registry_upsert "test-session" "del-sid-2" "del-tab" "/tmp/d" "dev" "claude" ""
+registry_upsert "test-session" "keep-sid" "keep-tab" "/tmp/d" "dev" "claude" ""
+cat > "$PENDING_DIR/del-sid-2.json" << 'EOF'
+{ "tab":"del-tab","session":"test-session","message":"done","event":"Stop","time":"10:00:00","claude_session_id":"del-sid-2" }
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "del-tab"
+[[ ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-1.json" && ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-2.json" ]] \
+  && pass "deletion removes all registry entries for the tab" || fail "registry entries remain after deletion"
+[[ -f "$CONDUCTOR_HOME/tasks/test-session/keep-sid.json" ]] \
+  && pass "other tab's registry entry kept" || fail "unrelated registry entry removed"
+
+# pendingファイルが無い削除経路でもレジストリは除去される
+registry_upsert "test-session" "orphan-sid" "orphan-tab" "/tmp/d" "" "" ""
+rm -f "$PENDING_DIR"/*.json
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "orphan-tab"
+[[ ! -f "$CONDUCTOR_HOME/tasks/test-session/orphan-sid.json" ]] \
+  && pass "registry removed even without a pending file" || fail "orphan registry entry remains"
+
+rm -rf "$CONDUCTOR_HOME/tasks"
+
+# ============================================================
 section "23. record-output.sh (merge detected via MCP tool)"
 # ============================================================
 
