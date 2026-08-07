@@ -462,6 +462,54 @@ grep -q 'TASK_TYPE=dev fdev exec wrapper -- claude' "$HOME/.claude-pending/zelli
 cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
 
 # ============================================================
+section "17b3. named agents (.agents) and per-task selection"
+# ============================================================
+
+# config.default.json ships named agent definitions for claude and codex
+jq -e '.agents.claude.command == "claude" and .agents.claude.resume_args == "--resume"' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config defines agents.claude" || fail "agents.claude missing in config.default.json"
+jq -e '.agents.codex.command == "codex" and .agents.codex.resume_args == "resume"' \
+    "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config defines agents.codex" || fail "agents.codex missing in config.default.json"
+
+# agent_command/agent_resume_args resolve a named agent from .agents
+jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}, "codex": {"command": "codex", "resume_args": "resume"}}' \
+    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command "codex" )
+[[ "$AC" == "codex" ]] && pass "agent_command resolves named agent" || fail "agent_command(codex) = '$AC'"
+AR=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_resume_args "codex" )
+[[ "$AR" == "resume" ]] && pass "agent_resume_args resolves named agent" || fail "agent_resume_args(codex) = '$AR'"
+
+# Without a name the legacy .agent.command path still wins
+jq '.agent = {"command": "legacy-cli", "resume_args": "--continue"}' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command )
+[[ "$AC" == "legacy-cli" ]] && pass "agent_command keeps legacy fallback" || fail "agent_command() = '$AC'"
+
+# An agent name missing from .agents falls back to the name as the command
+AC=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_command "somecli" )
+[[ "$AC" == "somecli" ]] && pass "unknown agent name falls back to itself" || fail "agent_command(somecli) = '$AC'"
+
+# agent_names lists the configured agent keys (one per line)
+AN=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_names )
+[[ "$AN" == $'claude\ncodex' ]] && pass "agent_names lists configured agents" || fail "agent_names = '$AN'"
+
+# create_task with an agent argument launches that agent and exports TASK_AGENT
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-tab" "" "codex" ) >/dev/null 2>&1
+grep -q 'action new-tab -n codex-tab --cwd /tmp/proj -- env TASK_TAB_NAME=codex-tab TASK_TYPE=dev TASK_AGENT=codex codex' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task launches named agent with TASK_AGENT" || fail "create_task ignored agent argument"
+
+# create_task with an agent + resume id uses that agent's resume_args
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "codex-res" "sess-abc" "codex" ) >/dev/null 2>&1
+grep -q 'TASK_TYPE=dev TASK_AGENT=codex codex resume sess-abc' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "create_task resumes via named agent resume_args" || fail "create_task agent resume broken"
+
+# Restore the default config for subsequent tests
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
+# ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
 # ============================================================
 

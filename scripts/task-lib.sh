@@ -13,23 +13,42 @@ load_config() {
     echo "$config_file"
 }
 
-# Agent launch command (config .agent.command). The value is a single string
+# Agent launch command. With a name, resolves config .agents.<name>.command
+# (an unknown name falls back to the name itself as the command). Without a
+# name, keeps the legacy .agent.command path. The value is a single string
 # that callers word-split on purpose, so wrapper invocations like
 # "fdev secrets exec my-header -- claude" work as-is.
 agent_command() {
-    local cmd
-    cmd=$(jq -r '.agent.command // empty' "$(load_config)" 2>/dev/null)
-    [[ -z "$cmd" ]] && cmd="claude"
+    local agent="$1" cmd
+    if [[ -n "$agent" ]]; then
+        cmd=$(jq -r --arg a "$agent" '.agents[$a].command // empty' "$(load_config)" 2>/dev/null)
+        [[ -z "$cmd" ]] && cmd="$agent"
+    else
+        cmd=$(jq -r '.agent.command // empty' "$(load_config)" 2>/dev/null)
+        [[ -z "$cmd" ]] && cmd="claude"
+    fi
     echo "$cmd"
 }
 
 # Arguments inserted between the agent command and the session id when
-# resuming (config .agent.resume_args). Word-split like agent_command.
+# resuming. With a name, resolves config .agents.<name>.resume_args;
+# without one, the legacy .agent.resume_args. Word-split like agent_command.
 agent_resume_args() {
-    local args
-    args=$(jq -r '.agent.resume_args // empty' "$(load_config)" 2>/dev/null)
+    local agent="$1" args
+    if [[ -n "$agent" ]]; then
+        args=$(jq -r --arg a "$agent" '.agents[$a].resume_args // empty' "$(load_config)" 2>/dev/null)
+    else
+        args=$(jq -r '.agent.resume_args // empty' "$(load_config)" 2>/dev/null)
+    fi
     [[ -z "$args" ]] && args="--resume"
     echo "$args"
+}
+
+# Configured agent names (config .agents keys), one per line. Empty output
+# means no named agents are configured and tasks use the legacy single-agent
+# path.
+agent_names() {
+    jq -r '.agents // {} | keys_unsorted[]' "$(load_config)" 2>/dev/null
 }
 
 apply_layout() {
@@ -84,16 +103,23 @@ create_task() {
     local type="$2"
     local name="$3"
     local resume="$4"   # optional: agent session id to resume
+    local agent="$5"    # optional: named agent (config .agents key)
 
     local -a agent_cmd
-    read -r -a agent_cmd <<< "$(agent_command)"
+    read -r -a agent_cmd <<< "$(agent_command "$agent")"
+
+    # TASK_AGENT rides along only for named agents, so tabs on the legacy
+    # single-agent path keep their exact env (and pending files stay
+    # agent-less, which downstream treats as claude).
+    local -a envs=(TASK_TAB_NAME="$name" TASK_TYPE="$type")
+    [[ -n "$agent" ]] && envs+=(TASK_AGENT="$agent")
 
     if [[ -n "$resume" ]]; then
         local -a resume_flags
-        read -r -a resume_flags <<< "$(agent_resume_args)"
-        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" "${agent_cmd[@]}" "${resume_flags[@]}" "$resume"
+        read -r -a resume_flags <<< "$(agent_resume_args "$agent")"
+        zellij action new-tab -n "$name" --cwd "$dir" -- env "${envs[@]}" "${agent_cmd[@]}" "${resume_flags[@]}" "$resume"
     else
-        zellij action new-tab -n "$name" --cwd "$dir" -- env TASK_TAB_NAME="$name" TASK_TYPE="$type" "${agent_cmd[@]}"
+        zellij action new-tab -n "$name" --cwd "$dir" -- env "${envs[@]}" "${agent_cmd[@]}"
     fi
     # Report tab-creation success to the caller (restore relies on this).
     # Bail out before building panes if the tab itself could not be created.

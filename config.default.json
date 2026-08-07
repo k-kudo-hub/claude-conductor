@@ -5,6 +5,16 @@
     "command": "claude",
     "resume_args": "--resume"
   },
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "resume_args": "--resume"
+    },
+    "codex": {
+      "command": "codex",
+      "resume_args": "resume"
+    }
+  },
   "upload": {
     "enabled": false,
     "repo": "",
