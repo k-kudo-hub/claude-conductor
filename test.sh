@@ -2533,6 +2533,40 @@ wait "$JC_PID" 2>/dev/null || true
 rm -rf "$JC_DIR"
 
 # ============================================================
+section "37c. dashboard-loop.sh (screen detection in the poll)"
+# ============================================================
+
+# screen方式agentのタブはポーリング内で dump-screen され、承認待ちが
+# そのままpending一覧に載る（issue #28）。ONCE経路でも検出が走ること
+SD_DIR="$HOME/.claude-pending/sd-session"
+rm -rf "$SD_DIR"
+mkdir -p "$SD_DIR"
+SD_PANES='[
+  {"id":0,"is_plugin":true,"tab_name":"codex-scr","title":"tab-bar"},
+  {"id":5,"is_plugin":false,"tab_name":"codex-scr","terminal_command":"env TASK_TAB_NAME=codex-scr TASK_TYPE=dev TASK_AGENT=codex codex","title":"codex"}
+]'
+mkdir -p "$SDL_FIX/dash"
+cp "$SDL_FIX/blocked-command.txt" "$SDL_FIX/dash/terminal_5.txt"
+
+SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+
+[[ -f "$SD_DIR/screen-codex-scr.json" ]] && pass "poll writes screen Notification pending" || fail "screen pending not created by poll"
+echo "$SD_OUT" | grep -q "codex-scr" && pass "screen-detected approval listed in dashboard" || fail "approval not listed: $SD_OUT"
+echo "$SD_OUT" | grep -q "Would you like to run the following command?" \
+  && pass "dashboard shows the matched approval line" || fail "approval message missing"
+
+# workingに戻ればポーリングがpendingを消す
+cp "$SDL_FIX/working.txt" "$SDL_FIX/dash/terminal_5.txt"
+SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+[[ ! -f "$SD_DIR/screen-codex-scr.json" ]] && pass "poll clears pending when agent works again" || fail "pending survived working"
+echo "$SD_OUT" | grep -q "All tasks running" && pass "dashboard back to all-running" || fail "dashboard still lists task"
+rm -rf "$SD_DIR"
+
+# ============================================================
 section "38. waiting-loop.sh (shows only Waiting tasks)"
 # ============================================================
 
