@@ -11,10 +11,10 @@ layout {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
                 pane split_direction="horizontal" {
-                    pane {
+                    pane borderless=true {
                         name "Dashboard"
                         command "bash"
-                        args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/dashboard-loop.sh"
+                        args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor dashboard"
                     }
                     // conductor が枠とタイトルを描くため、Zellij 側の枠は外す。
                     // 残すと枠が二重になる。
