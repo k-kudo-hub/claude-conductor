@@ -85,16 +85,12 @@ func Render(th ui.Theme, session, status string, width, height int) string {
 // 行で、そのまま埋め込む（内部にカーソル位置の情報を含むため加工しない）。
 func renderNameInput(th ui.Theme, field string, width, height int) string {
 	w := max(width, 1)
-	inner := w
-
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
-	label := lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
 
 	body := []string{
-		label.Render("Task name"),
 		field,
 		"",
-		muted.Render(ui.SpaceBetween("enter: create", "esc: cancel", inner)),
+		muted.Render(ui.SpaceBetween("enter: create", "esc: cancel", w)),
 	}
-	return ui.Box(th, Title, body, w)
+	return ui.Screen(append(ui.Header(th, "Task name", "", w), body...), w, height)
 }
