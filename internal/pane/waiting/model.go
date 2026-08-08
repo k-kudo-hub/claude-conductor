@@ -76,11 +76,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.entries, m.width, m.height))
-	// ペインを専有して描くので代替画面を使う。スクロールバックは
-	// 常に最新だけを見せるこのペインでは不要。
-	v.AltScreen = true
-	return v
+	// 代替画面には入らない。Zellij は代替画面のペインを別扱いし、
+	// ペイン境界のドラッグやタブバーのクリックが効かなくなる。
+	// bash 版も alternate screen は使わず、同じ位置に上書きしていた。
+	return tea.NewView(Render(m.theme, m.entries, m.width, m.height))
 }
 
 // Run は waiting サブコマンドの本体。
