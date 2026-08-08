@@ -117,7 +117,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := Render(theme(), "my-session", tc.status, tc.width)
+			out := Render(theme(), "my-session", tc.status, tc.width, 0)
 			want := max(tc.width, ui.MinBoxWidth)
 			for i, line := range strings.Split(out, "\n") {
 				if got := lipgloss.Width(line); got != want {
@@ -129,7 +129,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 }
 
 func TestRenderShowsTitleSessionAndHint(t *testing.T) {
-	out := Render(theme(), "my-session", "", 60)
+	out := Render(theme(), "my-session", "", 60, 0)
 
 	for _, want := range []string{Title, "my-session", "[n]"} {
 		if !strings.Contains(out, want) {
@@ -139,7 +139,7 @@ func TestRenderShowsTitleSessionAndHint(t *testing.T) {
 }
 
 func TestRenderShowsStatus(t *testing.T) {
-	out := Render(theme(), "s", "Creating task...", 60)
+	out := Render(theme(), "s", "Creating task...", 60, 0)
 
 	if !strings.Contains(out, "Creating task...") {
 		t.Errorf("output does not contain the status:\n%s", out)

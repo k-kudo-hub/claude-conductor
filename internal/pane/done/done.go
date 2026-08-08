@@ -41,6 +41,8 @@ func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, he
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
 	name := lipgloss.NewStyle().Foreground(th.Text)
 
+	head := ui.Header(th, Title, "", w)
+
 	if len(records) == 0 {
 		body := []string{muted.Render("No tasks completed yet")}
 		// 最後の 1 件を復元した直後もここに来る。プロンプトを捨てると
@@ -49,7 +51,7 @@ func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, he
 			body = append(body, "",
 				lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render("Restore which number?"))
 		}
-		return ui.Section(th, Title, "", body, w, height)
+		return ui.Screen(append(head, body...), w, height)
 	}
 
 	totals := daily.Stats(records)
@@ -80,13 +82,13 @@ func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, he
 		footer = lipgloss.NewStyle().Foreground(th.Accent).Bold(true).
 			Render("Restore which number?")
 	}
-	// 見出し2行（タイトル+罫線）、集計+空行の2行、末尾の空行+フッターの
-	// 2行を除いた分が一覧に使える。
-	body = ui.FitTo(body, height, 6)
-	body = append([]string{summary, ""}, body...)
-	body = append(body, "", footer)
 
-	return ui.Section(th, Title, "", body, w, 0)
+	head = append(head, summary, "")
+	tail := []string{"", footer}
+	body = ui.FitTo(body, height, len(head)+len(tail))
+
+	lines := append(head, body...)
+	return ui.Screen(append(lines, tail...), w, height)
 }
 
 // markerWidth は目印欄の固定幅。目印は最大 3 つ（🚀💬📝）で、絵文字は

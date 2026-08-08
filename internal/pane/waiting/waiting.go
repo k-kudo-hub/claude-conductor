@@ -32,8 +32,10 @@ func Render(th ui.Theme, entries []pending.Entry, width, height int) string {
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	name := lipgloss.NewStyle().Foreground(th.Text).Bold(true)
 
+	head := ui.Header(th, Title, "", w)
+
 	if len(entries) == 0 {
-		return ui.Section(th, Title, "", []string{muted.Render("No waiting tasks")}, w, height)
+		return ui.Screen(append(head, muted.Render("No waiting tasks")), w, height)
 	}
 
 	body := make([]string, 0, len(entries)*3+1)
@@ -53,12 +55,11 @@ func Render(th ui.Theme, entries []pending.Entry, width, height int) string {
 	}
 
 	// 件数は必ず残したいので、省略は件数行より前で行う。
-	count := muted.Render(countLabel(len(entries)))
-	// 見出し2行（タイトル+罫線）と、末尾の空行+件数で 4 行使う。
-	body = ui.FitTo(body, height, 4)
-	body = append(body, "", count)
+	footer := []string{"", muted.Render(countLabel(len(entries)))}
+	body = ui.FitTo(body, height, len(head)+len(footer))
 
-	return ui.Section(th, Title, "", body, w, 0)
+	lines := append(head, body...)
+	return ui.Screen(append(lines, footer...), w, height)
 }
 
 // countLabel は件数表示。bash 版のフッター "Waiting: N" に相当する。

@@ -106,33 +106,43 @@ func SpaceBetween(left, right string, width int) string {
 	return l + strings.Repeat(" ", gap) + right
 }
 
-// Section は見出し・区切り線・本文を、枠を描かずに組み立てる。
+// Header は見出しと区切り線の 2 行を返す。title が空なら何も返さない。
 //
 // 枠は Zellij のペイン枠に任せる。conductor 側でも枠を描くと二重になり、
 // かといってレイアウトで borderless にすると、ペイン境界をドラッグして
 // 大きさを変える操作ごと失われる（Zellij は枠をつかんでリサイズする）。
-//
-// height が正のときは、その高さに収まるよう本文を削る。
-func Section(th Theme, title, subtitle string, body []string, width, height int) string {
+func Header(th Theme, title, subtitle string, width int) []string {
+	if title == "" {
+		return nil
+	}
 	w := max(width, 1)
 
-	lines := make([]string, 0, len(body)+3)
-	if title != "" {
-		head := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(title)
-		if subtitle != "" {
-			head = SpaceBetween(head, lipgloss.NewStyle().Foreground(th.Muted).Render(subtitle), w)
-		}
-		lines = append(lines, head, Rule(th, w))
+	head := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(title)
+	if subtitle != "" {
+		head = SpaceBetween(head, lipgloss.NewStyle().Foreground(th.Muted).Render(subtitle), w)
 	}
+	return []string{head, Rule(th, w)}
+}
 
-	if h := height; h > 0 {
-		body = Fit(body, max(h-len(lines), 1))
-	}
-	lines = append(lines, body...)
+// Screen は行を幅に揃え、高さが分かっていればその行数に固定して返す。
+//
+// 行数を固定するのは、代替画面を使わない描画では前回より短い出力を出すと
+// 消えなかった行がそのまま残るため。件数が減った瞬間に古い行が下に
+// こびりつき、幅が変われば残骸が新しい行と混ざって読めなくなる。
+func Screen(lines []string, width, height int) string {
+	w := max(width, 1)
 
-	out := make([]string, 0, len(lines))
+	out := make([]string, 0, max(len(lines), height))
 	for _, line := range lines {
 		out = append(out, Pad(line, w))
+	}
+
+	blank := strings.Repeat(" ", w)
+	for len(out) < height {
+		out = append(out, blank)
+	}
+	if height > 0 && len(out) > height {
+		out = out[:height]
 	}
 	return strings.Join(out, "\n")
 }

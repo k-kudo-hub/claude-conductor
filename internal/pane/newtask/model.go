@@ -61,6 +61,7 @@ type Model struct {
 	session string
 	theme   ui.Theme
 	width   int
+	height  int
 
 	step      step
 	status    string
@@ -91,6 +92,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 
 	case runPickerMsg:
@@ -354,7 +356,7 @@ func (m Model) View() tea.View {
 	// 代替画面には入らない（Zellij のペイン境界ドラッグとタブ操作を
 	// 妨げるため）。詳細は waiting ペインの同じ箇所を参照。
 	if m.step == stepName {
-		v := tea.NewView(renderNameInput(m.theme, m.input.View(), m.width))
+		v := tea.NewView(renderNameInput(m.theme, m.input.View(), m.width, m.height))
 		// textinput が返すのは入力欄内の座標。実際の欄は枠の中の
 		// 2 行目・2 桁目に描くので、その分ずらさないと罫線の上に出る。
 		if c := m.input.Cursor(); c != nil {
@@ -365,7 +367,7 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	return tea.NewView(Render(m.theme, m.session, m.status, m.width))
+	return tea.NewView(Render(m.theme, m.session, m.status, m.width, m.height))
 }
 
 // Run は new-task サブコマンドの本体。
@@ -385,7 +387,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	th := ui.Current()
 
 	if once {
-		fmt.Fprintln(stdout, Render(th, session, "", envWidth()))
+		fmt.Fprintln(stdout, Render(th, session, "", envWidth(), 0))
 		return 0
 	}
 

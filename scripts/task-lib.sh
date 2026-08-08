@@ -170,6 +170,12 @@ create_task() {
     fi
     sleep 0.3
 
+    # 以降の new-pane / resize はすべて「いまフォーカスしているタブ」に
+    # 効く。new-tab はフォーカスを移すはずだが、呼び出し元のペインが
+    # 端末を握っていると移らないことがあり、その場合タスク用のペインが
+    # 丸ごと元のタブ（Main）に作られてしまう。明示的に移る。
+    zellij action go-to-tab-name "$name" 2>/dev/null || true
+
     zellij action new-pane --direction down --cwd "$dir" -- "$CONDUCTOR_HOME/bin/conductor" task-bar "$name"
     local i
     for i in {1..30}; do

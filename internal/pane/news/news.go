@@ -65,12 +65,13 @@ func Render(th ui.Theme, items []Item, date string, loading bool, width, height 
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
 	headline := lipgloss.NewStyle().Foreground(th.Text)
 
+	head := ui.Header(th, Title, date, w)
+
 	switch {
 	case loading:
-		return ui.Section(th, Title, date, []string{muted.Render("Fetching news...")}, w, height)
+		return ui.Screen(append(head, muted.Render("Fetching news...")), w, height)
 	case len(items) == 0:
-		return ui.Section(th, Title, date,
-			[]string{muted.Render("No news yet. Press [r] to reload.")}, w, height)
+		return ui.Screen(append(head, muted.Render("No news yet. Press [r] to reload.")), w, height)
 	}
 
 	body := make([]string, 0, len(items)*3+2)
@@ -89,12 +90,11 @@ func Render(th ui.Theme, items []Item, date string, loading bool, width, height 
 	}
 
 	// キーヒントは必ず残す。省略はその前で行う。
-	footer := muted.Render(keyHint(len(items)))
-	// 見出し2行（タイトル+罫線）と、末尾の空行+キーヒントで 4 行使う。
-	body = ui.FitTo(body, height, 4)
-	body = append(body, "", footer)
+	footer := []string{"", muted.Render(keyHint(len(items)))}
+	body = ui.FitTo(body, height, len(head)+len(footer))
 
-	return ui.Section(th, Title, date, body, w, 0)
+	lines := append(head, body...)
+	return ui.Screen(append(lines, footer...), w, height)
 }
 
 // keyHint は開ける記事番号の案内。1 件だけのときに [1-1] とは出さない。

@@ -68,6 +68,8 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
 	name := lipgloss.NewStyle().Foreground(th.Text).Bold(true)
 
+	head := ui.Header(th, Title, session, w)
+
 	if len(entries) == 0 {
 		body := []string{lipgloss.NewStyle().Foreground(th.Done).Render("All tasks running")}
 		// 最後の 1 件を削除した直後もここに来る。prompt には
@@ -76,7 +78,7 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 			body = append(body, "",
 				lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(prompt))
 		}
-		return ui.Section(th, Title, session, body, w, height)
+		return ui.Screen(append(head, body...), w, height)
 	}
 
 	body := make([]string, 0, len(entries)*3+2)
@@ -108,11 +110,11 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 	if prompt != "" {
 		footer = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(prompt)
 	}
-	// 見出し2行（タイトル+罫線）と、末尾の空行+フッターで 4 行使う。
-	body = ui.FitTo(body, height, 4)
-	body = append(body, "", footer)
+	tail := []string{"", footer}
+	body = ui.FitTo(body, height, len(head)+len(tail))
 
-	return ui.Section(th, Title, session, body, w, 0)
+	lines := append(head, body...)
+	return ui.Screen(append(lines, tail...), w, height)
 }
 
 // flatten は改行やタブを空白に潰す。1 タスクが複数行になると枠が崩れる。
