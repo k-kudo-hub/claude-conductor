@@ -24,10 +24,10 @@ layout {
                         args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor waiting"
                     }
                 }
-                pane {
+                pane borderless=true {
                     name "Done"
                     command "bash"
-                    args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/done-loop.sh"
+                    args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor done"
                 }
                 pane borderless=true {
                     name "News"

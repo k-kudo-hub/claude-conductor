@@ -1921,11 +1921,13 @@ else
 fi
 
 # ============================================================
-section "26d. done-loop.sh (cost display format)"
+section "26d. conductor done (list, totals, cost format)"
 # ============================================================
 
-# Create a test daily file with known data
-TEST_DAILY_DIR="$SANDBOX/test-done-daily/test-session"
+# Create a test daily file with known data. conductor は
+# CONDUCTOR_HOME/daily/<session>/<today>.jsonl を読むので、その配置にする。
+TEST_DAILY_HOME="$SANDBOX/test-done-daily-home"
+TEST_DAILY_DIR="$TEST_DAILY_HOME/daily/test-session"
 mkdir -p "$TEST_DAILY_DIR"
 TEST_DAILY_FILE="$TEST_DAILY_DIR/$(date '+%Y-%m-%d').jsonl"
 
@@ -1936,27 +1938,27 @@ cat > "$TEST_DAILY_FILE" << 'JSONL'
 {"tab":"restored-task","session":"s1","completed_at":"2026-04-19T08:00:00+0900","message":"done","summary":{"total_turns":2,"total_tool_calls":2,"total_cost_usd":9.99},"markers":{"merged":false,"slack":false,"doc":false},"restored":true}
 JSONL
 
-# Test summary stats (restored entries are excluded, as done-loop.sh does)
-STATS=$(cat "$TEST_DAILY_FILE" | jq -s 'map(select((.restored // false) != true)) | {
-    count: length,
-    cost: ([.[].summary.total_cost_usd // 0] | add)
-}' 2>/dev/null)
-STAT_COUNT=$(echo "$STATS" | jq -r '.count')
-STAT_COST=$(echo "$STATS" | jq -r '.cost')
-[[ "$STAT_COUNT" == "3" ]] && pass "stats count=3 (restored excluded)" || fail "stats count wrong: $STAT_COUNT"
-[[ "$STAT_COST" == "4.52" ]] && pass "stats total cost=4.52 (restored excluded)" || fail "stats total cost wrong: $STAT_COST"
+# 以前はここで jq を使って集計ロジックを組み直していたが、それでは
+# 表示に使われる実装ではなく再実装を検証していた。いまは実バイナリの
+# 出力を確かめる（集計と整形そのものは internal/daily のテストが見る）。
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    DONE_OUT=$(CONDUCTOR_HOME="$SANDBOX/test-done-daily-home" COLUMNS=76 \
+        "$HOME/.claude-conductor/bin/conductor" done --once 2>/dev/null)
 
-# Restored entries must not appear in the displayed list
-LIST_TABS=$(cat "$TEST_DAILY_FILE" | jq -s -r 'map(select((.restored // false) != true)) | sort_by(.completed_at) | .[].tab')
-echo "$LIST_TABS" | grep -q "restored-task" && fail "restored task wrongly listed" || pass "restored task excluded from list"
-echo "$LIST_TABS" | grep -q "task-a" && pass "active task listed" || fail "active task missing from list"
-
-# Test per-task cost formatting
-COST_A=$(head -1 "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
-[[ "$COST_A" == "\$1.85" ]] && pass "task-a cost formatted as \$1.85" || fail "task-a cost format wrong: $COST_A"
-
-COST_OLD=$(sed -n '3p' "$TEST_DAILY_FILE" | jq -r '.summary.total_cost_usd // null | if . != null then (. * 100 | round | . / 100 | tostring | if test("\\.") then . else . + ".00" end | if test("\\.[0-9]$") then . + "0" else . end | "$" + .) else "-" end')
-[[ "$COST_OLD" == "-" ]] && pass "old task without cost shows -" || fail "old task cost wrong: $COST_OLD"
+    echo "$DONE_OUT" | grep -q "3 tasks" && pass "stats count=3 (restored excluded)" || fail "stats count wrong: $DONE_OUT"
+    echo "$DONE_OUT" | grep -q '\$4.52' && pass "stats total cost=\$4.52 (restored excluded)" || fail "stats total cost wrong: $DONE_OUT"
+    echo "$DONE_OUT" | grep -q "restored-task" && fail "restored task wrongly listed" || pass "restored task excluded from list"
+    echo "$DONE_OUT" | grep -q "task-a" && pass "active task listed" || fail "active task missing from list"
+    echo "$DONE_OUT" | grep -q '\$1.85' && pass "task-a cost formatted as \$1.85" || fail "task-a cost format wrong: $DONE_OUT"
+    # cost の無いタスクはプレースホルダ。金額欄が空欄にならないこと。
+    echo "$DONE_OUT" | grep -q "old-task" && pass "task without cost still listed" || fail "task without cost missing: $DONE_OUT"
+    # 完了時刻の昇順（old-task 09:00 が task-a 10:05 より前）
+    [[ "$(echo "$DONE_OUT" | grep -n 'old-task' | cut -d: -f1)" -lt \
+       "$(echo "$DONE_OUT" | grep -n 'task-a' | cut -d: -f1)" ]] \
+      && pass "tasks sorted by completion time" || fail "tasks not sorted: $DONE_OUT"
+else
+    skip "real conductor binary unavailable; conductor done output tests"
+fi
 
 # ============================================================
 section "26e. restore-task.sh (restore Done task to dashboard)"
@@ -2047,10 +2049,14 @@ GONE_FLAG=$(jq -r 'select(.tab=="gone-task") | .restored // "absent"' "$RESTORE_
 [[ "$GONE_FLAG" == "absent" ]] && pass "gone-dir entry left in Done (not marked)" || fail "gone-dir entry wrongly marked: $GONE_FLAG"
 
 # ============================================================
-section "26f. done-loop.sh (r+number triggers restore)"
+section "26f. Done pane restore wiring (r+number -> restore-task.sh)"
 # ============================================================
 
-# Isolate today's daily log to a single restorable entry so [1] is deterministic
+# bash 版はここで stdin に 'r1' を流してループを駆動していた。Bubble Tea は
+# 端末を要求するのでその手は使えない。代わりに Go のユニットテスト
+# （internal/pane/done）が、r → 数字 の状態遷移と restore-task.sh へ渡す
+# 引数（タブ / セッション / 完了時刻）を実コードで検証する。
+# ここでは復元先の restore-task.sh 側が期待どおり動くことを直接確かめる。
 rm -rf "$HOME/.claude-conductor/daily"
 INT_SESSION="int-restore"
 INT_DIR="$HOME/.claude-conductor/daily/$INT_SESSION"
@@ -2064,19 +2070,32 @@ cat > "$INT_FILE" << JSONL
 {"tab":"int-task","session":"$INT_SESSION","completed_at":"$INT_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$INT_PROJ","task_type":"dev"}
 JSONL
 
-# Drive the interactive loop: feed 'r' then '1', keep stdin open briefly, then kill it.
+# Done ペインが [1] に対して組み立てる引数と同じ並びで呼ぶ。
 : > "$HOME/.claude-pending/zellij-calls.log"
-( printf 'r1'; sleep 3 ) | ZELLIJ_SESSION_NAME="$INT_SESSION" bash "$HOME/.claude-conductor/scripts/done-loop.sh" >/dev/null 2>&1 &
-DL_PID=$!
-sleep 2
-kill "$DL_PID" 2>/dev/null || true
-wait "$DL_PID" 2>/dev/null || true
+ZELLIJ_SESSION_NAME="$INT_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" \
+    "int-task" "$INT_SESSION" "$INT_AT" >/dev/null 2>&1
 
 grep -q "action new-tab -n int-task --cwd $INT_PROJ -- env TASK_TAB_NAME=int-task TASK_TYPE=dev claude" "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "done-loop r+num recreates the tab" || fail "done-loop r+num did not recreate tab"
+  && pass "restore recreates the tab" || fail "restore did not recreate tab"
 
 INT_FLAG=$(jq -r 'select(.tab=="int-task") | .restored' "$INT_FILE")
-[[ "$INT_FLAG" == "true" ]] && pass "done-loop r+num marks entry restored" || fail "done-loop restored flag wrong: $INT_FLAG"
+[[ "$INT_FLAG" == "true" ]] && pass "restore marks entry restored" || fail "restored flag wrong: $INT_FLAG"
+
+# 復元済みは Done の一覧から外れる。
+# 否定だけでは「何も出力されなくても通る」ので、同じ出力に対する
+# 正のチェック（別タスクは残る）と対にする。
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    cat >> "$INT_FILE" << JSONL
+{"tab":"kept-task","session":"$INT_SESSION","completed_at":"${INT_TODAY}T11:00:00+0900","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$INT_PROJ","task_type":"dev"}
+JSONL
+    RESTORED_OUT=$(COLUMNS=70 "$HOME/.claude-conductor/bin/conductor" done --once 2>/dev/null)
+    echo "$RESTORED_OUT" | grep -q "kept-task" \
+      && pass "Done still lists the un-restored task" || fail "Done produced no usable output: $RESTORED_OUT"
+    echo "$RESTORED_OUT" | grep -q "int-task" \
+      && fail "restored task still listed in Done" || pass "restored task drops out of Done"
+else
+    skip "real conductor binary unavailable; Done restore-exclusion test"
+fi
 
 # ============================================================
 section "26g. restore-task.sh (duplicate tab+completed_at marks only one)"
@@ -2550,14 +2569,10 @@ grep -q '"\$HOME/.claude-conductor/scripts' "$MULTI_KDL" \
   && fail "multi.kdl still hardcodes \$HOME/.claude-conductor" || pass "multi.kdl has no hardcoded conductor path"
 
 # ============================================================
-section "30b. done-loop.sh honors CONDUCTOR_HOME for daily"
+section "30b. conductor done honors CONDUCTOR_HOME for daily"
 # ============================================================
 
-DONE_LOOP="$HOME/.claude-conductor/scripts/done-loop.sh"
-grep -q 'CONDUCTOR_HOME' "$DONE_LOOP" \
-  && pass "done-loop.sh references CONDUCTOR_HOME" || fail "done-loop.sh does not reference CONDUCTOR_HOME"
-
-# Verify done-loop reads daily under CONDUCTOR_HOME by pointing it at an alternate home
+# Verify the pane reads daily under CONDUCTOR_HOME by pointing it at an alternate home
 ALT_DAILY_HOME="$SANDBOX/alt-daily-home"
 mkdir -p "$ALT_DAILY_HOME/daily/alt-session"
 TODAY=$(date '+%Y-%m-%d')
@@ -2565,9 +2580,18 @@ cat > "$ALT_DAILY_HOME/daily/alt-session/${TODAY}.jsonl" << 'DONEJSON'
 {"tab":"alt-task","status":"done","summary":{"total_turns":3,"total_tool_calls":5,"total_cost_usd":0.42},"completed_at":"2026-07-04T10:00:00Z"}
 DONEJSON
 
-OUTPUT=$(CONDUCTOR_HOME="$ALT_DAILY_HOME" CONDUCTOR_DONE_ONCE=1 bash "$HOME/.claude-conductor/scripts/done-loop.sh" 2>/dev/null)
-echo "$OUTPUT" | grep -q "alt-task" \
-  && pass "done-loop reads daily under CONDUCTOR_HOME" || fail "done-loop did not read CONDUCTOR_HOME daily: $OUTPUT"
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    OUTPUT=$(CONDUCTOR_HOME="$ALT_DAILY_HOME" COLUMNS=70 \
+        "$HOME/.claude-conductor/bin/conductor" done --once 2>/dev/null)
+    echo "$OUTPUT" | grep -q "alt-task" \
+      && pass "conductor done reads daily under CONDUCTOR_HOME" || fail "did not read CONDUCTOR_HOME daily: $OUTPUT"
+
+    "$HOME/.claude-conductor/bin/conductor" done --bogus >/dev/null 2>&1 \
+      && fail "conductor done accepted an unknown option" \
+      || pass "conductor done rejects an unknown option"
+else
+    skip "real conductor binary unavailable; conductor done CONDUCTOR_HOME test"
+fi
 
 # ============================================================
 section "30c. init.zsh defines mdev-test"
