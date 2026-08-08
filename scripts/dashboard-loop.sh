@@ -117,8 +117,14 @@ while true; do
         poll_deadline=$((SECONDS + 2))
         while :; do
             remaining=$((poll_deadline - SECONDS))
-            [[ $remaining -le 0 ]] && break
-            read -t "$remaining" -n 1 -s key || true
+            if [[ $remaining -le 0 ]]; then
+                key=""
+                break
+            fi
+            # read が非ゼロを返すのはタイムアウトかEOF。どちらもこのポーリング
+            # では入力が無かったのと同じなので、待ち直さずに抜ける（stdinが
+            # 端末でないときに残り時間ぶん空回りし続けるのを防ぐ）。
+            read -t "$remaining" -n 1 -s key || { key=""; break; }
             [[ "$key" == "d" ]] && break
             [[ "$key" =~ ^[1-9]$ ]] && break
             key=""
