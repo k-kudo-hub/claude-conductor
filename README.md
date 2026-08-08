@@ -3,22 +3,34 @@
 Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zellij](https://zellij.dev/).
 
 ```
-┌─ Main ───────────────────────────────────────────┐
-│  Current Tasks [session-name]                    │
+╭─ Current Tasks ──────────────────────────────────╮
+│ 1 ● api-feature                         18:05:31 │
+│     Claude needs your permission to use Bash     │
 │                                                  │
-│  [1] ■ api-feature [18:05:31]                    │
-│      Claude needs your permission to use Bash    │
+│ 2 ● web-fix                        19:20:01 done │
+│     Task complete                                │
 │                                                  │
-│  Pending: 1  [num]: jump / d+[num]: delete       │
-├──────────────────────────────────────────────────┤
-│  Waiting [external]                              │
-│  ■ review-pr42 [18:06:45]                        │
-│      Waiting for external response               │
-│  Waiting: 1                                      │
-├──────────────────────────────────────────────────┤
-│  New Task [session-name]                         │
-│  [n] Create task                                 │
-└──────────────────────────────────────────────────┘
+│ 2 pending            [num] jump · d+[num] delete │
+╰──────────────────────────────────────────────────╯
+╭─ Waiting ────────────────────────────────────────╮
+│ ● review-pr42                           18:06:45 │
+│   Waiting for external response                  │
+│                                                  │
+│ 1 waiting                                        │
+╰──────────────────────────────────────────────────╯
+╭─ Done ───────────────────────────────────────────╮
+│ 2 tasks              20 turns · 120 calls · $0.73│
+│                                                  │
+│ 1 ● api-feature      12 t    $0.42  18:05 🚀     │
+│ 2 ● web-fix           8 t    $0.31  19:20 💬📝   │
+│                                                  │
+│ r+[num] restore                                  │
+╰──────────────────────────────────────────────────╯
+╭─ New Task ───────────────────────────────────────╮
+│ [n] Create task                                  │
+│                                                  │
+│                                     session-name │
+╰──────────────────────────────────────────────────╯
 ```
 
 ## Features
@@ -30,6 +42,9 @@ Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zell
 - **Auto-routing** — When you respond to Claude, you're automatically returned to the dashboard. Permission approvals also auto-return.
 - **Hooks integration** — Notification, Stop, PostToolUse, and UserPromptSubmit hooks keep the dashboard in sync.
 - **Work log upload** (optional) — On tab deletion, push a summary + conversation log to a dedicated Git repo. Disabled by default; see [Uploading work logs](#uploading-work-logs-optional).
+- **Panes that follow the terminal** — Every pane is drawn by the `conductor`
+  binary, so borders and columns track the pane width as you resize. Colors come
+  from a single theme, and only standard Unicode is used — no Nerd Font needed.
 
 ## Requirements
 

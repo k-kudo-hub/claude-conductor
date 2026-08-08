@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Conductor - Task Library
 # Shared functions for creating tasks (tabs) and applying layouts.
-# Sourced by task-create-loop.sh and done-loop.sh; defines functions only.
+# Sourced by task-create.sh / restore-task.sh; defines functions only.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
@@ -170,7 +170,7 @@ create_task() {
     fi
     sleep 0.3
 
-    zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
+    zellij action new-pane --direction down --cwd "$dir" -- "$CONDUCTOR_HOME/bin/conductor" task-bar "$name"
     local i
     for i in {1..30}; do
         zellij action resize decrease up

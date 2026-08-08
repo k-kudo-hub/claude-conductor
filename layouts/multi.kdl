@@ -35,11 +35,11 @@ layout {
                     args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor news"
                 }
             }
-            pane size="30%" {
+            pane size="30%" borderless=true {
                 name "TaskCreate"
                 focus true
                 command "bash"
-                args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/task-create-loop.sh"
+                args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor new-task"
             }
         }
     }

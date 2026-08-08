@@ -127,7 +127,7 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/pending-notify.sh" ]] && pass "pending-notify.sh installed" || fail "pending-notify.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-resolve.sh" ]] && pass "pending-resolve.sh installed" || fail "pending-resolve.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
-[[ -f "$HOME/.claude-conductor/scripts/task-control.sh" ]] && pass "task-control.sh installed" || fail "task-control.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/task-create.sh" ]] && pass "task-create.sh installed" || fail "task-create.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/registry-lib.sh" ]] && pass "registry-lib.sh installed" || fail "registry-lib.sh missing"
@@ -681,7 +681,7 @@ jq --slurpfile DEF "$HOME/.claude-conductor/config.default.json" '.agents = $DEF
 mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
 
 # ============================================================
-section "15. task-create-loop.sh reads task types from config"
+section "15. config.json provides task types and search settings"
 # ============================================================
 
 CONFIG_FILE="$HOME/.claude-conductor/config.json"
@@ -700,43 +700,20 @@ SEARCH_DEPTH_JSON=$(jq -r '.search_depth' "$CONFIG_FILE")
 [[ "$SEARCH_DEPTH_JSON" == "1" ]] && pass "search_depth is 1" || fail "search_depth wrong: $SEARCH_DEPTH_JSON"
 
 # ============================================================
-section "15b. task-create-loop.sh agent selection (select_agent)"
+section "15b. config.json defines selectable agents"
 # ============================================================
 
+# エージェントの選択そのもの（未設定なら従来経路、1件なら即決、複数なら
+# fzf）は Go 側が持ち、internal/config と internal/pane/newtask のテストが
+# 検証する。ここでは選択肢の元になる設定を確かめる。
 CONDUCTOR_CFG="$HOME/.claude-conductor/config.json"
-TASK_CREATE="$HOME/.claude-conductor/scripts/task-create-loop.sh"
 
-# select_agent is defined when the script is sourced (main_loop must not start)
-( source "$TASK_CREATE" && declare -F select_agent >/dev/null ) \
-  && pass "task-create-loop.sh defines select_agent" || fail "select_agent missing"
-
-# No .agents configured -> empty output (legacy single-agent path)
-jq 'del(.agents)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
-SA=$( source "$TASK_CREATE" && select_agent )
-[[ -z "$SA" ]] && pass "select_agent empty without .agents" || fail "select_agent = '$SA' without .agents"
-
-# A single configured agent is returned without prompting
-jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}}' \
-    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
-SA=$( source "$TASK_CREATE" && select_agent )
-[[ "$SA" == "claude" ]] && pass "select_agent auto-picks single agent" || fail "select_agent single = '$SA'"
-
-# Multiple agents go through fzf with all candidates offered
-cat > "$MOCK_BIN/fzf" << 'MOCK'
-#!/bin/bash
-tee "$HOME/.claude-pending/fzf-input.log" | head -1
-MOCK
-chmod +x "$MOCK_BIN/fzf"
-jq '.agents = {"claude": {"command": "claude", "resume_args": "--resume"}, "codex": {"command": "codex", "resume_args": "resume"}}' \
-    "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
-SA=$( source "$TASK_CREATE" && select_agent )
-[[ "$SA" == "claude" ]] && pass "select_agent returns fzf pick" || fail "select_agent fzf = '$SA'"
-grep -q "codex" "$HOME/.claude-pending/fzf-input.log" \
-  && pass "select_agent offers all agents to fzf" || fail "fzf candidates missing codex"
-rm -f "$MOCK_BIN/fzf" "$HOME/.claude-pending/fzf-input.log"
-
-# Restore the default config for subsequent tests
-cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+jq -e '.agents.claude.command' "$CONDUCTOR_CFG" >/dev/null \
+  && pass "config defines the claude agent" || fail "claude agent missing from config"
+jq -e '.agents.codex.command' "$CONDUCTOR_CFG" >/dev/null \
+  && pass "config defines the codex agent" || fail "codex agent missing from config"
+[[ "$(jq -r '.agents.codex.detection' "$CONDUCTOR_CFG")" == "screen" ]] \
+  && pass "codex is configured for screen detection" || fail "codex detection wrong"
 
 # ============================================================
 section "16. layout actions generate correct zellij commands"
@@ -1408,7 +1385,7 @@ mkdir -p "$SDL_DIR2"
 SDL_PANES='[
   {"id":0,"is_plugin":true,"tab_name":"cx-task","title":"tab-bar"},
   {"id":5,"is_plugin":false,"tab_name":"cx-task","terminal_command":"env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex","title":"codex"},
-  {"id":6,"is_plugin":false,"tab_name":"cx-task","terminal_command":"bash task-control.sh cx-task","title":"bar"},
+  {"id":6,"is_plugin":false,"tab_name":"cx-task","terminal_command":"conductor task-bar cx-task","title":"bar"},
   {"id":7,"is_plugin":false,"tab_name":"cl-task","terminal_command":"env TASK_TAB_NAME=cl-task TASK_TYPE=dev TASK_AGENT=claude claude","title":"claude"}
 ]'
 mkdir -p "$SDL_FIX/tick"
@@ -1633,7 +1610,7 @@ section "22b. task deletion removes registry entries (dd-commit only)"
 # ============================================================
 
 source "$HOME/.claude-conductor/scripts/registry-lib.sh"
-TC22="$HOME/.claude-conductor/scripts/task-control.sh"
+TC22="$HOME/.claude-conductor/scripts/task-delete.sh"
 registry_upsert "test-session" "del-sid-1" "del-tab" "/tmp/d" "dev" "claude" ""
 registry_upsert "test-session" "del-sid-2" "del-tab" "/tmp/d" "dev" "claude" ""
 registry_upsert "test-session" "keep-sid" "keep-tab" "/tmp/d" "dev" "claude" ""
@@ -1647,9 +1624,9 @@ ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-ou
 [[ -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-1.json" && -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-2.json" ]] \
   && pass "record-output alone keeps registry entries" || fail "record-output removed registry prematurely"
 
-# dd確定（task-control.sh）でタブの全レジストリエントリが除去される
+# dd確定（共通の削除経路）でタブの全レジストリエントリが除去される
 # （--resume再開でsidが変わり同一タブに複数エントリが残るケースも一掃）
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "del-tab" >/dev/null 2>&1
+ZELLIJ_SESSION_NAME=test-session bash "$TC22" "del-tab" >/dev/null 2>&1
 [[ ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-1.json" && ! -f "$CONDUCTOR_HOME/tasks/test-session/del-sid-2.json" ]] \
   && pass "dd-commit removes all registry entries for the tab" || fail "registry entries remain after dd"
 [[ -f "$CONDUCTOR_HOME/tasks/test-session/keep-sid.json" ]] \
@@ -1658,7 +1635,7 @@ printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "del-tab" >/dev/null
 # pendingファイルが無いタブのddでもレジストリは除去される
 registry_upsert "test-session" "orphan-sid" "orphan-tab" "/tmp/d" "" "" ""
 rm -f "$PENDING_DIR"/*.json
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "orphan-tab" >/dev/null 2>&1
+ZELLIJ_SESSION_NAME=test-session bash "$TC22" "orphan-tab" >/dev/null 2>&1
 [[ ! -f "$CONDUCTOR_HOME/tasks/test-session/orphan-sid.json" ]] \
   && pass "registry removed even without a pending file" || fail "orphan registry entry remains"
 
@@ -2752,101 +2729,24 @@ SN_B=$(zsh -c "source '$INIT_FILE' && _conductor_session_name '$LONG_NAME' '/pat
   || fail "hash-source collision: '$SN_A' vs '$SN_B'"
 
 # ============================================================
-section "32. task-create-loop.sh default name generation"
+section "32. New Task naming rules (moved to Go)"
 # ============================================================
 
-CREATE_LOOP="$HOME/.claude-conductor/scripts/task-create-loop.sh"
-
-# sourceしてもメインループが起動せず関数のみ提供されること
-if source "$CREATE_LOOP" 2>/dev/null; then
-    pass "task-create-loop.sh sourced without launching main loop"
+# 既定名の生成 / 空入力での確定 / タブ名の一意化は
+# internal/pane/newtask のテストが検証する（DefaultName, ResolveName,
+# UniqueTabName）。bash 版は関数を source して確かめていたが、
+# 対応するシェル関数は無くなった。
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    NT_OUT=$(COLUMNS=44 ZELLIJ_SESSION_NAME=nt-sess \
+        "$HOME/.claude-conductor/bin/conductor" new-task --once 2>/dev/null)
+    echo "$NT_OUT" | grep -q "New Task" && pass "conductor new-task renders" || fail "new-task did not render: $NT_OUT"
+    echo "$NT_OUT" | grep -q "\[n\]" && pass "new-task shows the create hint" || fail "create hint missing"
+    "$HOME/.claude-conductor/bin/conductor" new-task --bogus >/dev/null 2>&1 \
+      && fail "conductor new-task accepted an unknown option" \
+      || pass "conductor new-task rejects an unknown option"
 else
-    fail "task-create-loop.sh failed to source"
+    skip "real conductor binary unavailable; conductor new-task tests"
 fi
-
-# generate_default_name は {dirname}-{type} を返す
-GEN_NAME=$(generate_default_name "/home/user/myapp" "dev")
-[[ "$GEN_NAME" == "myapp-dev" ]] && pass "generate_default_name returns dirname-type" || fail "generate_default_name wrong: $GEN_NAME"
-
-# 末尾スラッシュ付きディレクトリでも basename が取れる
-GEN_NAME2=$(generate_default_name "/home/user/api-server/" "k8s")
-[[ "$GEN_NAME2" == "api-server-k8s" ]] && pass "generate_default_name handles trailing slash" || fail "generate_default_name trailing slash wrong: $GEN_NAME2"
-
-# ============================================================
-section "33. task-create-loop.sh skip name input mode"
-# ============================================================
-
-SKIP_CONFIG="$HOME/.claude-conductor/config.json"
-
-# デフォルト（config.default.json）では skip_task_name_input は false
-DEFAULT_SKIP=$(jq -r '.skip_task_name_input // false' "$HOME/.claude-conductor/config.default.json")
-[[ "$DEFAULT_SKIP" == "false" ]] && pass "config.default.json skip_task_name_input defaults to false" || fail "default skip flag wrong: $DEFAULT_SKIP"
-
-# skip_task_name_input=true のとき skip_name_input_enabled が真
-BACKUP_CONFIG=$(cat "$SKIP_CONFIG")
-jq '.skip_task_name_input = true' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
-if skip_name_input_enabled; then pass "skip_name_input_enabled true when flag on"; else fail "skip_name_input_enabled should be true"; fi
-
-# skip_task_name_input=false のとき skip_name_input_enabled が偽
-jq '.skip_task_name_input = false' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
-if skip_name_input_enabled; then fail "skip_name_input_enabled should be false"; else pass "skip_name_input_enabled false when flag off"; fi
-
-# フラグ未定義でもデフォルトで偽
-jq 'del(.skip_task_name_input)' "$SKIP_CONFIG" > "$SKIP_CONFIG.tmp" && mv "$SKIP_CONFIG.tmp" "$SKIP_CONFIG"
-if skip_name_input_enabled; then fail "skip_name_input_enabled should default to false"; else pass "skip_name_input_enabled defaults to false when unset"; fi
-
-# configを元に戻す
-echo "$BACKUP_CONFIG" > "$SKIP_CONFIG"
-
-# ============================================================
-section "34. task-create-loop.sh name input resolution"
-# ============================================================
-
-# 実コードの resolve_name を直接検証する（テスト用の再実装ではなく本体関数を呼ぶ）
-
-# 空入力（Enterのみ）はデフォルト候補に解決される
-RESOLVED_EMPTY=$(resolve_name "myapp-dev" "")
-[[ "$RESOLVED_EMPTY" == "myapp-dev" ]] && pass "empty input resolves to default name" || fail "empty input wrong: $RESOLVED_EMPTY"
-
-# 空入力がタイムスタンプ名（type-HHMMSS）にならない（リグレッション防止）
-[[ ! "$RESOLVED_EMPTY" =~ ^dev-[0-9]{6}$ ]] && pass "empty input does not fall back to timestamp name" || fail "empty input regressed to timestamp: $RESOLVED_EMPTY"
-
-# 手入力は入力値がそのまま採用される
-RESOLVED_TYPED=$(resolve_name "myapp-dev" "custom-name")
-[[ "$RESOLVED_TYPED" == "custom-name" ]] && pass "typed input overrides default" || fail "typed input wrong: $RESOLVED_TYPED"
-
-# ============================================================
-section "35. task-create-loop.sh unique tab name"
-# ============================================================
-
-# 既存タブ名を返すよう zellij をシャドウしてテストする
-zellij() {
-    if [[ "$1" == "action" && "$2" == "query-tab-names" ]]; then
-        printf '%s\n' "Main" "myapp-dev" "myapp-dev-2"
-        return 0
-    fi
-    return 0
-}
-
-# 重複しない名前はそのまま返る
-UNIQ_NEW=$(ensure_unique_tab_name "other-dev")
-[[ "$UNIQ_NEW" == "other-dev" ]] && pass "non-colliding name returned as-is" || fail "non-colliding wrong: $UNIQ_NEW"
-
-# 既存名と重複する場合は空いている連番まで進む（-2 も埋まっているので -3）
-UNIQ_DUP=$(ensure_unique_tab_name "myapp-dev")
-[[ "$UNIQ_DUP" == "myapp-dev-3" ]] && pass "colliding name gets next free suffix" || fail "colliding wrong: $UNIQ_DUP"
-
-# 部分一致は重複扱いしない（完全一致のみ）
-UNIQ_PARTIAL=$(ensure_unique_tab_name "myapp")
-[[ "$UNIQ_PARTIAL" == "myapp" ]] && pass "partial match is not treated as collision" || fail "partial match wrong: $UNIQ_PARTIAL"
-
-unset -f zellij
-
-# query-tab-names が失敗する場合は元の名前をそのまま返す
-zellij() { return 1; }
-UNIQ_FAIL=$(ensure_unique_tab_name "myapp-dev")
-[[ "$UNIQ_FAIL" == "myapp-dev" ]] && pass "returns base name when query fails" || fail "query-fail wrong: $UNIQ_FAIL"
-unset -f zellij
 
 # ============================================================
 section "36. waiting-toggle.sh (toggles Waiting state)"
@@ -3026,7 +2926,7 @@ else
 fi
 
 # ============================================================
-section "39. task-control.sh (shows Waiting indicator)"
+section "39. conductor task-bar (shows Waiting indicator)"
 # ============================================================
 
 TC_DIR="$HOME/.claude-pending/tc-session"
@@ -3034,15 +2934,15 @@ mkdir -p "$TC_DIR"
 
 # Not waiting -> normal bar, no indicator
 echo '{"tab":"my-task","session":"tc-session","message":"needs permission","event":"Notification","time":"12:00:00"}' > "$TC_DIR/tc1.json"
-TC_OUT=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
-    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+TC_OUT=$(ZELLIJ_SESSION_NAME=tc-session COLUMNS=80 \
+    "$HOME/.claude-conductor/bin/conductor" task-bar "my-task" --once 2>/dev/null)
 echo "$TC_OUT" | grep -q "w: Waiting" && pass "normal bar offers Waiting" || fail "normal bar wrong: $TC_OUT"
 echo "$TC_OUT" | grep -q "● WAITING" && fail "indicator shown when not waiting" || pass "no indicator when not waiting"
 
 # Waiting -> indicator + Resume label
 jq '.event = "Waiting"' "$TC_DIR/tc1.json" > "$TC_DIR/tc1.tmp" && mv "$TC_DIR/tc1.tmp" "$TC_DIR/tc1.json"
-TC_OUT2=$(CONDUCTOR_TASKCTL_ONCE=1 ZELLIJ_SESSION_NAME=tc-session \
-    bash "$HOME/.claude-conductor/scripts/task-control.sh" "my-task" 2>/dev/null)
+TC_OUT2=$(ZELLIJ_SESSION_NAME=tc-session COLUMNS=80 \
+    "$HOME/.claude-conductor/bin/conductor" task-bar "my-task" --once 2>/dev/null)
 echo "$TC_OUT2" | grep -q "● WAITING" && pass "WAITING indicator shown when waiting" || fail "no indicator when waiting: $TC_OUT2"
 echo "$TC_OUT2" | grep -q "w: Resume" && pass "bar offers Resume when waiting" || fail "no Resume label: $TC_OUT2"
 
@@ -3293,31 +3193,30 @@ chmod +x "$MOCK_BIN/claude"
 rm -f "$UPLOAD_CONFIG" "$PENDING_DIR"/e2e*.json
 
 # ============================================================
-section "45. dd deletion integrates upload-log.sh"
+section "45. deletion integrates upload-log.sh"
 # ============================================================
 
-TC="$HOME/.claude-conductor/scripts/task-control.sh"
+# 削除は Dashboard の d+数字 も タスクタブの dd も同じ task-delete.sh を通る。
+# キー入力の受け取りは Go 側（internal/pane/dashboard, internal/pane/taskbar）
+# のテストが持ち、ここでは共通経路の側を確かめる。
 DL="$HOME/.claude-conductor/scripts/task-delete.sh"
 
-grep -q 'upload-log.sh' "$TC" && pass "task-control.sh calls upload-log.sh" || fail "task-control.sh missing upload call"
-grep -q 'Deletion cancelled' "$TC" && pass "task-control.sh cancels dd on upload failure" || fail "task-control.sh missing guard"
 grep -q 'upload-log.sh' "$DL" && pass "task-delete.sh calls upload-log.sh" || fail "task-delete.sh missing upload call"
 # アップロード失敗時は「何も消さずに非ゼロで戻る」ことがガード。文言ではなく
-# 構造で確かめる（表示は呼び出し側の Dashboard が受け持つ）。
+# 構造で確かめる（表示は呼び出し側のペインが受け持つ）。
 grep -q 'exit 1' "$DL" && pass "task-delete.sh aborts on upload failure" || fail "task-delete.sh missing guard"
 
-# Functional: with upload disabled (default), dd still deletes the tab (no regression)
+# Functional: with upload disabled (default), deletion still removes the tab
 cat > "$PENDING_DIR/tc-del.json" << 'EOF'
 { "tab":"tc-del","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
 EOF
 CALLS="$HOME/.claude-pending/zellij-calls.log"
 : > "$CALLS"
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del" >/dev/null 2>&1
-[[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "dd removes pending when upload disabled" || fail "pending not removed"
-grep -q 'close-tab' "$CALLS" && pass "dd closes tab when upload disabled" || fail "close-tab not called"
+ZELLIJ_SESSION_NAME=test-session bash "$DL" "tc-del" >/dev/null 2>&1
+[[ ! -f "$PENDING_DIR/tc-del.json" ]] && pass "deletion removes pending when upload disabled" || fail "pending not removed"
 
-# dd must close ITS OWN tab by id (not the active tab): a mid-upload focus change
-# must not let it close the wrong tab. Mock zellij returns list-tabs data here.
+# Deletion must close ITS OWN tab by id (not the active tab): a mid-upload focus
+# change must not let it close the wrong tab.
 cat > "$MOCK_BIN/zellij" << 'MOCK'
 #!/bin/bash
 echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
@@ -3330,8 +3229,8 @@ cat > "$PENDING_DIR/tc-del-id.json" << 'EOF'
 { "tab":"tc-del-id","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
 EOF
 : > "$CALLS"
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-del-id" >/dev/null 2>&1
-grep -q 'close-tab-by-id 7' "$CALLS" && pass "dd closes its own tab by id" || fail "close-tab-by-id not called with correct id: $(cat "$CALLS")"
+ZELLIJ_SESSION_NAME=test-session bash "$DL" "tc-del-id" >/dev/null 2>&1
+grep -q 'close-tab-by-id 7' "$CALLS" && pass "deletion closes its own tab by id" || fail "close-tab-by-id not called with correct id: $(cat "$CALLS")"
 
 # A tab name containing spaces must still resolve to the correct tab id.
 cat > "$MOCK_BIN/zellij" << 'MOCK'
@@ -3346,8 +3245,8 @@ cat > "$PENDING_DIR/my-space.json" << 'EOF'
 { "tab":"My Task dev","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
 EOF
 : > "$CALLS"
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "My Task dev" >/dev/null 2>&1
-grep -q 'close-tab-by-id 3' "$CALLS" && pass "dd resolves a spaced tab name to its id" || fail "spaced tab name not resolved: $(cat "$CALLS")"
+ZELLIJ_SESSION_NAME=test-session bash "$DL" "My Task dev" >/dev/null 2>&1
+grep -q 'close-tab-by-id 3' "$CALLS" && pass "deletion resolves a spaced tab name to its id" || fail "spaced tab name not resolved: $(cat "$CALLS")"
 
 # Restore the plain mock zellij for later sections
 cat > "$MOCK_BIN/zellij" << 'MOCK'
@@ -3355,25 +3254,6 @@ cat > "$MOCK_BIN/zellij" << 'MOCK'
 echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
 MOCK
 chmod +x "$MOCK_BIN/zellij"
-
-# On a real (non-empty) upload success, the confirmation is shown but the tab
-# is still deleted and closed afterwards.
-UPLOAD_REAL="$HOME/.claude-conductor/scripts/upload-log.sh"
-mv "$UPLOAD_REAL" "$UPLOAD_REAL.real"
-cat > "$UPLOAD_REAL" << 'STUB'
-#!/bin/bash
-echo "upload-log: アップロードしました -> https://example/log.md"
-exit 0
-STUB
-chmod +x "$UPLOAD_REAL"
-cat > "$PENDING_DIR/tc-ok.json" << 'EOF'
-{ "tab":"tc-ok","session":"test-session","message":"done","event":"Stop","time":"12:00:00" }
-EOF
-: > "$CALLS"
-printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC" "tc-ok" >/dev/null 2>&1
-[[ ! -f "$PENDING_DIR/tc-ok.json" ]] && pass "dd deletes pending after a confirmed upload" || fail "pending not removed after upload"
-grep -q 'close-tab' "$CALLS" && pass "dd closes tab after a confirmed upload" || fail "tab not closed after upload"
-mv "$UPLOAD_REAL.real" "$UPLOAD_REAL"
 
 # ============================================================
 section "46. upload-log.sh push_log (bootstrap + idempotent)"
