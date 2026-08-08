@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+
+	"github.com/k-kudo-hub/claude-conductor/internal/pane/waiting"
 )
 
 // Version はビルド時に -ldflags で埋める。埋めずにビルドした場合は dev。
@@ -26,6 +28,10 @@ type subcommand struct {
 
 // subcommands は登録済みのサブコマンド。ペインを移行するたびにここへ追加する。
 var subcommands = map[string]subcommand{
+	"waiting": {
+		summary: "render the Waiting pane",
+		run:     waiting.Run,
+	},
 	"version": {
 		summary: "print the conductor version",
 		run: func(_ []string, stdout, _ io.Writer) int {

@@ -249,3 +249,61 @@ func TestFitReportsEveryDroppedLine(t *testing.T) {
 		}
 	}
 }
+
+// タブ名を左、時刻を右に置く行の組み立て。幅は常にちょうど width になる。
+func TestSpaceBetweenHasExactWidth(t *testing.T) {
+	cases := []struct {
+		name  string
+		left  string
+		right string
+		width int
+	}{
+		{"fits", "api-feature", "18:05:31", 40},
+		{"exact fit", "abc", "de", 5},
+		{"left too long", strings.Repeat("x", 100), "18:05:31", 30},
+		{"right alone too long", "tab", strings.Repeat("y", 100), 20},
+		{"japanese left", "開発タスク", "18:05:31", 30},
+		{"japanese cut mid-char", "開発タスクの続き", "18:05:31", 21},
+		{"empty left", "", "18:05:31", 20},
+		{"empty right", "api-feature", "", 20},
+		{"both empty", "", "", 20},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lipgloss.Width(SpaceBetween(tc.left, tc.right, tc.width)); got != tc.width {
+				t.Errorf("SpaceBetween(%q, %q, %d) width = %d, want %d",
+					tc.left, tc.right, tc.width, got, tc.width)
+			}
+		})
+	}
+}
+
+func TestSpaceBetweenPutsRightAtTheEnd(t *testing.T) {
+	got := SpaceBetween("tab", "18:05", 20)
+
+	if !strings.HasPrefix(got, "tab") {
+		t.Errorf("SpaceBetween = %q, want it to start with the left text", got)
+	}
+	if !strings.HasSuffix(got, "18:05") {
+		t.Errorf("SpaceBetween = %q, want it to end with the right text", got)
+	}
+}
+
+// 右の情報（時刻）は残し、左（タブ名）を削る。時刻が消えると
+// いつからの待ちか分からなくなる。
+func TestSpaceBetweenTruncatesLeftNotRight(t *testing.T) {
+	got := SpaceBetween(strings.Repeat("x", 100), "18:05", 20)
+
+	if !strings.HasSuffix(got, "18:05") {
+		t.Errorf("SpaceBetween = %q, want the right text preserved", got)
+	}
+}
+
+func TestSpaceBetweenWithNonPositiveWidthIsEmpty(t *testing.T) {
+	for _, w := range []int{0, -1} {
+		if got := SpaceBetween("a", "b", w); got != "" {
+			t.Errorf("SpaceBetween(width=%d) = %q, want empty", w, got)
+		}
+	}
+}

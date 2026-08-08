@@ -73,15 +73,24 @@ chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
 
 # install.sh はこのスイートの中で何度も走る。そのたびに conductor を
-# go build するとテストが極端に遅くなり、Go の無い環境では install 自体が
-# 失敗してしまう。既定ではダミーを file:// から配らせ、ダウンロード経路を
-# ネットワーク非依存で通す。実バイナリのビルドと実行は専用セクションで
-# Go がある場合にだけ検証する。
+# go build すると極端に遅くなるので、1 度だけビルドしたものを file:// から
+# 配り、以降の install はコピーで済ませる。ダウンロード経路もこれで
+# ネットワーク非依存のまま通る。
+# Go が無い環境では最低限のダミーを配り、実バイナリを要するテストは
+# スキップする。
 STUB_BINARY="$SANDBOX/stub-conductor"
-cat > "$STUB_BINARY" << 'STUB'
+REAL_CONDUCTOR=""
+if command -v go >/dev/null 2>&1 && [ -d "$REPO_DIR/cmd/conductor" ]; then
+    if (cd "$REPO_DIR" && go build -o "$STUB_BINARY" ./cmd/conductor) >/dev/null 2>&1; then
+        REAL_CONDUCTOR=1
+    fi
+fi
+if [ -z "$REAL_CONDUCTOR" ]; then
+    cat > "$STUB_BINARY" << 'STUB'
 #!/bin/bash
 echo "stub-conductor $*"
 STUB
+fi
 chmod +x "$STUB_BINARY"
 export CONDUCTOR_BINARY_URL="file://$STUB_BINARY"
 
@@ -122,12 +131,16 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/registry-lib.sh" ]] && pass "registry-lib.sh installed" || fail "registry-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/restore-session.sh" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
-[[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/binary-lib.sh" ]] && pass "binary-lib.sh installed" || fail "binary-lib.sh missing"
 [[ -x "$HOME/.claude-conductor/bin/conductor" ]] && pass "conductor binary installed and executable" || fail "conductor binary missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 grep -q 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl defines Waiting pane" || fail "multi.kdl missing Waiting pane"
-grep -q 'waiting-loop.sh' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl launches waiting-loop.sh" || fail "multi.kdl missing waiting-loop.sh"
+grep -q 'conductor waiting' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl launches conductor waiting" || fail "multi.kdl missing conductor waiting"
+# conductor が枠を描くペインは Zellij 側の枠を外していること（枠の二重化防止）
+grep -A3 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" | grep -q 'borderless' \
+  || grep -B2 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" | grep -q 'borderless' \
+  && pass "Waiting pane is borderless" || fail "Waiting pane still has a Zellij frame"
+
 MULTI_KDL="$HOME/.claude-conductor/layouts/multi.kdl"
 OPEN_BRACES=$(tr -cd '{' < "$MULTI_KDL" | wc -c | tr -d ' ')
 CLOSE_BRACES=$(tr -cd '}' < "$MULTI_KDL" | wc -c | tr -d ' ')
@@ -2959,27 +2972,41 @@ grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
 rm -rf "$SD_DIR"
 
 # ============================================================
-section "38. waiting-loop.sh (shows only Waiting tasks)"
+section "38. conductor waiting (shows only Waiting tasks)"
 # ============================================================
+
+# 描画そのものは Go のユニットテスト（internal/pane/waiting）が幅や
+# 折り返しまで含めて検証する。ここでは実バイナリが pending ファイルを
+# 正しく読み分けることを確認する。
+CONDUCTOR_BIN="$HOME/.claude-conductor/bin/conductor"
 
 WL_DIR="$HOME/.claude-pending/wl-session"
 mkdir -p "$WL_DIR"
 echo '{"tab":"active-task","session":"wl-session","message":"needs permission","event":"Notification","time":"11:00:00"}' > "$WL_DIR/w1.json"
 echo '{"tab":"review-task","session":"wl-session","message":"waiting for pr review","event":"Waiting","time":"11:01:00"}' > "$WL_DIR/w2.json"
 
-WL_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-session \
-    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
+if [[ -n "$REAL_CONDUCTOR" && -x "$CONDUCTOR_BIN" ]]; then
+    WL_OUT=$(ZELLIJ_SESSION_NAME=wl-session COLUMNS=60 \
+        "$CONDUCTOR_BIN" waiting --once 2>/dev/null)
 
-echo "$WL_OUT" | grep -q "review-task" && pass "Waiting task shown in waiting pane" || fail "Waiting task not shown"
-echo "$WL_OUT" | grep -q "active-task" && fail "Non-Waiting task incorrectly shown in waiting pane" || pass "Non-Waiting task excluded from waiting pane"
-echo "$WL_OUT" | grep -q "Waiting: 1" && pass "waiting count correct" || fail "waiting count wrong: $(echo "$WL_OUT" | grep Waiting)"
+    echo "$WL_OUT" | grep -q "review-task" && pass "Waiting task shown in waiting pane" || fail "Waiting task not shown"
+    echo "$WL_OUT" | grep -q "active-task" && fail "Non-Waiting task incorrectly shown in waiting pane" || pass "Non-Waiting task excluded from waiting pane"
+    echo "$WL_OUT" | grep -q "waiting for pr review" && pass "waiting message shown" || fail "waiting message not shown"
+    echo "$WL_OUT" | grep -q "11:01:00" && pass "waiting time shown" || fail "waiting time not shown"
+    echo "$WL_OUT" | grep -q "1 waiting" && pass "waiting count correct" || fail "waiting count wrong: $WL_OUT"
 
-# Empty case
-WL_EMPTY_DIR="$HOME/.claude-pending/wl-empty-session"
-mkdir -p "$WL_EMPTY_DIR"
-WL_EMPTY_OUT=$(CONDUCTOR_WAITING_ONCE=1 ZELLIJ_SESSION_NAME=wl-empty-session \
-    bash "$HOME/.claude-conductor/scripts/waiting-loop.sh" 2>/dev/null)
-echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
+    # Empty case
+    WL_EMPTY_OUT=$(ZELLIJ_SESSION_NAME=wl-empty-session COLUMNS=60 \
+        "$CONDUCTOR_BIN" waiting --once 2>/dev/null)
+    echo "$WL_EMPTY_OUT" | grep -q "No waiting tasks" && pass "shows message when no waiting tasks" || fail "no empty message"
+
+    # Unknown option must fail rather than render something unexpected.
+    "$CONDUCTOR_BIN" waiting --bogus >/dev/null 2>&1 \
+      && fail "conductor waiting accepted an unknown option" \
+      || pass "conductor waiting rejects an unknown option"
+else
+    skip "real conductor binary unavailable; conductor waiting output tests"
+fi
 
 # ============================================================
 section "39. task-control.sh (shows Waiting indicator)"

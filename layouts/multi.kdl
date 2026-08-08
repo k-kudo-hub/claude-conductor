@@ -16,10 +16,12 @@ layout {
                         command "bash"
                         args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/dashboard-loop.sh"
                     }
-                    pane {
+                    // conductor が枠とタイトルを描くため、Zellij 側の枠は外す。
+                    // 残すと枠が二重になる。
+                    pane borderless=true {
                         name "Waiting"
                         command "bash"
-                        args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/waiting-loop.sh"
+                        args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor waiting"
                     }
                 }
                 pane {
