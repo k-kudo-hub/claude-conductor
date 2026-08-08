@@ -575,6 +575,52 @@ jq -e '(.agents.codex.patterns.blocked | length) >= 1' "$HOME/.claude-conductor/
   && pass "user agent command preserved by migration" || fail "user command overwritten"
 [[ "$(jq -r '.agents.claude.detection' "$HOME/.claude-conductor/config.json")" == "screen" ]] \
   && pass "user-set detection not overwritten by migration" || fail "user detection overwritten"
+
+# patterns はキー単位で補完する。後から追加された neutral は、blocked/working を
+# カスタムしている既存configにも届かないと検出ルールの更新が永久に届かない
+jq '.agents.codex.patterns = {"blocked": ["^ *MY OWN APPROVAL"], "working": ["my-spinner"]}' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+jq -e '.agents.codex.patterns | has("neutral")' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "new pattern key filled into customized patterns" || fail "neutral key not migrated"
+[[ "$(jq -r '.agents.codex.patterns.blocked[0]' "$HOME/.claude-conductor/config.json")" == "^ *MY OWN APPROVAL" ]] \
+  && pass "user blocked patterns preserved by key merge" || fail "user blocked patterns overwritten"
+[[ "$(jq -r '.agents.codex.patterns.working[0]' "$HOME/.claude-conductor/config.json")" == "my-spinner" ]] \
+  && pass "user working patterns preserved by key merge" || fail "user working patterns overwritten"
+
+# patterns を空オブジェクトにして検出を止めているユーザーの意図は壊さない
+# （キー単位マージで全パターンが復活すると、検出が黙って再有効化される）
+jq '.agents.codex.patterns = {}' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null >/dev/null
+jq -e '(.agents.codex.patterns | length) == 0' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "emptied patterns stay empty" || fail "emptied patterns refilled from defaults"
+
+# patterns がオブジェクト以外でもjqを落とさない（型が違うものを足そうとすると
+# jqはエラーで終了し、マージ全体が無言でスキップされていた）
+jq '.agents.codex.patterns = []' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null >/dev/null
+jq -e '(.agents.codex.patterns | type) == "array"' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "non-object patterns survive the merge" || fail "patterns of unexpected type mangled"
+jq -e '.agents.codex.detection == "screen"' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "merge still runs for other keys" || fail "merge aborted by non-object patterns"
+
+# config.json自体が壊れている場合はjqが失敗する。無言でスキップせず警告を出し、
+# 既存のファイルには手を触れない
+cp "$HOME/.claude-conductor/config.json" "$SANDBOX/config.json.bak"
+printf '{ "agents": ' > "$HOME/.claude-conductor/config.json"
+INSTALL_OUT=$(echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null)
+echo "$INSTALL_OUT" | grep -q "config.json のマージをスキップ" \
+  && pass "unmergeable config.json warns" || fail "merge failure was silent"
+[[ "$(cat "$HOME/.claude-conductor/config.json")" == '{ "agents": ' ]] \
+  && pass "broken config.json left intact" || fail "broken config.json was rewritten"
+[[ ! -f "$HOME/.claude-conductor/config.json.tmp" ]] \
+  && pass "failed merge leaves no tmp file" || fail "config.json.tmp left behind"
+cp "$SANDBOX/config.json.bak" "$HOME/.claude-conductor/config.json"
 CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/config.json")
 [[ "$CUSTOM_TYPE" == "Custom task" ]] && pass "custom task type survives migration" || fail "custom type lost in migration"
 
@@ -870,6 +916,13 @@ echo "$AP" | grep -q ' to interrupt' \
 AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "claude" "blocked" )
 [[ -z "$AP" ]] && pass "agent_patterns empty for pattern-less agent" || fail "agent_patterns(claude) = '$AP'"
 
+# neutral（中立画面）のキーは同梱configに存在する。中身は実画面を採取して
+# から足すので既定は空
+jq -e '.agents.codex.patterns | has("neutral")' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config ships codex neutral key" || fail "agents.codex.patterns.neutral missing"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "neutral" )
+[[ -z "$AP" ]] && pass "codex neutral patterns empty by default" || fail "agent_patterns(codex, neutral) = '$AP'"
+
 # ============================================================
 section "17b5. screen-detect-lib.sh (dump classification)"
 # ============================================================
@@ -1012,6 +1065,34 @@ CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/transcript-echo
 CLS=$( source "$SDL" && screen_classify "claude" "$(cat "$SDL_FIX/blocked-command.txt")" )
 [[ "$CLS" == "idle" ]] && pass "pattern-less agent always idle" || fail "classify(claude) = '$CLS'"
 
+# neutral: 全画面ビューアやピッカーなど、エージェントの進行状態が読み取れない
+# 画面。スピナーが隠れるだけで誤done、承認文言を含むログの表示で誤blockedに
+# なるため、状態を更新せず前回状態を維持する（herdr の skip_state_update 相当）
+cat > "$SDL_FIX/neutral-viewer.txt" << 'EOF'
+  diff --git a/scripts/screen-detect-lib.sh b/scripts/screen-detect-lib.sh
+
+  + Would you like to run the following command?
+
+  ↑↓ scroll · esc to close
+EOF
+jq '.agents.codex.patterns.neutral = ["esc to close *$", "^ *↑↓ scroll"]' \
+  "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/neutral-viewer.txt")" )
+[[ "$CLS" == "neutral" ]] && pass "viewer screen classified neutral" || fail "classify(neutral) = '$CLS'"
+
+# neutral は blocked より先に評価する（ビューアが承認文言を映しているだけの
+# 画面を承認待ちと誤認しない）
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-command.txt")
+  esc to close" )
+[[ "$CLS" == "neutral" ]] && pass "neutral wins over blocked" || fail "classify(neutral+blocked) = '$CLS'"
+
+# neutral 未定義のagentは従来どおり分類される（既存挙動の非回帰）
+jq 'del(.agents.codex.patterns.neutral)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" \
+  && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/neutral-viewer.txt")" )
+[[ "$CLS" == "idle" ]] && pass "no neutral patterns means no neutral state" || fail "classify without neutral = '$CLS'"
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
 # ============================================================
 section "17b6. screen-detect-lib.sh (pending lifecycle)"
 # ============================================================
@@ -1020,6 +1101,16 @@ SDL_SESS="sdl-sess"
 SDL_DIR="$HOME/.claude-pending/$SDL_SESS"
 rm -rf "$SDL_DIR"
 mkdir -p "$SDL_DIR"
+
+# idle確定は実時間が1秒以上経ってからなので、テストで実際に待たずに済むよう
+# 保留開始時刻を過去へ倒す。state fileが idle_pending でなければ何もしない。
+sdl_age_idle_pending() {
+    local f="$SDL_DIR/.screen-state/$SDL_SLUG" s
+    [[ -f "$f" ]] || return 0
+    s=$(cat "$f")
+    [[ "${s%% *}" == "idle_pending" ]] || return 0
+    echo "idle_pending $(( $(date +%s) - 5 ))" > "$f"
+}
 
 # blocked は screen-<slug>.json に Notification を書く
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "Would you like to run the following command?" )
@@ -1041,9 +1132,61 @@ echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop"
 [[ ! -f "$SDL_F" ]] && pass "working clears screen pending" || fail "screen pending survived working"
 [[ ! -f "$SDL_DIR/thread-1.json" ]] && pass "working clears notify Stop pending" || fail "notify pending survived working"
 
-# working直後の idle は Stop を書く（turn完了のフォールバック）
+# working直後の idle 1回では Stop を書かない。スピナー行はツール実行の
+# 切れ目や再描画の1フレームで消えるため、そこを拾うと偽doneになる
+# （herdr の PendingIdleConfirmation 相当）
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
-[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "working->idle writes Stop" || fail "no Stop after working->idle"
+[[ ! -f "$SDL_F" ]] && pass "single idle after working writes no Stop" || fail "Stop written on first idle"
+SDL_ST=$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)
+[[ "${SDL_ST%% *}" == "idle_pending" ]] \
+  && pass "first idle after working parks as idle_pending" || fail "state = '$SDL_ST'"
+[[ "${SDL_ST#* }" =~ ^[0-9]+$ ]] \
+  && pass "idle_pending records the observation time" || fail "no timestamp in state = '$SDL_ST'"
+
+# 実時間が経たないうちの再観測では確定しない。ダッシュボードのポーリングは
+# キー入力で早回りしうる（矢印キー1回でreadが3回返る）ため、観測回数だけを
+# 条件にすると同じ1フレームを連続で見て偽doneが出る
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "rapid re-observation does not confirm idle" || fail "Stop written without elapsed time"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle_pending ${SDL_ST#* }" ]] \
+  && pass "rapid re-observation keeps the first timestamp" \
+  || fail "timestamp reset = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+
+# 実時間が経過してからの idle で Stop を確定する
+sdl_age_idle_pending
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "idle confirms Stop after elapsed time" || fail "no Stop after elapsed idle"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle" ]] \
+  && pass "confirmed idle clears idle_pending" \
+  || fail "state after confirm = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+
+# 確定後は idle が続いても Stop を書き直さない（検出時刻を維持）
+jq '.time = "00:00:00"' "$SDL_F" > "$SDL_F.tmp" && mv "$SDL_F.tmp" "$SDL_F"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.time' "$SDL_F" 2>/dev/null)" == "00:00:00" ]] && pass "confirmed idle keeps first Stop entry" || fail "Stop entry rewritten"
+rm -f "$SDL_F"
+
+# idle保留中に working へ戻ったらpendingは消すが、Mainへは復帰しない。
+# idle_pending は「その idle は信用しない」という内部状態でユーザーには何も
+# 見えていないため、スピナーのちらつきでタブから引き剥がしてはいけない
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"stale","event":"Notification","time":"10:01:00","agent":"codex"}' > "$SDL_DIR/thread-p.json"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ ! -f "$SDL_DIR/thread-p.json" ]] && pass "idle_pending->working clears pending" || fail "pending survived idle_pending->working"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "spinner flicker yanked focus to Main" || pass "idle_pending->working keeps focus in the tab"
+
+# idle保留中に承認ダイアログが出たら即座にNotificationを出す
+# （blocked に確定遅延はかけない: 人間を待たせている状態なので即時性が要る）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Notification" ]] \
+  && pass "idle_pending->blocked notifies immediately" || fail "blocked delayed from idle_pending"
 rm -f "$SDL_F"
 
 # 起動直後など、workingを経ていない idle は何も書かない（新規タブの誤done防止）
@@ -1052,8 +1195,11 @@ rm -rf "$SDL_DIR/.screen-state"
 [[ ! -f "$SDL_F" ]] && pass "fresh idle writes nothing" || fail "fresh idle wrote pending"
 
 # notify由来のStopが既にあるタブでは idle でも重複Stopを書かない
+# （確定に2回必要になったので、Stop判定まで到達させるため2回観測する）
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:05:00","agent":"codex"}' > "$SDL_DIR/thread-2.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+sdl_age_idle_pending
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 [[ ! -f "$SDL_F" ]] && pass "idle defers to existing notify Stop" || fail "duplicate Stop written"
 [[ -f "$SDL_DIR/thread-2.json" ]] && pass "notify Stop untouched by idle" || fail "notify Stop removed"
@@ -1073,7 +1219,27 @@ echo '{"tab":"cx-task","session":"sdl-sess","message":"parked","event":"Waiting"
 [[ ! -f "$SDL_F" ]] && pass "Waiting tab blocks new Notification" || fail "Notification written over Waiting"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 [[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives working" || fail "Waiting entry deleted"
+
+# Waiting中も内部の状態遷移だけは進める（復帰後に整合させるため）が、
+# 確定した idle でも Stop は書かない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+sdl_age_idle_pending
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "Waiting tab gets no Stop from confirmed idle" || fail "Stop written over Waiting"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle" ]] \
+  && pass "Waiting tab keeps tracking state" \
+  || fail "state under Waiting = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+[[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives idle confirmation" || fail "Waiting entry deleted by idle"
 rm -f "$SDL_DIR/park.json"
+
+# blocked から降りた idle は working を経ていないので、何回観測しても done に
+# ならない（承認をタブ内で答えただけでターンが終わったわけではない）
+rm -rf "$SDL_DIR/.screen-state"
+rm -f "$SDL_DIR"/*.json
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "blocked->idle never becomes done" || fail "Stop written without a working turn"
 
 # blocked→working遷移はMainへ自動復帰する（Claudeの権限承認後の
 # PostToolUse復帰に相当。タブ内で回答した合図なので引き戻す）
@@ -1103,6 +1269,29 @@ rm -rf "$SDL_DIR/.screen-state"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
   && fail "first observation triggered auto-return" || pass "no auto-return on first observation"
+
+# neutral は state file も pending も一切変えない（前回状態を維持する）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"keep me","event":"Notification","time":"11:00:00","agent":"codex"}' > "$SDL_DIR/thread-n.json"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "neutral" "" )
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "working" ]] \
+  && pass "neutral keeps previous state" \
+  || fail "state after neutral = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+[[ -f "$SDL_DIR/thread-n.json" ]] && pass "neutral keeps existing pending" || fail "pending cleared by neutral"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "neutral triggered auto-return" || pass "neutral does not auto-return"
+
+# neutral を挟んでも working -> idle の確定手順は途切れない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+SDL_ST=$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "neutral" "" )
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "$SDL_ST" ]] \
+  && pass "neutral preserves idle_pending with its timestamp" \
+  || fail "idle_pending lost = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+rm -f "$SDL_DIR"/*.json
+rm -rf "$SDL_DIR/.screen-state"
 
 # タブ名はファイル名向けにサニタイズされる
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "#28 fix" "codex" "blocked" "approval" )
@@ -1138,6 +1327,8 @@ rm -f "$SDL_F"
 # 二重done表示に収束する
 rm -rf "$SDL_DIR/.screen-state"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+sdl_age_idle_pending
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 [[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] || fail "precondition: screen Stop not written"
 echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:07:00","agent":"codex"}' > "$SDL_DIR/thread-4.json"

@@ -199,6 +199,7 @@ The default config defines both under `agents` in `~/.claude-conductor/config.js
     "codex":  {
       "command": "codex", "resume_args": "resume", "detection": "screen",
       "patterns": {
+        "neutral": [],
         "blocked": ["Would you like to run the following command\\?", "..."],
         "working": [" to interrupt"]
       }
@@ -228,9 +229,18 @@ is detected from the screen instead (`"detection": "screen"`): every dashboard
 poll snapshots the agent pane (`zellij action dump-screen`, no focus change)
 and matches its bottom lines against the agent's `patterns`:
 
+- A line matching `patterns.neutral` marks the screen as one the agent does not
+  own (a full-screen viewer, a picker). The tab's state and pending entries are
+  left exactly as they were — on such a screen the spinner is hidden (which
+  would read as a false done) and scrolled-back log lines may quote approval
+  prompts (which would read as a false approval). Empty by default. Anchor
+  these patterns to the viewer's own chrome (a footer line, a scroll hint) and
+  keep them tight: a pattern loose enough to match a normal screen removes that
+  tab from the dashboard for as long as it matches, silently.
 - A line matching `patterns.blocked` (a known approval prompt) surfaces the
   tab as `Notification` — approval waits show up on the dashboard just like
-  Claude Code permission prompts.
+  Claude Code permission prompts. Approvals are never delayed: they appear on
+  the first poll that sees them.
 - A line matching `patterns.working` (default: the codex `esc to interrupt`
   spinner) clears the tab's pending entries — the turn is running again. When
   this is a transition from blocked/idle (you approved or submitted a prompt
@@ -240,6 +250,17 @@ and matches its bottom lines against the agent's `patterns`:
   a `Stop` (done) entry, unless the `notify` bridge already recorded one.
   Unknown dialogs deliberately fall back to idle, never to blocked, so a new
   codex UI screen cannot spam the dashboard with false approvals.
+- **done needs idle to hold.** The codex spinner disappears for a frame between
+  tool calls, so a single idle observation is not a turn end. The first one
+  parks the tab with a timestamp; a later poll confirms it once at least a
+  second of real time has passed, or cancels it if the turn resumed. The clock
+  is real time rather than a count of polls, because pressing keys on the
+  dashboard can make polls fire back to back. Without this, a poll landing on
+  that frame reports the task as done while it is still running.
+- Flicker never moves you. A tab parked this way that resumes does **not** pull
+  focus back to Main — nothing was shown to you, so there is nothing to return
+  from. Auto-return still happens after an answered approval and after a prompt
+  sent to a finished task.
 
 **Codex limitations** — codex has no prompt-submit hook, so compared to
 Claude Code tasks:
@@ -267,10 +288,12 @@ Codex (task tab)
   ├─ notify (agent-turn-complete) → codex-notify.sh → pending file (Stop)
   │  cleared when you jump to the tab from the dashboard
   └─ screen detection (dashboard poll) → dump-screen + pattern match
-       approval prompt → pending file (Notification)
+       viewer/picker  → nothing changes (neutral)
+       approval prompt → pending file (Notification), no delay
        spinner        → clears the tab's pending files; auto-return to Main
                         when the user just answered (blocked/idle → working)
-       turn end       → pending file (Stop) unless notify already wrote one
+       turn end       → pending file (Stop) after two consecutive idle polls,
+                        unless notify already wrote one
 
 Task tab control bar
   └─ w key → waiting-toggle.sh flips event between Waiting and Notification

@@ -5,13 +5,17 @@
 # screen_detect_tick, which snapshots each screen-agent pane via
 # `zellij action dump-screen` and matches the agent's configured patterns:
 #
-#   blocked  (known approval prompt)  -> Notification pending
+#   neutral  (viewer / picker screen) -> nothing changes at all
+#   blocked  (known approval prompt)  -> Notification pending, no delay
 #   working  (turn in progress)       -> the tab's pendings are cleared
-#   idle     (anything else)          -> Stop pending, only after working
+#   idle     (anything else)          -> Stop pending, but only once idle has
+#                                        held for a second (see idle_pending)
 #
 # Unknown dialogs deliberately fall back to idle (herdr's strictness): only
 # a known approval prompt may surface as blocked, so a new UI screen never
-# spams the dashboard with false approvals.
+# spams the dashboard with false approvals. A screen the agent does not own
+# is neutral rather than idle, because on it neither the spinner nor the
+# prompt box is visible and nothing can be concluded from what is shown.
 # Sourced by dashboard-loop.sh; defines functions only.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
@@ -24,12 +28,25 @@ CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SCREEN_TAIL_LINES=20
 
 # screen_classify <agent> <dump-screen text>
-# Prints "blocked<TAB><matched line>" / "working" / "idle". Blocked wins
-# over working because an approval dialog is what the user must act on.
+# Prints "neutral" / "blocked<TAB><matched line>" / "working" / "idle".
+# Neutral wins over everything: a full-screen viewer or picker hides the
+# agent's own UI, so nothing on it says anything about the turn. Blocked
+# wins over working because an approval dialog is what the user must act on.
 screen_classify() {
     local agent="$1" text="$2"
     local tail_buf pattern line
     tail_buf=$(printf '%s\n' "$text" | grep -v '^[[:space:]]*$' | tail -n "$SCREEN_TAIL_LINES")
+
+    # A screen the agent does not own: the spinner is hidden (would read as a
+    # false done) and scrolled-back log lines may quote approval prompts
+    # (would read as a false blocked). herdr's skip_state_update equivalent.
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if printf '%s\n' "$tail_buf" | grep -E -q -- "$pattern" 2>/dev/null; then
+            echo "neutral"
+            return 0
+        fi
+    done <<< "$(agent_patterns "$agent" "neutral")"
 
     while IFS= read -r pattern; do
         [[ -z "$pattern" ]] && continue
@@ -99,18 +116,53 @@ _screen_write_pending() {
 # screen-generated Stop so a turn never shows up twice.
 screen_update_pending() {
     local session="$1" tab="$2" agent="$3" state="$4" message="$5"
+
+    # neutral is "no observation": leave the last state and every pending file
+    # untouched so a viewer or picker cannot move the tab on the dashboard.
+    if [[ "$state" == "neutral" ]]; then
+        return 0
+    fi
+
     local pending_dir="$HOME/.claude-pending/$session"
     mkdir -p "$pending_dir"
 
-    local slug screen_file state_file prev f
+    local slug screen_file state_file prev_raw prev prev_at now effective f
+    local confirm_idle=0
     slug=$(_screen_tab_slug "$tab")
     screen_file="$pending_dir/screen-${slug}.json"
     state_file="$pending_dir/.screen-state/$slug"
     mkdir -p "$pending_dir/.screen-state"
     # || true: callers may run under set -e (test.sh) and a missing state
     # file on the first observation must not abort them.
-    prev=$(cat "$state_file" 2>/dev/null || true)
-    echo "$state" > "$state_file"
+    # The file holds one line: the state, plus an epoch for idle_pending.
+    prev_raw=$(cat "$state_file" 2>/dev/null || true)
+    prev="${prev_raw%% *}"
+    prev_at="${prev_raw#* }"
+    [[ "$prev_at" == "$prev_raw" ]] && prev_at=""
+
+    # working -> idle は1回の観測では確定させず idle_pending に置く。codex の
+    # スピナー行はツール実行の切れ目や再描画の1フレームで消えるため、その
+    # 瞬間を拾うと偽の done がダッシュボードに出る。確定は「次の観測」では
+    # なく「実時間が1秒以上経ってからの観測」を条件にする。ダッシュボードの
+    # ポーリングはキー入力で早回りしうるので、観測回数だけを条件にすると
+    # 同じ1フレームを連続で見て確定してしまう（herdr の
+    # PendingIdleConfirmation も実時間ベース: 100ms x 3回 / 700ms 上限）。
+    # blocked には遅延をかけない: 人間を待たせている状態は即時性が要る。
+    now=$(date +%s)
+    effective="$state"
+    if [[ "$state" == "idle" ]]; then
+        if [[ "$prev" == "working" ]]; then
+            effective="idle_pending $now"
+        elif [[ "$prev" == "idle_pending" ]]; then
+            if [[ "$prev_at" =~ ^[0-9]+$ ]] && [[ $((now - prev_at)) -lt 1 ]]; then
+                # 早回りした再観測。最初に idle を見た時刻を保ったまま待つ。
+                effective="idle_pending $prev_at"
+            else
+                confirm_idle=1
+            fi
+        fi
+    fi
+    echo "$effective" > "$state_file"
 
     # A Waiting tab is parked on an external response (waiting-toggle.sh):
     # neither surface it again nor clear it until the user un-parks it.
@@ -144,7 +196,12 @@ screen_update_pending() {
             # inside the tab (approved, or submitted a prompt): mirror the
             # claude PostToolUse / UserPromptSubmit auto-return to Main.
             # Not on the first observation (prev empty) so a dashboard
-            # restart mid-turn never yanks the focus.
+            # restart mid-turn never yanks the focus. idle_pending is
+            # deliberately excluded: it means "that idle frame is not to be
+            # trusted", nothing was shown to the user, and yanking focus on a
+            # spinner flicker would drag them out of a tab they are reading.
+            # An answered approval still comes through as blocked -> working,
+            # and a prompt sent after a finished turn as idle -> working.
             if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
                 zellij action go-to-tab-name Main 2>/dev/null || true
             fi
@@ -167,10 +224,12 @@ screen_update_pending() {
                     fi
                 done
             fi
-            # Stop only on a working->idle transition: a freshly created tab
-            # idles at the composer and must not appear as done. Skip when
-            # the tab already has a pending (usually the notify Stop).
-            if [[ "$prev" == "working" ]]; then
+            # Stop only once idle is confirmed (idle_pending held for at least
+            # a second): a freshly created tab idles at the composer and must
+            # not appear as done, and a single idle frame mid-turn is not a
+            # turn end. Skip when the tab already has a pending (usually the
+            # notify Stop).
+            if [[ "$confirm_idle" == "1" ]]; then
                 for f in "$pending_dir"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$tab" ]]; then

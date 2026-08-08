@@ -109,8 +109,26 @@ while true; do
     if [[ $count -eq 0 ]]; then
         sleep 2
     else
+        # ポーリング間隔は2秒。無関係なキーで read が即座に返っても再描画
+        # には進まず、残り時間を待ち直す。矢印キーは ESC [ A の3バイトを
+        # 送るため、そのまま回すと数十msの間に render が3回走り、スクリーン
+        # 検出の idle 確定（screen-detect-lib.sh）が一瞬で成立してしまう。
         key=""
-        read -t 2 -n 1 -s key || true
+        poll_deadline=$((SECONDS + 2))
+        while :; do
+            remaining=$((poll_deadline - SECONDS))
+            if [[ $remaining -le 0 ]]; then
+                key=""
+                break
+            fi
+            # read が非ゼロを返すのはタイムアウトかEOF。どちらもこのポーリング
+            # では入力が無かったのと同じなので、待ち直さずに抜ける（stdinが
+            # 端末でないときに残り時間ぶん空回りし続けるのを防ぐ）。
+            read -t "$remaining" -n 1 -s key || { key=""; break; }
+            [[ "$key" == "d" ]] && break
+            [[ "$key" =~ ^[1-9]$ ]] && break
+            key=""
+        done
 
         if [[ "$key" == "d" ]]; then
             echo -ne "\r  ${RED}${BOLD}Delete tab number...${NC}  "
