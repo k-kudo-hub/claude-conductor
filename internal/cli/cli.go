@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/k-kudo-hub/claude-conductor/internal/pane/news"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/waiting"
 )
 
@@ -28,6 +29,10 @@ type subcommand struct {
 
 // subcommands は登録済みのサブコマンド。ペインを移行するたびにここへ追加する。
 var subcommands = map[string]subcommand{
+	"news": {
+		summary: "render the AI Tech News pane",
+		run:     news.Run,
+	},
 	"waiting": {
 		summary: "render the Waiting pane",
 		run:     waiting.Run,
