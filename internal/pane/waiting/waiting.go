@@ -22,7 +22,10 @@ const Event = "Waiting"
 
 // Render は待ちタスクの一覧を枠付きで描く。返る文字列は全行の表示幅が
 // ちょうど width（下限は ui.MinBoxWidth）になる。
-func Render(th ui.Theme, entries []pending.Entry, width int) string {
+//
+// height が正のときは、その高さに収まるよう本文を削る。代替画面に描く
+// ため、はみ出した行は見えないまま失われるので、件数だけでも残す。
+func Render(th ui.Theme, entries []pending.Entry, width, height int) string {
 	w := max(width, ui.MinBoxWidth)
 	// 枠の内側で使える幅。ui.Box が左右に "│ " と " │" を足す。
 	inner := w - 4
@@ -50,7 +53,12 @@ func Render(th ui.Theme, entries []pending.Entry, width int) string {
 		}
 	}
 
-	body = append(body, "", muted.Render(countLabel(len(entries))))
+	// 件数は必ず残したいので、省略は件数行より前で行う。
+	count := muted.Render(countLabel(len(entries)))
+	if lines := ui.BodyLines(height); lines > 0 {
+		body = ui.Fit(body, lines-2)
+	}
+	body = append(body, "", count)
 
 	return ui.Box(th, Title, body, w)
 }

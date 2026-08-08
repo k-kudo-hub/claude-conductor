@@ -29,6 +29,7 @@ type Model struct {
 	dir     string
 	theme   ui.Theme
 	width   int
+	height  int
 	entries []pending.Entry
 }
 
@@ -58,17 +59,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 	case tickMsg:
 		m.entries = load(m.dir)
 		return m, tick()
+	case tea.KeyPressMsg:
+		// 表示専用のペインだが、終了だけは受け付ける。raw モードでは
+		// ^C が SIGINT にならないため、これが無いと Zellij の外で
+		// 起動したときにキーボードから抜けられない。
+		if ui.IsQuit(msg) {
+			return m, tea.Quit
+		}
 	}
-	// このペインは表示専用。キー入力は握りつぶし、Zellij 側の操作を妨げない。
 	return m, nil
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.entries, m.width))
+	v := tea.NewView(Render(m.theme, m.entries, m.width, m.height))
 	// ペインを専有して描くので代替画面を使う。スクロールバックは
 	// 常に最新だけを見せるこのペインでは不要。
 	v.AltScreen = true
@@ -94,7 +102,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// --once は test.sh から実バイナリの出力を確かめるための単発描画。
 	// TTY を持たない文脈で走るので Bubble Tea は起動しない。
 	if once {
-		fmt.Fprintln(stdout, Render(th, load(dir), envWidth()))
+		fmt.Fprintln(stdout, Render(th, load(dir), envWidth(), 0))
 		return 0
 	}
 

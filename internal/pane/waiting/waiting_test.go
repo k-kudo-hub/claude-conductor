@@ -73,7 +73,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := Render(theme(), tc.entries, tc.width)
+			out := Render(theme(), tc.entries, tc.width, 0)
 			want := max(tc.width, ui.MinBoxWidth)
 			for i, line := range strings.Split(out, "\n") {
 				if got := lipgloss.Width(line); got != want {
@@ -85,13 +85,13 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 }
 
 func TestRenderShowsTitle(t *testing.T) {
-	if out := Render(theme(), nil, 40); !strings.Contains(out, "Waiting") {
+	if out := Render(theme(), nil, 40, 0); !strings.Contains(out, "Waiting") {
 		t.Errorf("output does not contain the title:\n%s", out)
 	}
 }
 
 func TestRenderEmptyStateMessage(t *testing.T) {
-	out := Render(theme(), nil, 40)
+	out := Render(theme(), nil, 40, 0)
 	if !strings.Contains(out, "No waiting tasks") {
 		t.Errorf("output does not contain the empty-state message:\n%s", out)
 	}
@@ -101,7 +101,7 @@ func TestRenderShowsTabTimeAndMessage(t *testing.T) {
 	entries := []pending.Entry{
 		{Tab: "review-pr42", Message: "Waiting for external response", Time: "18:06:45"},
 	}
-	out := Render(theme(), entries, 60)
+	out := Render(theme(), entries, 60, 0)
 
 	for _, want := range []string{"review-pr42", "18:06:45", "Waiting for external response"} {
 		if !strings.Contains(out, want) {
@@ -118,7 +118,7 @@ func TestRenderShowsCount(t *testing.T) {
 		{Tab: "c", Message: "m", Time: "3"},
 	}
 
-	if out := Render(theme(), entries, 40); !strings.Contains(out, "3 waiting") {
+	if out := Render(theme(), entries, 40, 0); !strings.Contains(out, "3 waiting") {
 		t.Errorf("output does not contain the count:\n%s", out)
 	}
 }
@@ -126,7 +126,7 @@ func TestRenderShowsCount(t *testing.T) {
 func TestRenderCountIsSingularForOne(t *testing.T) {
 	entries := []pending.Entry{{Tab: "a", Message: "m", Time: "1"}}
 
-	if out := Render(theme(), entries, 40); !strings.Contains(out, "1 waiting") {
+	if out := Render(theme(), entries, 40, 0); !strings.Contains(out, "1 waiting") {
 		t.Errorf("output does not contain the count:\n%s", out)
 	}
 }
@@ -136,7 +136,7 @@ func TestRenderFlattensNewlinesInMessage(t *testing.T) {
 	entries := []pending.Entry{
 		{Tab: "t", Message: "first line\nsecond line\r\nthird", Time: "18:06:45"},
 	}
-	out := Render(theme(), entries, 60)
+	out := Render(theme(), entries, 60, 0)
 
 	if strings.Contains(out, "second line\n") && !strings.Contains(out, "first line second line") {
 		t.Errorf("newlines were not flattened:\n%s", out)
@@ -148,13 +148,59 @@ func TestRenderFlattensNewlinesInMessage(t *testing.T) {
 	}
 }
 
+// ペインの高さを超える件数でも、枠の中に収まること。代替画面に描くので
+// はみ出した行は見えないまま失われる。
+func TestRenderFitsWithinHeight(t *testing.T) {
+	entries := make([]pending.Entry, 20)
+	for i := range entries {
+		entries[i] = pending.Entry{Tab: "task", Message: "waiting", Time: "18:06:45"}
+	}
+
+	for _, height := range []int{6, 10, 14, 25} {
+		out := Render(theme(), entries, 44, height)
+		if got := len(strings.Split(out, "\n")); got > height {
+			t.Errorf("height %d: rendered %d lines\n%s", height, got, out)
+		}
+	}
+}
+
+// 省略しても件数だけは残す。何件待っているかが読めなくなると、
+// ペインを開いている意味が薄れる。
+func TestRenderKeepsCountWhenTrimmed(t *testing.T) {
+	entries := make([]pending.Entry, 20)
+	for i := range entries {
+		entries[i] = pending.Entry{Tab: "task", Message: "waiting", Time: "18:06:45"}
+	}
+
+	out := Render(theme(), entries, 44, 8)
+	if !strings.Contains(out, "20 waiting") {
+		t.Errorf("count was dropped when trimming:\n%s", out)
+	}
+	if !strings.Contains(out, "more") {
+		t.Errorf("output does not show that entries were omitted:\n%s", out)
+	}
+}
+
+// 高さが分からない（0）ときは削らない。
+func TestRenderWithoutHeightKeepsEveryEntry(t *testing.T) {
+	entries := make([]pending.Entry, 5)
+	for i := range entries {
+		entries[i] = pending.Entry{Tab: "task", Message: "waiting", Time: "18:06:45"}
+	}
+
+	out := Render(theme(), entries, 44, 0)
+	if strings.Contains(out, "more") {
+		t.Errorf("entries were trimmed without a known height:\n%s", out)
+	}
+}
+
 // タブ名は最後まで読めることを優先し、時刻より先に切られてはならない。
 func TestRenderKeepsTimeWhenTabIsLong(t *testing.T) {
 	entries := []pending.Entry{
 		{Tab: strings.Repeat("x", 100), Message: "m", Time: "18:06:45"},
 	}
 
-	if out := Render(theme(), entries, 40); !strings.Contains(out, "18:06:45") {
+	if out := Render(theme(), entries, 40, 0); !strings.Contains(out, "18:06:45") {
 		t.Errorf("time was dropped for a long tab name:\n%s", out)
 	}
 }
