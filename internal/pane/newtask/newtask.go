@@ -66,8 +66,8 @@ func ParseChoice(line string) string {
 
 // Render は待機中の案内を描く。status が空でなければ、その進行状況を出す。
 func Render(th ui.Theme, session, status string, width int) string {
-	w := max(width, ui.MinBoxWidth)
-	inner := w - 4
+	w := max(width, 1)
+	inner := w
 
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
@@ -77,19 +77,15 @@ func Render(th ui.Theme, session, status string, width int) string {
 		line = lipgloss.NewStyle().Foreground(th.Text).Render(ui.Pad(status, inner))
 	}
 
-	body := []string{
-		line,
-		"",
-		muted.Render(ui.SpaceBetween("", session, inner)),
-	}
-	return ui.Box(th, Title, body, w)
+	_ = muted
+	return ui.Section(th, Title, session, []string{line}, w, 0)
 }
 
 // renderNameInput はタスク名の入力欄を描く。field は textinput が描いた
 // 行で、そのまま埋め込む（内部にカーソル位置の情報を含むため加工しない）。
 func renderNameInput(th ui.Theme, field string, width int) string {
-	w := max(width, ui.MinBoxWidth)
-	inner := w - 4
+	w := max(width, 1)
+	inner := w
 
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	label := lipgloss.NewStyle().Foreground(th.Accent).Bold(true)

@@ -138,10 +138,13 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 grep -q 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl defines Waiting pane" || fail "multi.kdl missing Waiting pane"
 grep -q 'conductor waiting' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl launches conductor waiting" || fail "multi.kdl missing conductor waiting"
-# conductor が枠を描くペインは Zellij 側の枠を外していること（枠の二重化防止）
-grep -A3 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" | grep -q 'borderless' \
-  || grep -B2 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" | grep -q 'borderless' \
-  && pass "Waiting pane is borderless" || fail "Waiting pane still has a Zellij frame"
+# ペインの枠は Zellij に任せる。borderless にすると枠をつかんで大きさを
+# 変える操作ごと失われるため、conductor 側は枠を描かない。
+# （タブバーの 1 行だけは元から borderless。）
+MULTI_BORDERLESS=$(grep -c 'borderless' "$HOME/.claude-conductor/layouts/multi.kdl")
+[[ "$MULTI_BORDERLESS" == "1" ]] \
+  && pass "conductor panes keep their Zellij frame" \
+  || fail "unexpected borderless panes in multi.kdl: $MULTI_BORDERLESS"
 
 MULTI_KDL="$HOME/.claude-conductor/layouts/multi.kdl"
 OPEN_BRACES=$(tr -cd '{' < "$MULTI_KDL" | wc -c | tr -d ' ')

@@ -175,7 +175,10 @@ create_task() {
     for i in {1..30}; do
         zellij action resize decrease up
     done
-    zellij action focus-previous-pane
+    # 制御バーは下に作られるので、上のエージェントペインへ戻す。
+    # focus-previous-pane は「直前にフォーカスしていたペイン」に依存し、
+    # 制御バーの起動が後からフォーカスを取り返すと戻れない。位置で指定する。
+    zellij action move-focus up
 
     # Layout is cosmetic; its status must not mask tab-creation success.
     apply_layout "$dir" "$type"

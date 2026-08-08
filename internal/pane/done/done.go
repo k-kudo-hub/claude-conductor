@@ -34,8 +34,8 @@ func RecordForIndex(records []daily.Record, i int) *daily.Record {
 // 前提で、番号は 1 起点で振る。awaitingRestore のときはフッターを
 // 番号入力の案内に差し替える。
 func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, height int) string {
-	w := max(width, ui.MinBoxWidth)
-	inner := w - 4
+	w := max(width, 1)
+	inner := w
 
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
@@ -49,18 +49,16 @@ func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, he
 			body = append(body, "",
 				lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render("Restore which number?"))
 		}
-		return ui.Box(th, Title, body, w)
+		return ui.Section(th, Title, "", body, w, height)
 	}
 
 	totals := daily.Stats(records)
+	summary := ui.SpaceBetween(
+		accent.Render(fmt.Sprintf("%d tasks", totals.Count)),
+		muted.Render(fmt.Sprintf("%d turns · %d calls · %s",
+			totals.Turns, totals.Calls, daily.FormatCost(totals.Cost))),
+		inner)
 	body := make([]string, 0, len(records)+4)
-	body = append(body,
-		ui.SpaceBetween(
-			accent.Render(fmt.Sprintf("%d tasks", totals.Count)),
-			muted.Render(fmt.Sprintf("%d turns · %d calls · %s",
-				totals.Turns, totals.Calls, daily.FormatCost(totals.Cost))),
-			inner),
-		"")
 
 	for i, r := range records {
 		// 番号で選べない位置は空欄にする。押しても何も起きない番号を
@@ -82,12 +80,13 @@ func Render(th ui.Theme, records []daily.Record, awaitingRestore bool, width, he
 		footer = lipgloss.NewStyle().Foreground(th.Accent).Bold(true).
 			Render("Restore which number?")
 	}
-	if lines := ui.BodyLines(height); lines > 0 {
-		body = ui.Fit(body, lines-2)
-	}
+	// 見出し2行（タイトル+罫線）、集計+空行の2行、末尾の空行+フッターの
+	// 2行を除いた分が一覧に使える。
+	body = ui.FitTo(body, height, 6)
+	body = append([]string{summary, ""}, body...)
 	body = append(body, "", footer)
 
-	return ui.Box(th, Title, body, w)
+	return ui.Section(th, Title, "", body, w, 0)
 }
 
 // markerWidth は目印欄の固定幅。目印は最大 3 つ（🚀💬📝）で、絵文字は

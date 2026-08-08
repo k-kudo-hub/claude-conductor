@@ -61,6 +61,22 @@ func Fit(body []string, maxLines int) []string {
 	return append(out, moreLabel(len(body)-(maxLines-1)))
 }
 
+// FitTo は height 行の枠内に、overhead 行（見出し・フッターなど）を
+// 除いた残りで本文を収める。残りが無ければ本文を落とす。
+//
+// Fit に 0 以下を渡すと「制限しない」意味になるため、そのまま渡すと
+// 狭いペインで溢れる。ここで切り分ける。
+func FitTo(body []string, height, overhead int) []string {
+	if height <= 0 {
+		return body
+	}
+	avail := height - overhead
+	if avail <= 0 {
+		return nil
+	}
+	return Fit(body, avail)
+}
+
 func moreLabel(n int) string {
 	return "+" + strconv.Itoa(n) + " more"
 }
@@ -88,6 +104,37 @@ func SpaceBetween(left, right string, width int) string {
 	gap := width - lipgloss.Width(l) - rw
 
 	return l + strings.Repeat(" ", gap) + right
+}
+
+// Section は見出し・区切り線・本文を、枠を描かずに組み立てる。
+//
+// 枠は Zellij のペイン枠に任せる。conductor 側でも枠を描くと二重になり、
+// かといってレイアウトで borderless にすると、ペイン境界をドラッグして
+// 大きさを変える操作ごと失われる（Zellij は枠をつかんでリサイズする）。
+//
+// height が正のときは、その高さに収まるよう本文を削る。
+func Section(th Theme, title, subtitle string, body []string, width, height int) string {
+	w := max(width, 1)
+
+	lines := make([]string, 0, len(body)+3)
+	if title != "" {
+		head := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(title)
+		if subtitle != "" {
+			head = SpaceBetween(head, lipgloss.NewStyle().Foreground(th.Muted).Render(subtitle), w)
+		}
+		lines = append(lines, head, Rule(th, w))
+	}
+
+	if h := height; h > 0 {
+		body = Fit(body, max(h-len(lines), 1))
+	}
+	lines = append(lines, body...)
+
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, Pad(line, w))
+	}
+	return strings.Join(out, "\n")
 }
 
 // Rule は幅 width の区切り線を返す。

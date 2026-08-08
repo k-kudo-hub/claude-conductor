@@ -11,31 +11,29 @@ layout {
         pane split_direction="horizontal" {
             pane size="70%" split_direction="vertical" {
                 pane split_direction="horizontal" {
-                    pane borderless=true {
+                    pane {
                         name "Dashboard"
                         command "bash"
                         args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor dashboard"
                     }
-                    // conductor が枠とタイトルを描くため、Zellij 側の枠は外す。
-                    // 残すと枠が二重になる。
-                    pane borderless=true {
+                    pane {
                         name "Waiting"
                         command "bash"
                         args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor waiting"
                     }
                 }
-                pane borderless=true {
+                pane {
                     name "Done"
                     command "bash"
                     args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor done"
                 }
-                pane borderless=true {
+                pane {
                     name "News"
                     command "bash"
                     args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor news"
                 }
             }
-            pane size="30%" borderless=true {
+            pane size="30%" {
                 name "TaskCreate"
                 focus true
                 command "bash"

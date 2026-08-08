@@ -26,15 +26,14 @@ const Event = "Waiting"
 // height が正のときは、その高さに収まるよう本文を削る。代替画面に描く
 // ため、はみ出した行は見えないまま失われるので、件数だけでも残す。
 func Render(th ui.Theme, entries []pending.Entry, width, height int) string {
-	w := max(width, ui.MinBoxWidth)
-	// 枠の内側で使える幅。ui.Box が左右に "│ " と " │" を足す。
-	inner := w - 4
+	w := max(width, 1)
+	inner := w
 
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	name := lipgloss.NewStyle().Foreground(th.Text).Bold(true)
 
 	if len(entries) == 0 {
-		return ui.Box(th, Title, []string{muted.Render("No waiting tasks")}, w)
+		return ui.Section(th, Title, "", []string{muted.Render("No waiting tasks")}, w, height)
 	}
 
 	body := make([]string, 0, len(entries)*3+1)
@@ -55,12 +54,11 @@ func Render(th ui.Theme, entries []pending.Entry, width, height int) string {
 
 	// 件数は必ず残したいので、省略は件数行より前で行う。
 	count := muted.Render(countLabel(len(entries)))
-	if lines := ui.BodyLines(height); lines > 0 {
-		body = ui.Fit(body, lines-2)
-	}
+	// 見出し2行（タイトル+罫線）と、末尾の空行+件数で 4 行使う。
+	body = ui.FitTo(body, height, 4)
 	body = append(body, "", count)
 
-	return ui.Box(th, Title, body, w)
+	return ui.Section(th, Title, "", body, w, 0)
 }
 
 // countLabel は件数表示。bash 版のフッター "Waiting: N" に相当する。
