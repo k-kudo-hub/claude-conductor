@@ -2082,8 +2082,15 @@ INT_FLAG=$(jq -r 'select(.tab=="int-task") | .restored' "$INT_FILE")
 [[ "$INT_FLAG" == "true" ]] && pass "restore marks entry restored" || fail "restored flag wrong: $INT_FLAG"
 
 # 復元済みは Done の一覧から外れる。
+# 否定だけでは「何も出力されなくても通る」ので、同じ出力に対する
+# 正のチェック（別タスクは残る）と対にする。
 if [[ -n "$REAL_CONDUCTOR" ]]; then
+    cat >> "$INT_FILE" << JSONL
+{"tab":"kept-task","session":"$INT_SESSION","completed_at":"${INT_TODAY}T11:00:00+0900","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$INT_PROJ","task_type":"dev"}
+JSONL
     RESTORED_OUT=$(COLUMNS=70 "$HOME/.claude-conductor/bin/conductor" done --once 2>/dev/null)
+    echo "$RESTORED_OUT" | grep -q "kept-task" \
+      && pass "Done still lists the un-restored task" || fail "Done produced no usable output: $RESTORED_OUT"
     echo "$RESTORED_OUT" | grep -q "int-task" \
       && fail "restored task still listed in Done" || pass "restored task drops out of Done"
 else

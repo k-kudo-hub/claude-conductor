@@ -42,6 +42,7 @@ type Model struct {
 	base    string
 	theme   ui.Theme
 	width   int
+	height  int
 	records []daily.Record
 
 	awaitingRestore bool
@@ -101,10 +102,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 
 	case tickMsg:
-		m.records = load(m.base)
+		// 番号入力を待っている間は一覧を固定する。別セッションの復元で
+		// 並びが変わると、押した番号が別のタスクを指してしまう。
+		// bash 版は read でループごと止まっていたため起きなかった。
+		if !m.awaitingRestore {
+			m.records = load(m.base)
+		}
 		return m, tick()
 
 	case restoredMsg:
@@ -125,6 +132,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if ui.IsQuit(msg) {
+		return m, tea.Quit
+	}
+
 	key := msg.String()
 
 	if !m.awaitingRestore {
@@ -149,7 +160,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.records, m.awaitingRestore, m.width))
+	v := tea.NewView(Render(m.theme, m.records, m.awaitingRestore, m.width, m.height))
 	v.AltScreen = true
 	return v
 }
@@ -171,7 +182,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	th := ui.Current()
 
 	if once {
-		fmt.Fprintln(stdout, Render(th, load(base), false, envWidth()))
+		fmt.Fprintln(stdout, Render(th, load(base), false, envWidth(), 0))
 		return 0
 	}
 

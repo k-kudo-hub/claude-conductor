@@ -3,6 +3,7 @@ package done
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -109,6 +110,42 @@ func TestStalePromptTimeoutIsIgnored(t *testing.T) {
 
 	if !m.(Model).awaitingRestore {
 		t.Error("a stale timeout cleared the current prompt")
+	}
+}
+
+// 番号入力を待っている間は一覧を固定する。別セッションの復元で並びが
+// 変わると、押した番号が別のタスクを指してしまう。
+func TestListIsFrozenWhileAwaitingRestore(t *testing.T) {
+	m := modelWithRecords()
+	m.base = t.TempDir() // 読み直せば必ず空になる場所を指す
+
+	// プロンプトを開いていない間は読み直す。
+	got, _ := m.Update(tickMsg(time.Time{}))
+	if len(got.(Model).records) != 0 {
+		t.Errorf("records = %d, want the list reloaded when idle", len(got.(Model).records))
+	}
+
+	// プロンプトを開いている間は据え置く。
+	prompted, _ := modelWithRecords().Update(key("r"))
+	m2 := prompted.(Model)
+	m2.base = t.TempDir()
+	before := len(m2.records)
+
+	after, _ := m2.Update(tickMsg(time.Time{}))
+	if len(after.(Model).records) != before {
+		t.Errorf("records = %d, want %d kept while the prompt is open",
+			len(after.(Model).records), before)
+	}
+}
+
+func TestCtrlCQuits(t *testing.T) {
+	_, cmd := modelWithRecords().Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	if cmd == nil {
+		t.Fatal("no command returned for ctrl+c")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c did not produce a quit")
 	}
 }
 
