@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/k-kudo-hub/claude-conductor/internal/pane/dashboard"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/done"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/news"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/waiting"
@@ -30,6 +31,10 @@ type subcommand struct {
 
 // subcommands は登録済みのサブコマンド。ペインを移行するたびにここへ追加する。
 var subcommands = map[string]subcommand{
+	"dashboard": {
+		summary: "render the Dashboard (Current Tasks) pane",
+		run:     dashboard.Run,
+	},
 	"done": {
 		summary: "render the Done pane",
 		run:     done.Run,

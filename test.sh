@@ -121,7 +121,9 @@ touch "$HOME/.zshrc"
 echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 
 # Check file placement
-[[ -f "$HOME/.claude-conductor/scripts/dashboard-loop.sh" ]] && pass "dashboard-loop.sh installed" || fail "dashboard-loop.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/task-delete.sh" ]] && pass "task-delete.sh installed" || fail "task-delete.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/screen-detect-tick.sh" ]] && pass "screen-detect-tick.sh installed" || fail "screen-detect-tick.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/agent-detection.sh" ]] && pass "agent-detection.sh installed" || fail "agent-detection.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-notify.sh" ]] && pass "pending-notify.sh installed" || fail "pending-notify.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-resolve.sh" ]] && pass "pending-resolve.sh installed" || fail "pending-resolve.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/pending-post-tool.sh" ]] && pass "pending-post-tool.sh installed" || fail "pending-post-tool.sh missing"
@@ -147,7 +149,7 @@ CLOSE_BRACES=$(tr -cd '}' < "$MULTI_KDL" | wc -c | tr -d ' ')
 [[ "$OPEN_BRACES" == "$CLOSE_BRACES" ]] && pass "multi.kdl braces balanced" || fail "multi.kdl braces unbalanced: $OPEN_BRACES open / $CLOSE_BRACES close"
 [[ -f "$HOME/.claude-conductor/layouts/dev.kdl" ]] && pass "dev.kdl installed" || fail "dev.kdl missing"
 [[ -f "$HOME/.claude-conductor/init.zsh" ]] && pass "init.zsh installed" || fail "init.zsh missing"
-[[ -x "$HOME/.claude-conductor/scripts/dashboard-loop.sh" ]] && pass "scripts are executable" || fail "scripts not executable"
+[[ -x "$HOME/.claude-conductor/scripts/task-delete.sh" ]] && pass "scripts are executable" || fail "scripts not executable"
 
 # ============================================================
 section "2. Hooks merge"
@@ -1660,9 +1662,9 @@ printf 'dd' | ZELLIJ_SESSION_NAME=test-session bash "$TC22" "orphan-tab" >/dev/n
 [[ ! -f "$CONDUCTOR_HOME/tasks/test-session/orphan-sid.json" ]] \
   && pass "registry removed even without a pending file" || fail "orphan registry entry remains"
 
-# dashboard-loop.sh の d+数字 削除経路にも除去が組み込まれている
-grep -q 'registry_remove_by_tab' "$HOME/.claude-conductor/scripts/dashboard-loop.sh" \
-  && pass "dashboard-loop deletion path removes registry" || fail "dashboard-loop missing registry removal"
+# Dashboard の d+数字 が使う共通の削除経路にも除去が組み込まれている
+grep -q 'registry_remove_by_tab' "$HOME/.claude-conductor/scripts/task-delete.sh" \
+  && pass "task-delete removes registry" || fail "task-delete missing registry removal"
 
 rm -rf "$CONDUCTOR_HOME/tasks"
 
@@ -2318,17 +2320,21 @@ grep -q "new-tab -n gamma-dev" "$RS_CALLS" \
   && pass "corrupt registry entry does not abort restore" || fail "restore aborted on corrupt entry: $(cat "$RS_CALLS")"
 
 # ============================================================
-section "26k. dashboard-loop.sh triggers restore on startup"
+section "26k. conductor dashboard triggers restore on startup"
 # ============================================================
 
 # ダッシュボード起動時にrestore-session.shが呼ばれ、タスクが再生成される
 rm -rf "$CONDUCTOR_HOME/tasks"
 registry_upsert "rs-sess" "rs-sid-5" "dash-restore" "$RS_DIR1" "" "" ""
 : > "$RS_CALLS"
-CONDUCTOR_DASHBOARD_ONCE=1 ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" \
-  bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1
-grep -q "new-tab -n dash-restore" "$RS_CALLS" \
-  && pass "dashboard startup restores registered tasks" || fail "dashboard did not restore: $(cat "$RS_CALLS")"
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" COLUMNS=60 \
+      "$HOME/.claude-conductor/bin/conductor" dashboard --once >/dev/null 2>&1
+    grep -q "new-tab -n dash-restore" "$RS_CALLS" \
+      && pass "dashboard startup restores registered tasks" || fail "dashboard did not restore: $(cat "$RS_CALLS")"
+else
+    skip "real conductor binary unavailable; dashboard startup restore test"
+fi
 
 rm -rf "$CONDUCTOR_HOME/tasks" "$HOME/.claude-pending/rs-sess"
 
@@ -2645,14 +2651,14 @@ SESSION_LINE=$(echo "$OUTPUT" | grep '^SESSION=' | cut -d= -f2)
   || fail "session name not truncated: '$SESSION_LINE' (${#SESSION_LINE} chars)"
 
 # A worktree with an env-aware multi.kdl must NOT warn about partial isolation
-echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/bin/conductor dashboard" } }' > "$FAKE_WT/layouts/multi.kdl"
 STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
 echo "$STDERR" | grep -q "partial isolation" \
   && fail "unexpected partial-isolation warning for env-aware layout" \
   || pass "no warning when layout references CONDUCTOR_HOME"
 
 # A worktree whose multi.kdl hardcodes the install path must warn
-echo 'layout { pane { command "bash"; args "-c" "$HOME/.claude-conductor/scripts/dashboard-loop.sh" } }' > "$FAKE_WT/layouts/multi.kdl"
+echo 'layout { pane { command "bash"; args "-c" "$HOME/.claude-conductor/bin/conductor dashboard" } }' > "$FAKE_WT/layouts/multi.kdl"
 STDERR=$(zsh -c "source '$INIT_FILE' && CONDUCTOR_MDEV_TEST_DRYRUN=1 mdev-test '$FAKE_WT'" 2>&1 >/dev/null)
 echo "$STDERR" | grep -q "partial isolation" \
   && pass "warns about partial isolation for legacy hardcoded layout" \
@@ -2693,7 +2699,7 @@ chmod +x "$MOCK_BIN/open"
 WARP_WT="$SANDBOX/fake-worktrees/warp-feature"
 mkdir -p "$WARP_WT/scripts" "$WARP_WT/layouts"
 touch "$WARP_WT/scripts/fetch-news.sh"
-echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/scripts/dashboard-loop.sh" } }' > "$WARP_WT/layouts/multi.kdl"
+echo 'layout { pane { command "bash"; args "-c" "${CONDUCTOR_HOME:-x}/bin/conductor dashboard" } }' > "$WARP_WT/layouts/multi.kdl"
 
 TERM_PROGRAM=WarpTerminal zsh -c "source '$INIT_FILE' && mdev-test '$WARP_WT'" >/dev/null 2>&1
 
@@ -2896,7 +2902,7 @@ done
 [[ -z "$FRESH_FOUND" ]] && pass "no entry created when no pending exists" || fail "unexpected entry created: $FRESH_FOUND"
 
 # ============================================================
-section "37. dashboard-loop.sh (excludes Waiting tasks)"
+section "37. conductor dashboard (excludes Waiting tasks)"
 # ============================================================
 
 DASH_DIR="$HOME/.claude-pending/dash-session"
@@ -2904,75 +2910,42 @@ mkdir -p "$DASH_DIR"
 echo '{"tab":"active-task","session":"dash-session","message":"needs permission","event":"Notification","time":"10:00:00"}' > "$DASH_DIR/d1.json"
 echo '{"tab":"waiting-task","session":"dash-session","message":"pr review","event":"Waiting","time":"10:01:00"}' > "$DASH_DIR/d2.json"
 
-DASH_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="active-task waiting-task" ZELLIJ_SESSION_NAME=dash-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    DASH_OUT=$(MOCK_TABS="active-task waiting-task" ZELLIJ_SESSION_NAME=dash-session COLUMNS=70 \
+        "$HOME/.claude-conductor/bin/conductor" dashboard --once 2>/dev/null)
 
-echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
-echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
-echo "$DASH_OUT" | grep -q "Pending: 1" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $(echo "$DASH_OUT" | grep Pending)"
+    echo "$DASH_OUT" | grep -q "active-task" && pass "Notification task shown in dashboard" || fail "Notification task not shown"
+    echo "$DASH_OUT" | grep -q "waiting-task" && fail "Waiting task incorrectly shown in dashboard" || pass "Waiting task excluded from dashboard"
+    echo "$DASH_OUT" | grep -q "1 pending" && pass "dashboard count excludes Waiting" || fail "dashboard count wrong: $DASH_OUT"
+    echo "$DASH_OUT" | grep -q "needs permission" && pass "dashboard shows the pending message" || fail "message not shown: $DASH_OUT"
+else
+    skip "real conductor binary unavailable; conductor dashboard output tests"
+fi
 
 # ============================================================
-section "37b. dashboard-loop.sh (jump clears only lifecycle-less pendings)"
+section "37b. agent-detection.sh (jump clears only lifecycle-less pendings)"
 # ============================================================
 
 # ジャンプでクリアするのは「hooksもscreen検出も持たないagent」のみ。
 # claudeはhooksが、screen方式agent（codex）はscreen検出がライフサイクルを
 # 持つため、ジャンプでは消さない（消しても次ポーリングで再生成されるだけ）。
-JC_DIR="$HOME/.claude-pending/jump-session"
-mkdir -p "$JC_DIR"
-echo '{"tab":"somecli-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:00","agent":"somecli"}' > "$JC_DIR/sc.json"
-echo '{"tab":"codex-task","session":"jump-session","message":"turn done","event":"Stop","time":"10:00:30","agent":"codex"}' > "$JC_DIR/cx.json"
-echo '{"tab":"claude-task","session":"jump-session","message":"done","event":"Stop","time":"10:01:00","agent":"claude"}' > "$JC_DIR/cl.json"
+#
+# 判定そのものは Go 側（dashboard.ShouldClearOnJump）が真理値表で検証する。
+# ここでは判定の入力になる agent-detection.sh が config どおりの方式を
+# 返すことを確かめる。bash 版はここで stdin にキーを流してループを
+# 駆動していたが、Bubble Tea は端末を要求するため同じ手は使えない。
+AD="$HOME/.claude-conductor/scripts/agent-detection.sh"
 
-: > "$HOME/.claude-pending/zellij-calls.log"
-( printf '1'; sleep 3 ) | MOCK_TABS="somecli-task codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
-JC_PID=$!
-sleep 2
-kill "$JC_PID" 2>/dev/null || true
-wait "$JC_PID" 2>/dev/null || true
-
-grep -q 'action go-to-tab-name somecli-task' "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "jump goes to selected tab" || fail "jump did not switch tab"
-[[ ! -f "$JC_DIR/sc.json" ]] && pass "hook-less non-screen pending cleared on jump" || fail "somecli pending not cleared"
-[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending untouched by jump" || fail "claude pending removed unexpectedly"
-
-# screen方式agent（codex, detection=screen）のエントリはジャンプで消さない
-( printf '1'; sleep 3 ) | MOCK_TABS="codex-task claude-task" ZELLIJ_SESSION_NAME=jump-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
-JC_PID=$!
-sleep 2
-kill "$JC_PID" 2>/dev/null || true
-wait "$JC_PID" 2>/dev/null || true
-grep -q 'action go-to-tab-name codex-task' "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "jump goes to codex tab" || fail "jump did not switch to codex tab"
-[[ -f "$JC_DIR/cx.json" ]] && pass "screen-agent pending kept on jump" || fail "codex pending cleared on jump"
-rm -f "$JC_DIR/cx.json"
-
-# Jumping to a claude task keeps its entry (hooks own the lifecycle)
-( printf '1'; sleep 3 ) | MOCK_TABS="claude-task" ZELLIJ_SESSION_NAME=jump-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
-JC_PID=$!
-sleep 2
-kill "$JC_PID" 2>/dev/null || true
-wait "$JC_PID" 2>/dev/null || true
-grep -q 'action go-to-tab-name claude-task' "$HOME/.claude-pending/zellij-calls.log" \
-  && pass "jump goes to claude tab" || fail "jump did not switch to claude tab"
-[[ -f "$JC_DIR/cl.json" ]] && pass "claude pending kept on jump" || fail "claude pending cleared on jump"
-
-# An entry without an agent field (older claude pending) is treated as claude
-echo '{"tab":"old-task","session":"jump-session","message":"done","event":"Stop","time":"10:02:00"}' > "$JC_DIR/old.json"
-( printf '1'; sleep 3 ) | MOCK_TABS="old-task" ZELLIJ_SESSION_NAME=jump-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" >/dev/null 2>&1 &
-JC_PID=$!
-sleep 2
-kill "$JC_PID" 2>/dev/null || true
-wait "$JC_PID" 2>/dev/null || true
-[[ -f "$JC_DIR/old.json" ]] && pass "agent-less pending treated as claude" || fail "agent-less pending cleared"
-rm -rf "$JC_DIR"
+[[ "$(bash "$AD" codex)" == "screen" ]] \
+  && pass "agent-detection reports screen for codex" || fail "codex detection wrong: $(bash "$AD" codex)"
+[[ "$(bash "$AD" claude)" == "hooks" ]] \
+  && pass "agent-detection reports hooks for claude" || fail "claude detection wrong: $(bash "$AD" claude)"
+# 設定に無いエージェントは hooks 扱い（screen 走査の対象外）にする
+[[ "$(bash "$AD" somecli)" != "screen" ]] \
+  && pass "unknown agent is not screen-detected" || fail "unknown agent reported as screen"
 
 # ============================================================
-section "37c. dashboard-loop.sh (screen detection in the poll)"
+section "37c. conductor dashboard (screen detection in the poll)"
 # ============================================================
 
 # screen方式agentのタブはポーリング内で dump-screen され、承認待ちが
@@ -2987,9 +2960,13 @@ SD_PANES='[
 mkdir -p "$SDL_FIX/dash"
 cp "$SDL_FIX/blocked-command.txt" "$SDL_FIX/dash/terminal_5.txt"
 
-SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
-    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+SD_OUT=$(MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session COLUMNS=80 \
+    "$HOME/.claude-conductor/bin/conductor" dashboard --once 2>/dev/null)
+else
+SD_OUT=""
+fi
 
 SD_SLUG=$( source "$SDL" && _screen_tab_slug "codex-scr" )
 [[ -f "$SD_DIR/screen-$SD_SLUG.json" ]] && pass "poll writes screen Notification pending" || fail "screen pending not created by poll"
@@ -3000,9 +2977,11 @@ echo "$SD_OUT" | grep -q "Would you like to run the following command?" \
 # workingに戻ればポーリングがpendingを消し、Mainへ自動復帰する
 cp "$SDL_FIX/working.txt" "$SDL_FIX/dash/terminal_5.txt"
 : > "$HOME/.claude-pending/zellij-calls.log"
-SD_OUT=$(CONDUCTOR_DASHBOARD_ONCE=1 MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
-    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session \
-    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh" 2>/dev/null)
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+SD_OUT=$(MOCK_TABS="codex-scr" MOCK_PANES_JSON="$SD_PANES" \
+    MOCK_SCREEN_DIR="$SDL_FIX/dash" ZELLIJ_SESSION_NAME=sd-session COLUMNS=80 \
+    "$HOME/.claude-conductor/bin/conductor" dashboard --once 2>/dev/null)
+fi
 [[ ! -f "$SD_DIR/screen-$SD_SLUG.json" ]] && pass "poll clears pending when agent works again" || fail "pending survived working"
 echo "$SD_OUT" | grep -q "All tasks running" && pass "dashboard back to all-running" || fail "dashboard still lists task"
 grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
@@ -3318,12 +3297,14 @@ section "45. dd deletion integrates upload-log.sh"
 # ============================================================
 
 TC="$HOME/.claude-conductor/scripts/task-control.sh"
-DL="$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+DL="$HOME/.claude-conductor/scripts/task-delete.sh"
 
 grep -q 'upload-log.sh' "$TC" && pass "task-control.sh calls upload-log.sh" || fail "task-control.sh missing upload call"
 grep -q 'Deletion cancelled' "$TC" && pass "task-control.sh cancels dd on upload failure" || fail "task-control.sh missing guard"
-grep -q 'upload-log.sh' "$DL" && pass "dashboard-loop.sh calls upload-log.sh" || fail "dashboard-loop.sh missing upload call"
-grep -q 'Deletion cancelled' "$DL" && pass "dashboard-loop.sh cancels dd on upload failure" || fail "dashboard-loop.sh missing guard"
+grep -q 'upload-log.sh' "$DL" && pass "task-delete.sh calls upload-log.sh" || fail "task-delete.sh missing upload call"
+# アップロード失敗時は「何も消さずに非ゼロで戻る」ことがガード。文言ではなく
+# 構造で確かめる（表示は呼び出し側の Dashboard が受け持つ）。
+grep -q 'exit 1' "$DL" && pass "task-delete.sh aborts on upload failure" || fail "task-delete.sh missing guard"
 
 # Functional: with upload disabled (default), dd still deletes the tab (no regression)
 cat > "$PENDING_DIR/tc-del.json" << 'EOF'
@@ -3872,6 +3853,60 @@ rm -rf "$HOME/.claude-pending/myapp"
 # Restore the real scripts
 mv "$CONDUCTOR_HOME/scripts/fetch-news.sh.real" "$CONDUCTOR_HOME/scripts/fetch-news.sh"
 mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# ============================================================
+section "54b2. task-delete.sh (shared deletion path)"
+# ============================================================
+
+# Dashboard の d+数字 が使う共通の削除経路。アップロードが成功した場合に
+# pending / registry / screen-state を消し、タブを id で閉じることを確かめる。
+TD_SESSION="td-sess"
+TD_DIR="$HOME/.claude-pending/$TD_SESSION"
+mkdir -p "$TD_DIR"
+cat > "$TD_DIR/td.json" << 'EOF'
+{ "tab":"td-task","session":"td-sess","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+TD_SLUG=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && _screen_tab_slug "td-task" )
+mkdir -p "$TD_DIR/.screen-state"
+touch "$TD_DIR/.screen-state/$TD_SLUG"
+
+# shellcheck source=scripts/registry-lib.sh
+source "$HOME/.claude-conductor/scripts/registry-lib.sh"
+registry_upsert "$TD_SESSION" "td-sid" "td-task" "/tmp" "dev" "claude" ""
+
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n9  3  td-task\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+if ZELLIJ_SESSION_NAME="$TD_SESSION" bash "$HOME/.claude-conductor/scripts/task-delete.sh" td-task >/dev/null 2>&1; then
+    pass "task-delete succeeds when upload is disabled"
+else
+    fail "task-delete failed"
+fi
+[[ ! -f "$TD_DIR/td.json" ]] && pass "task-delete removes the pending entry" || fail "pending not removed"
+[[ ! -f "$TD_DIR/.screen-state/$TD_SLUG" ]] && pass "task-delete clears screen state" || fail "screen state not cleared"
+[[ -z "$(ls -A "$(registry_dir "$TD_SESSION")" 2>/dev/null)" ]] \
+  && pass "task-delete drops registry entries" || fail "registry entry survived"
+grep -q 'close-tab-by-id 9' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "task-delete closes its own tab by id" || fail "close-tab-by-id not called: $(cat "$HOME/.claude-pending/zellij-calls.log")"
+
+# タブ名が無ければ何も消さずに 2 で戻る（誤用の検出）。
+bash "$HOME/.claude-conductor/scripts/task-delete.sh" >/dev/null 2>&1 \
+  && fail "task-delete accepted an empty tab name" || pass "task-delete rejects an empty tab name"
+
+# Restore the plain mock zellij for later sections
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+rm -rf "$TD_DIR"
 
 # ============================================================
 section "54c. binary-lib.sh (platform / asset name / release URL)"
