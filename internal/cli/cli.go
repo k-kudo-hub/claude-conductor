@@ -13,6 +13,8 @@ import (
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/dashboard"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/done"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/news"
+	"github.com/k-kudo-hub/claude-conductor/internal/pane/newtask"
+	"github.com/k-kudo-hub/claude-conductor/internal/pane/taskbar"
 	"github.com/k-kudo-hub/claude-conductor/internal/pane/waiting"
 )
 
@@ -42,6 +44,14 @@ var subcommands = map[string]subcommand{
 	"news": {
 		summary: "render the AI Tech News pane",
 		run:     news.Run,
+	},
+	"new-task": {
+		summary: "render the New Task pane",
+		run:     newtask.Run,
+	},
+	"task-bar": {
+		summary: "render a task tab's control bar",
+		run:     taskbar.Run,
 	},
 	"waiting": {
 		summary: "render the Waiting pane",

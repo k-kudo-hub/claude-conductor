@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Conductor - Task Library
 # Shared functions for creating tasks (tabs) and applying layouts.
-# Sourced by task-create-loop.sh and done-loop.sh; defines functions only.
+# Sourced by task-create.sh / restore-task.sh; defines functions only.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
@@ -170,12 +170,21 @@ create_task() {
     fi
     sleep 0.3
 
-    zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
+    # 以降の new-pane / resize はすべて「いまフォーカスしているタブ」に
+    # 効く。new-tab はフォーカスを移すはずだが、呼び出し元のペインが
+    # 端末を握っていると移らないことがあり、その場合タスク用のペインが
+    # 丸ごと元のタブ（Main）に作られてしまう。明示的に移る。
+    zellij action go-to-tab-name "$name" 2>/dev/null || true
+
+    zellij action new-pane --direction down --cwd "$dir" -- "$CONDUCTOR_HOME/bin/conductor" task-bar "$name"
     local i
     for i in {1..30}; do
         zellij action resize decrease up
     done
-    zellij action focus-previous-pane
+    # 制御バーは下に作られるので、上のエージェントペインへ戻す。
+    # focus-previous-pane は「直前にフォーカスしていたペイン」に依存し、
+    # 制御バーの起動が後からフォーカスを取り返すと戻れない。位置で指定する。
+    zellij action move-focus up
 
     # Layout is cosmetic; its status must not mask tab-creation success.
     apply_layout "$dir" "$type"

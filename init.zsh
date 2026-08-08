@@ -154,6 +154,21 @@ mdev-test() {
         echo "mdev-test:   Main-tab panes will run INSTALLED scripts, not this worktree's (partial isolation)." >&2
     fi
 
+    # Panes launch $CONDUCTOR_HOME/bin/conductor. A worktree has the Go source
+    # but no build output (bin/ is gitignored), so build it here — otherwise the
+    # Main-tab panes would start nothing at all.
+    if [[ -d "$wt_path/cmd/conductor" ]]; then
+        if ! command -v go >/dev/null 2>&1; then
+            echo "mdev-test: Go is required to build this worktree's conductor binary." >&2
+            return 1
+        fi
+        echo "mdev-test: building conductor from $wt_name..." >&2
+        if ! ( cd "$wt_path" && go build -o bin/conductor ./cmd/conductor ); then
+            echo "mdev-test: failed to build conductor; aborting." >&2
+            return 1
+        fi
+    fi
+
     # Truncate to zellij's 24-char session-name limit (hash keyed by the full
     # worktree path so prefix-sharing worktrees stay distinct).
     local full_session="$session"
@@ -186,7 +201,12 @@ mdev-test() {
     if [[ "$TERM_PROGRAM" == "WarpTerminal" ]]; then
         local lc_dir="$HOME/.warp/launch_configurations"
         mkdir -p "$lc_dir"
-        rm -f "$lc_dir"/mdev-test-*.yaml(N)        # clean up previous runs (N: no error if none)
+        # Clean up previous runs. The (N) glob qualifier is not available when
+        # BARE_GLOB_QUAL is off, and there the pattern is taken literally: the
+        # shell reports "no matches found" and aborts the function before the
+        # session ever launches. Set the option locally instead.
+        setopt local_options null_glob
+        rm -f "$lc_dir"/mdev-test-*.yaml
         local lc_name="mdev-test-$session"
         {
             echo "---"

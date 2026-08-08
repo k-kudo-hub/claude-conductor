@@ -90,6 +90,25 @@ func ListTabs() []Tab {
 	return ParseTabs(string(out))
 }
 
+// QueryTabNames は現在のタブ名を 1 行 1 件で返す。取れない場合は空。
+func QueryTabNames() []string {
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "zellij", "action", "query-tab-names").Output()
+	if err != nil {
+		return nil
+	}
+
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // GoToTab は名前でタブを切り替える。
 func GoToTab(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)

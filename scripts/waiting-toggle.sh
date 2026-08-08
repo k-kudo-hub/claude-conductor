@@ -3,7 +3,7 @@
 # Toggles a task's Waiting state. Entering Waiting saves the current event
 # (Notification or Stop) into prev_event; resuming restores it (default
 # Notification), so a completed (Stop/done) task returns to done, not to
-# an unhandled Notification. Called from task-control.sh (w key).
+# an unhandled Notification. Called from the task control bar (w key).
 #
 # Waiting represents a task blocked on an external response (e.g. PR review).
 # It is separated from the Dashboard and shown in the Waiting pane instead.

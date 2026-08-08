@@ -61,6 +61,22 @@ func Fit(body []string, maxLines int) []string {
 	return append(out, moreLabel(len(body)-(maxLines-1)))
 }
 
+// FitTo は height 行の枠内に、overhead 行（見出し・フッターなど）を
+// 除いた残りで本文を収める。残りが無ければ本文を落とす。
+//
+// Fit に 0 以下を渡すと「制限しない」意味になるため、そのまま渡すと
+// 狭いペインで溢れる。ここで切り分ける。
+func FitTo(body []string, height, overhead int) []string {
+	if height <= 0 {
+		return body
+	}
+	avail := height - overhead
+	if avail <= 0 {
+		return nil
+	}
+	return Fit(body, avail)
+}
+
 func moreLabel(n int) string {
 	return "+" + strconv.Itoa(n) + " more"
 }
@@ -88,6 +104,47 @@ func SpaceBetween(left, right string, width int) string {
 	gap := width - lipgloss.Width(l) - rw
 
 	return l + strings.Repeat(" ", gap) + right
+}
+
+// Header は見出しと区切り線の 2 行を返す。title が空なら何も返さない。
+//
+// 枠は Zellij のペイン枠に任せる。conductor 側でも枠を描くと二重になり、
+// かといってレイアウトで borderless にすると、ペイン境界をドラッグして
+// 大きさを変える操作ごと失われる（Zellij は枠をつかんでリサイズする）。
+func Header(th Theme, title, subtitle string, width int) []string {
+	if title == "" {
+		return nil
+	}
+	w := max(width, 1)
+
+	head := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(title)
+	if subtitle != "" {
+		head = SpaceBetween(head, lipgloss.NewStyle().Foreground(th.Muted).Render(subtitle), w)
+	}
+	return []string{head, Rule(th, w)}
+}
+
+// Screen は行を幅に揃え、高さが分かっていればその行数に固定して返す。
+//
+// 行数を固定するのは、代替画面を使わない描画では前回より短い出力を出すと
+// 消えなかった行がそのまま残るため。件数が減った瞬間に古い行が下に
+// こびりつき、幅が変われば残骸が新しい行と混ざって読めなくなる。
+func Screen(lines []string, width, height int) string {
+	w := max(width, 1)
+
+	out := make([]string, 0, max(len(lines), height))
+	for _, line := range lines {
+		out = append(out, Pad(line, w))
+	}
+
+	blank := strings.Repeat(" ", w)
+	for len(out) < height {
+		out = append(out, blank)
+	}
+	if height > 0 && len(out) > height {
+		out = out[:height]
+	}
+	return strings.Join(out, "\n")
 }
 
 // Rule は幅 width の区切り線を返す。

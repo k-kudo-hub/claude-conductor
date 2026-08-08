@@ -61,27 +61,24 @@ const WaitingEvent = "Waiting"
 // Render はタスク一覧を枠付きで描く。prompt が空でなければ、キーヒントの
 // 代わりにその案内を出す（削除の番号入力待ちなど）。
 func Render(th ui.Theme, session string, entries []pending.Entry, prompt string, width, height int) string {
-	w := max(width, ui.MinBoxWidth)
-	inner := w - 4
+	w := max(width, 1)
+	inner := w
 
 	muted := lipgloss.NewStyle().Foreground(th.Muted)
 	accent := lipgloss.NewStyle().Foreground(th.Accent)
 	name := lipgloss.NewStyle().Foreground(th.Text).Bold(true)
 
+	head := ui.Header(th, Title, session, w)
+
 	if len(entries) == 0 {
+		body := []string{lipgloss.NewStyle().Foreground(th.Done).Render("All tasks running")}
 		// 最後の 1 件を削除した直後もここに来る。prompt には
 		// アップロード先やキャンセルの知らせが入っているので捨てない。
-		last := muted.Render(ui.SpaceBetween("", session, inner))
 		if prompt != "" {
-			last = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).
-				Render(ui.Pad(prompt, inner))
+			body = append(body, "",
+				lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(prompt))
 		}
-		body := []string{
-			lipgloss.NewStyle().Foreground(th.Done).Render("All tasks running"),
-			"",
-			last,
-		}
-		return ui.Box(th, Title, body, w)
+		return ui.Screen(append(head, body...), w, height)
 	}
 
 	body := make([]string, 0, len(entries)*3+2)
@@ -99,11 +96,11 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 
 		// 番号 + バッジ + 空白で 4 桁使う。
 		head := accent.Render(strconv.Itoa(i+1)) + " " + ui.Badge(th, state) + " " +
-			ui.SpaceBetween(name.Render(e.Tab), muted.Render(right), inner-4)
+			ui.SpaceBetween(name.Render(e.Tab), muted.Render(right), max(inner-4, 1))
 		body = append(body, head)
 
 		if msg := flatten(e.Message); msg != "" {
-			body = append(body, "    "+muted.Render(ui.Pad(msg, inner-4)))
+			body = append(body, "    "+muted.Render(ui.Pad(msg, max(inner-4, 1))))
 		}
 	}
 
@@ -113,12 +110,11 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 	if prompt != "" {
 		footer = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(prompt)
 	}
-	if lines := ui.BodyLines(height); lines > 0 {
-		body = ui.Fit(body, lines-2)
-	}
-	body = append(body, "", footer)
+	tail := []string{"", footer}
+	body = ui.FitTo(body, height, len(head)+len(tail))
 
-	return ui.Box(th, Title, body, w)
+	lines := append(head, body...)
+	return ui.Screen(append(lines, tail...), w, height)
 }
 
 // flatten は改行やタブを空白に潰す。1 タスクが複数行になると枠が崩れる。
