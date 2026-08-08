@@ -24,12 +24,25 @@ CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 SCREEN_TAIL_LINES=20
 
 # screen_classify <agent> <dump-screen text>
-# Prints "blocked<TAB><matched line>" / "working" / "idle". Blocked wins
-# over working because an approval dialog is what the user must act on.
+# Prints "neutral" / "blocked<TAB><matched line>" / "working" / "idle".
+# Neutral wins over everything: a full-screen viewer or picker hides the
+# agent's own UI, so nothing on it says anything about the turn. Blocked
+# wins over working because an approval dialog is what the user must act on.
 screen_classify() {
     local agent="$1" text="$2"
     local tail_buf pattern line
     tail_buf=$(printf '%s\n' "$text" | grep -v '^[[:space:]]*$' | tail -n "$SCREEN_TAIL_LINES")
+
+    # A screen the agent does not own: the spinner is hidden (would read as a
+    # false done) and scrolled-back log lines may quote approval prompts
+    # (would read as a false blocked). herdr's skip_state_update equivalent.
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if printf '%s\n' "$tail_buf" | grep -E -q -- "$pattern" 2>/dev/null; then
+            echo "neutral"
+            return 0
+        fi
+    done <<< "$(agent_patterns "$agent" "neutral")"
 
     while IFS= read -r pattern; do
         [[ -z "$pattern" ]] && continue
@@ -99,6 +112,13 @@ _screen_write_pending() {
 # screen-generated Stop so a turn never shows up twice.
 screen_update_pending() {
     local session="$1" tab="$2" agent="$3" state="$4" message="$5"
+
+    # neutral is "no observation": leave the last state and every pending file
+    # untouched so a viewer or picker cannot move the tab on the dashboard.
+    if [[ "$state" == "neutral" ]]; then
+        return 0
+    fi
+
     local pending_dir="$HOME/.claude-pending/$session"
     mkdir -p "$pending_dir"
 

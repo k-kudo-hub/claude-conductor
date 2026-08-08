@@ -575,6 +575,19 @@ jq -e '(.agents.codex.patterns.blocked | length) >= 1' "$HOME/.claude-conductor/
   && pass "user agent command preserved by migration" || fail "user command overwritten"
 [[ "$(jq -r '.agents.claude.detection' "$HOME/.claude-conductor/config.json")" == "screen" ]] \
   && pass "user-set detection not overwritten by migration" || fail "user detection overwritten"
+
+# patterns はキー単位で補完する。後から追加された neutral は、blocked/working を
+# カスタムしている既存configにも届かないと検出ルールの更新が永久に届かない
+jq '.agents.codex.patterns = {"blocked": ["^ *MY OWN APPROVAL"], "working": ["my-spinner"]}' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
+jq -e '.agents.codex.patterns | has("neutral")' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "new pattern key filled into customized patterns" || fail "neutral key not migrated"
+[[ "$(jq -r '.agents.codex.patterns.blocked[0]' "$HOME/.claude-conductor/config.json")" == "^ *MY OWN APPROVAL" ]] \
+  && pass "user blocked patterns preserved by key merge" || fail "user blocked patterns overwritten"
+[[ "$(jq -r '.agents.codex.patterns.working[0]' "$HOME/.claude-conductor/config.json")" == "my-spinner" ]] \
+  && pass "user working patterns preserved by key merge" || fail "user working patterns overwritten"
 CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/config.json")
 [[ "$CUSTOM_TYPE" == "Custom task" ]] && pass "custom task type survives migration" || fail "custom type lost in migration"
 
@@ -870,6 +883,13 @@ echo "$AP" | grep -q ' to interrupt' \
 AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "claude" "blocked" )
 [[ -z "$AP" ]] && pass "agent_patterns empty for pattern-less agent" || fail "agent_patterns(claude) = '$AP'"
 
+# neutral（中立画面）のキーは同梱configに存在する。中身は実画面を採取して
+# から足すので既定は空
+jq -e '.agents.codex.patterns | has("neutral")' "$HOME/.claude-conductor/config.default.json" >/dev/null \
+  && pass "default config ships codex neutral key" || fail "agents.codex.patterns.neutral missing"
+AP=$( source "$HOME/.claude-conductor/scripts/task-lib.sh" && agent_patterns "codex" "neutral" )
+[[ -z "$AP" ]] && pass "codex neutral patterns empty by default" || fail "agent_patterns(codex, neutral) = '$AP'"
+
 # ============================================================
 section "17b5. screen-detect-lib.sh (dump classification)"
 # ============================================================
@@ -1012,6 +1032,34 @@ CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/transcript-echo
 CLS=$( source "$SDL" && screen_classify "claude" "$(cat "$SDL_FIX/blocked-command.txt")" )
 [[ "$CLS" == "idle" ]] && pass "pattern-less agent always idle" || fail "classify(claude) = '$CLS'"
 
+# neutral: 全画面ビューアやピッカーなど、エージェントの進行状態が読み取れない
+# 画面。スピナーが隠れるだけで誤done、承認文言を含むログの表示で誤blockedに
+# なるため、状態を更新せず前回状態を維持する（herdr の skip_state_update 相当）
+cat > "$SDL_FIX/neutral-viewer.txt" << 'EOF'
+  diff --git a/scripts/screen-detect-lib.sh b/scripts/screen-detect-lib.sh
+
+  + Would you like to run the following command?
+
+  ↑↓ scroll · esc to close
+EOF
+jq '.agents.codex.patterns.neutral = ["esc to close *$", "^ *↑↓ scroll"]' \
+  "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/neutral-viewer.txt")" )
+[[ "$CLS" == "neutral" ]] && pass "viewer screen classified neutral" || fail "classify(neutral) = '$CLS'"
+
+# neutral は blocked より先に評価する（ビューアが承認文言を映しているだけの
+# 画面を承認待ちと誤認しない）
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-command.txt")
+  esc to close" )
+[[ "$CLS" == "neutral" ]] && pass "neutral wins over blocked" || fail "classify(neutral+blocked) = '$CLS'"
+
+# neutral 未定義のagentは従来どおり分類される（既存挙動の非回帰）
+jq 'del(.agents.codex.patterns.neutral)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" \
+  && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
+CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/neutral-viewer.txt")" )
+[[ "$CLS" != "neutral" ]] && pass "no neutral patterns means no neutral state" || fail "classify without neutral = '$CLS'"
+cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
+
 # ============================================================
 section "17b6. screen-detect-lib.sh (pending lifecycle)"
 # ============================================================
@@ -1144,6 +1192,28 @@ rm -rf "$SDL_DIR/.screen-state"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
   && fail "first observation triggered auto-return" || pass "no auto-return on first observation"
+
+# neutral は state file も pending も一切変えない（前回状態を維持する）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"keep me","event":"Notification","time":"11:00:00","agent":"codex"}' > "$SDL_DIR/thread-n.json"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "neutral" "" )
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "working" ]] \
+  && pass "neutral keeps previous state" \
+  || fail "state after neutral = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+[[ -f "$SDL_DIR/thread-n.json" ]] && pass "neutral keeps existing pending" || fail "pending cleared by neutral"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "neutral triggered auto-return" || pass "neutral does not auto-return"
+
+# neutral を挟んでも working -> idle の確定手順は途切れない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "neutral" "" )
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle_pending" ]] \
+  && pass "neutral preserves idle_pending" \
+  || fail "idle_pending lost = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+rm -f "$SDL_DIR"/*.json
+rm -rf "$SDL_DIR/.screen-state"
 
 # タブ名はファイル名向けにサニタイズされる
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "#28 fix" "codex" "blocked" "approval" )

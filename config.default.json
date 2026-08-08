@@ -16,6 +16,7 @@
       "resume_args": "resume",
       "detection": "screen",
       "patterns": {
+        "neutral": [],
         "blocked": [
           "^ *Would you like to run the following command\\? *$",
           "^ *Would you like to make the following edits\\? *$",
