@@ -122,24 +122,41 @@ screen_update_pending() {
     local pending_dir="$HOME/.claude-pending/$session"
     mkdir -p "$pending_dir"
 
-    local slug screen_file state_file prev f
+    local slug screen_file state_file prev_raw prev prev_at now effective f
+    local confirm_idle=0
     slug=$(_screen_tab_slug "$tab")
     screen_file="$pending_dir/screen-${slug}.json"
     state_file="$pending_dir/.screen-state/$slug"
     mkdir -p "$pending_dir/.screen-state"
     # || true: callers may run under set -e (test.sh) and a missing state
     # file on the first observation must not abort them.
-    prev=$(cat "$state_file" 2>/dev/null || true)
+    # The file holds one line: the state, plus an epoch for idle_pending.
+    prev_raw=$(cat "$state_file" 2>/dev/null || true)
+    prev="${prev_raw%% *}"
+    prev_at="${prev_raw#* }"
+    [[ "$prev_at" == "$prev_raw" ]] && prev_at=""
 
     # working -> idle は1回の観測では確定させず idle_pending に置く。codex の
-    # スピナー行はツール実行の切れ目や再描画の1フレームで消えるため、2秒
-    # ポーリングがその瞬間に当たると偽の done がダッシュボードに出る。次の
-    # ポーリングでも idle なら確定する（herdr の PendingIdleConfirmation
-    # 相当。あちらは 100ms x 3回、こちらはポーリング粒度が2秒なので2回）。
+    # スピナー行はツール実行の切れ目や再描画の1フレームで消えるため、その
+    # 瞬間を拾うと偽の done がダッシュボードに出る。確定は「次の観測」では
+    # なく「実時間が1秒以上経ってからの観測」を条件にする。ダッシュボードの
+    # ポーリングはキー入力で早回りしうるので、観測回数だけを条件にすると
+    # 同じ1フレームを連続で見て確定してしまう（herdr の
+    # PendingIdleConfirmation も実時間ベース: 100ms x 3回 / 700ms 上限）。
     # blocked には遅延をかけない: 人間を待たせている状態は即時性が要る。
-    local effective="$state"
-    if [[ "$state" == "idle" && "$prev" == "working" ]]; then
-        effective="idle_pending"
+    now=$(date +%s)
+    effective="$state"
+    if [[ "$state" == "idle" ]]; then
+        if [[ "$prev" == "working" ]]; then
+            effective="idle_pending $now"
+        elif [[ "$prev" == "idle_pending" ]]; then
+            if [[ "$prev_at" =~ ^[0-9]+$ ]] && [[ $((now - prev_at)) -lt 1 ]]; then
+                # 早回りした再観測。最初に idle を見た時刻を保ったまま待つ。
+                effective="idle_pending $prev_at"
+            else
+                confirm_idle=1
+            fi
+        fi
     fi
     echo "$effective" > "$state_file"
 
@@ -175,9 +192,13 @@ screen_update_pending() {
             # inside the tab (approved, or submitted a prompt): mirror the
             # claude PostToolUse / UserPromptSubmit auto-return to Main.
             # Not on the first observation (prev empty) so a dashboard
-            # restart mid-turn never yanks the focus. idle_pending counts as
-            # idle here: the turn was about to be called done and resumed.
-            if [[ "$prev" == "blocked" || "$prev" == "idle" || "$prev" == "idle_pending" ]]; then
+            # restart mid-turn never yanks the focus. idle_pending is
+            # deliberately excluded: it means "that idle frame is not to be
+            # trusted", nothing was shown to the user, and yanking focus on a
+            # spinner flicker would drag them out of a tab they are reading.
+            # An answered approval still comes through as blocked -> working,
+            # and a prompt sent after a finished turn as idle -> working.
+            if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
                 zellij action go-to-tab-name Main 2>/dev/null || true
             fi
             ;;
@@ -199,11 +220,12 @@ screen_update_pending() {
                     fi
                 done
             fi
-            # Stop only once idle is confirmed (idle_pending -> idle): a
-            # freshly created tab idles at the composer and must not appear
-            # as done, and a single idle frame mid-turn is not a turn end.
-            # Skip when the tab already has a pending (usually the notify Stop).
-            if [[ "$prev" == "idle_pending" ]]; then
+            # Stop only once idle is confirmed (idle_pending held for at least
+            # a second): a freshly created tab idles at the composer and must
+            # not appear as done, and a single idle frame mid-turn is not a
+            # turn end. Skip when the tab already has a pending (usually the
+            # notify Stop).
+            if [[ "$confirm_idle" == "1" ]]; then
                 for f in "$pending_dir"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$tab" ]]; then

@@ -247,11 +247,17 @@ and matches its bottom lines against the agent's `patterns`:
   a `Stop` (done) entry, unless the `notify` bridge already recorded one.
   Unknown dialogs deliberately fall back to idle, never to blocked, so a new
   codex UI screen cannot spam the dashboard with false approvals.
-- **done needs two consecutive idle polls.** The codex spinner disappears for a
-  frame between tool calls, so a single idle observation is not a turn end. The
-  first one parks the tab, the next poll confirms it (up to 2 seconds later) or
-  cancels it if the turn resumed. Without this, a poll landing on that frame
-  reports the task as done while it is still running.
+- **done needs idle to hold.** The codex spinner disappears for a frame between
+  tool calls, so a single idle observation is not a turn end. The first one
+  parks the tab with a timestamp; a later poll confirms it once at least a
+  second of real time has passed, or cancels it if the turn resumed. The clock
+  is real time rather than a count of polls, because pressing keys on the
+  dashboard can make polls fire back to back. Without this, a poll landing on
+  that frame reports the task as done while it is still running.
+- Flicker never moves you. A tab parked this way that resumes does **not** pull
+  focus back to Main — nothing was shown to you, so there is nothing to return
+  from. Auto-return still happens after an answered approval and after a prompt
+  sent to a finished task.
 
 **Codex limitations** — codex has no prompt-submit hook, so compared to
 Claude Code tasks:
