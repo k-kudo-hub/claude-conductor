@@ -319,6 +319,13 @@ func createTask(dir, taskType, name, agent string) tea.Cmd {
 		unique := UniqueTabName(name, zellij.QueryTabNames())
 		err := exec.Command("bash", paths.Script("task-create.sh"),
 			dir, taskType, unique, "", agent).Run()
+		if err == nil {
+			// 作ったタブへ移る。create_task は new-tab のあと、その
+			// タブの中で pane を足して focus-previous-pane まで行うが、
+			// どのタブを見せるかはここで明示する。作成の直後は、その
+			// タスクで作業を始めたいはずなので。
+			_ = zellij.GoToTab(unique)
+		}
 		return createdMsg{err: err}
 	}
 }
@@ -344,9 +351,10 @@ func splitLines(s string) []string {
 }
 
 func (m Model) View() tea.View {
+	// 代替画面には入らない（Zellij のペイン境界ドラッグとタブ操作を
+	// 妨げるため）。詳細は waiting ペインの同じ箇所を参照。
 	if m.step == stepName {
 		v := tea.NewView(renderNameInput(m.theme, m.input.View(), m.width))
-		v.AltScreen = true
 		// textinput が返すのは入力欄内の座標。実際の欄は枠の中の
 		// 2 行目・2 桁目に描くので、その分ずらさないと罫線の上に出る。
 		if c := m.input.Cursor(); c != nil {
@@ -357,9 +365,7 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	v := tea.NewView(Render(m.theme, m.session, m.status, m.width))
-	v.AltScreen = true
-	return v
+	return tea.NewView(Render(m.theme, m.session, m.status, m.width))
 }
 
 // Run は new-task サブコマンドの本体。
