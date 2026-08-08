@@ -69,6 +69,27 @@ func moreLabel(n int) string {
 // 本文に割ける行数を計算するために使う。
 const BoxOverhead = 2
 
+// SpaceBetween は left を左端、right を右端に置いた幅 width の行を返す。
+// 収まらないときは right（時刻など、失うと意味が変わる情報）を残して
+// left を削る。
+func SpaceBetween(left, right string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+
+	rw := lipgloss.Width(right)
+	if rw >= width {
+		return Pad(right, width)
+	}
+
+	// left と right の間には最低 1 桁の空きを置く。
+	avail := width - rw - 1
+	l := ansi.Truncate(left, avail, "")
+	gap := width - lipgloss.Width(l) - rw
+
+	return l + strings.Repeat(" ", gap) + right
+}
+
 // Rule は幅 width の区切り線を返す。
 func Rule(th Theme, width int) string {
 	if width <= 0 {
