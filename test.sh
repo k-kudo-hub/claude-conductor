@@ -10,6 +10,18 @@ unset TASK_TAB_NAME TASK_TYPE TASK_AGENT ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX=$(mktemp -d)
+
+# Go のキャッシュはサンドボックスHOMEの下に作らせない。作らせると依存を
+# 丸ごと再ダウンロードするうえ、モジュールキャッシュは読み取り専用で
+# 置かれるためサンドボックスの後片付けが失敗する。HOMEを差し替える前に
+# 実ユーザーのキャッシュ位置を確定させておく。
+if command -v go >/dev/null 2>&1; then
+    GOMODCACHE_REAL=$(go env GOMODCACHE 2>/dev/null)
+    GOCACHE_REAL=$(go env GOCACHE 2>/dev/null)
+    [ -n "$GOMODCACHE_REAL" ] && export GOMODCACHE="$GOMODCACHE_REAL"
+    [ -n "$GOCACHE_REAL" ] && export GOCACHE="$GOCACHE_REAL"
+fi
+
 export HOME="$SANDBOX"
 export CONDUCTOR_HOME="$HOME/.claude-conductor"
 
@@ -18,6 +30,8 @@ FAIL=0
 
 pass() { echo -e "  \033[0;32m✓\033[0m $1"; PASS=$((PASS + 1)); }
 fail() { echo -e "  \033[0;31m✗\033[0m $1"; FAIL=$((FAIL + 1)); }
+# 環境に無いツール（Go など）が要るテストは失敗ではなく明示的にスキップする。
+skip() { echo -e "  \033[0;33m-\033[0m $1 (skipped)"; }
 section() { echo ""; echo -e "\033[1m=== $1 ===\033[0m"; }
 
 cleanup() {
@@ -58,6 +72,19 @@ MOCK
 chmod +x "$MOCK_BIN/zellij"
 export PATH="$MOCK_BIN:$PATH"
 
+# install.sh はこのスイートの中で何度も走る。そのたびに conductor を
+# go build するとテストが極端に遅くなり、Go の無い環境では install 自体が
+# 失敗してしまう。既定ではダミーを file:// から配らせ、ダウンロード経路を
+# ネットワーク非依存で通す。実バイナリのビルドと実行は専用セクションで
+# Go がある場合にだけ検証する。
+STUB_BINARY="$SANDBOX/stub-conductor"
+cat > "$STUB_BINARY" << 'STUB'
+#!/bin/bash
+echo "stub-conductor $*"
+STUB
+chmod +x "$STUB_BINARY"
+export CONDUCTOR_BINARY_URL="file://$STUB_BINARY"
+
 # ============================================================
 section "1. Install (fresh environment)"
 # ============================================================
@@ -96,6 +123,8 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/restore-session.sh" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/binary-lib.sh" ]] && pass "binary-lib.sh installed" || fail "binary-lib.sh missing"
+[[ -x "$HOME/.claude-conductor/bin/conductor" ]] && pass "conductor binary installed and executable" || fail "conductor binary missing"
 [[ -f "$HOME/.claude-conductor/layouts/multi.kdl" ]] && pass "multi.kdl installed" || fail "multi.kdl missing"
 grep -q 'name "Waiting"' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl defines Waiting pane" || fail "multi.kdl missing Waiting pane"
 grep -q 'waiting-loop.sh' "$HOME/.claude-conductor/layouts/multi.kdl" && pass "multi.kdl launches waiting-loop.sh" || fail "multi.kdl missing waiting-loop.sh"
@@ -3772,6 +3801,138 @@ rm -rf "$HOME/.claude-pending/myapp"
 # Restore the real scripts
 mv "$CONDUCTOR_HOME/scripts/fetch-news.sh.real" "$CONDUCTOR_HOME/scripts/fetch-news.sh"
 mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"
+
+# ============================================================
+section "54c. binary-lib.sh (platform / asset name / release URL)"
+# ============================================================
+
+# shellcheck source=scripts/update-lib.sh
+source "$CONDUCTOR_HOME/scripts/update-lib.sh"
+# shellcheck source=scripts/binary-lib.sh
+source "$CONDUCTOR_HOME/scripts/binary-lib.sh"
+
+# fetch-news のセクションが仕込んだ curl モックは -o を無視して RSS を
+# 標準出力へ吐く。ここで検証したいのはダウンロードそのものなので、
+# 本物の curl に戻してから実行し、セクションの最後で元に戻す。
+if [ -f "$MOCK_BIN/curl" ]; then
+    mv "$MOCK_BIN/curl" "$MOCK_BIN/curl.mocked"
+fi
+
+CB_PLATFORM=$(cb_platform)
+case "$CB_PLATFORM" in
+    darwin-amd64|darwin-arm64|linux-amd64|linux-arm64)
+        pass "cb_platform resolves to $CB_PLATFORM" ;;
+    *)
+        fail "cb_platform returned an unexpected value: $CB_PLATFORM" ;;
+esac
+
+[[ "$(cb_asset_name linux-amd64)" == "conductor-linux-amd64" ]] \
+  && pass "cb_asset_name builds the asset file name" \
+  || fail "cb_asset_name: got $(cb_asset_name linux-amd64)"
+
+[[ "$(cb_asset_name)" == "conductor-$CB_PLATFORM" ]] \
+  && pass "cb_asset_name defaults to the running platform" \
+  || fail "cb_asset_name default: got $(cb_asset_name)"
+
+EXPECTED_URL="https://github.com/o/r/releases/download/v1.2.3/conductor-linux-arm64"
+[[ "$(cb_binary_url o/r v1.2.3 linux-arm64)" == "$EXPECTED_URL" ]] \
+  && pass "cb_binary_url builds the release asset URL" \
+  || fail "cb_binary_url: got $(cb_binary_url o/r v1.2.3 linux-arm64)"
+
+cb_binary_url "" v1.2.3 linux-arm64 >/dev/null 2>&1 \
+  && fail "cb_binary_url accepted an empty slug" \
+  || pass "cb_binary_url rejects an empty slug"
+
+cb_binary_url o/r "" linux-arm64 >/dev/null 2>&1 \
+  && fail "cb_binary_url accepted an empty version" \
+  || pass "cb_binary_url rejects an empty version"
+
+# Download path: curl reads file:// so this stays offline.
+DL_SRC="$SANDBOX/dl-src"
+printf '#!/bin/bash\necho downloaded\n' > "$DL_SRC"
+DL_DEST="$SANDBOX/dl-dest/conductor"
+mkdir -p "$(dirname "$DL_DEST")"
+if cb_download_binary "file://$DL_SRC" "$DL_DEST"; then
+    [[ -x "$DL_DEST" ]] && pass "cb_download_binary writes an executable" \
+                        || fail "cb_download_binary left a non-executable file"
+    [[ "$("$DL_DEST")" == "downloaded" ]] && pass "cb_download_binary content matches source" \
+                                          || fail "cb_download_binary content mismatch"
+else
+    fail "cb_download_binary failed on a file:// URL"
+fi
+
+# An empty asset must be rejected, not left in place as a broken binary.
+EMPTY_SRC="$SANDBOX/empty-src"
+: > "$EMPTY_SRC"
+EMPTY_DEST="$SANDBOX/dl-dest/empty"
+cb_download_binary "file://$EMPTY_SRC" "$EMPTY_DEST" 2>/dev/null \
+  && fail "cb_download_binary accepted an empty file" \
+  || pass "cb_download_binary rejects an empty file"
+[[ ! -f "$EMPTY_DEST" ]] && pass "cb_download_binary leaves no file on failure" \
+                         || fail "cb_download_binary left a partial file"
+
+# A missing URL must fail rather than leave a partial download behind.
+MISSING_DEST="$SANDBOX/dl-dest/missing"
+cb_download_binary "file://$SANDBOX/does-not-exist" "$MISSING_DEST" 2>/dev/null \
+  && fail "cb_download_binary accepted a missing source" \
+  || pass "cb_download_binary rejects a missing source"
+[[ ! -f "$MISSING_DEST" ]] && pass "cb_download_binary cleans up after a missing source" \
+                           || fail "cb_download_binary left a file for a missing source"
+
+# cb_install_binary prefers the download and reports which path it took.
+INSTALL_DEST="$SANDBOX/install-dest/conductor"
+INSTALL_SRC_OUT=$(CONDUCTOR_BINARY_URL="file://$DL_SRC" \
+    cb_install_binary "$REPO_DIR" "$INSTALL_DEST" v1.2.3 "https://github.com/o/r.git")
+[[ "$INSTALL_SRC_OUT" == "download" ]] \
+  && pass "cb_install_binary reports the download path" \
+  || fail "cb_install_binary reported: $INSTALL_SRC_OUT"
+[[ -x "$INSTALL_DEST" ]] && pass "cb_install_binary places the binary" \
+                         || fail "cb_install_binary did not place the binary"
+
+# ============================================================
+section "54d. conductor binary build (requires Go)"
+# ============================================================
+
+if command -v go >/dev/null 2>&1 && [[ -d "$REPO_DIR/cmd/conductor" ]]; then
+    BUILD_DEST="$SANDBOX/build-dest/conductor"
+    mkdir -p "$(dirname "$BUILD_DEST")"
+    if cb_build_binary "$REPO_DIR" "$BUILD_DEST" v7.8.9; then
+        pass "cb_build_binary builds cmd/conductor"
+        [[ "$("$BUILD_DEST" version)" == "v7.8.9" ]] \
+          && pass "built binary reports the injected version" \
+          || fail "version injection failed: $("$BUILD_DEST" version)"
+        "$BUILD_DEST" help 2>&1 | grep -q "usage" \
+          && pass "built binary prints usage for help" \
+          || fail "built binary did not print usage"
+        "$BUILD_DEST" no-such-subcommand >/dev/null 2>&1 \
+          && fail "built binary accepted an unknown subcommand" \
+          || pass "built binary rejects an unknown subcommand"
+    else
+        fail "cb_build_binary failed to build cmd/conductor"
+    fi
+
+    # Download が失敗したときにビルドへ落ちること（リリース前のチェックアウト）。
+    FALLBACK_DEST="$SANDBOX/fallback-dest/conductor"
+    FALLBACK_OUT=$(CONDUCTOR_BINARY_URL="file://$SANDBOX/does-not-exist" \
+        cb_install_binary "$REPO_DIR" "$FALLBACK_DEST" v7.8.9 "")
+    [[ "$FALLBACK_OUT" == "build" ]] \
+      && pass "cb_install_binary falls back to a local build" \
+      || fail "cb_install_binary fallback reported: $FALLBACK_OUT"
+
+    # Go のユニットテストも本体として通す。
+    if (cd "$REPO_DIR" && go test ./... >/dev/null 2>&1); then
+        pass "go test ./... passes"
+    else
+        fail "go test ./... failed"
+    fi
+else
+    skip "Go toolchain not available; conductor build tests"
+fi
+
+# 退避しておいた curl モックを戻す。
+if [ -f "$MOCK_BIN/curl.mocked" ]; then
+    mv "$MOCK_BIN/curl.mocked" "$MOCK_BIN/curl"
+fi
 
 # ============================================================
 section "55. Uninstall"

@@ -52,9 +52,22 @@ cd claude-conductor
 The installer will:
 
 1. Copy scripts and layouts to `~/.claude-conductor/`
-2. Merge hooks into `~/.claude/settings.json`
-3. Add `source` line to `~/.zshrc` (with confirmation)
-4. Record the installed version and update source (`~/.claude-conductor/VERSION`, `REPO_URL`)
+2. Install the `conductor` binary to `~/.claude-conductor/bin/` (see below)
+3. Merge hooks into `~/.claude/settings.json`
+4. Add `source` line to `~/.zshrc` (with confirmation)
+5. Record the installed version and update source (`~/.claude-conductor/VERSION`, `REPO_URL`)
+
+### The conductor binary
+
+The panes are rendered by `conductor`, a small Go program built with
+[Bubble Tea](https://github.com/charmbracelet/bubbletea). The installer downloads
+the release asset matching your platform (macOS/Linux × amd64/arm64), so a Go
+toolchain is **not** required to install or update.
+
+When the download fails — most commonly on a git checkout whose version has no
+matching release yet — the installer falls back to building from source with a
+locally installed Go. If neither path works, installation stops rather than
+leaving a half-configured session behind.
 
 ## Updating
 

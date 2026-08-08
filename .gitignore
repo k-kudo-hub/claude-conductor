@@ -7,8 +7,12 @@
 config.json
 
 # CONDUCTOR_HOME としてリポジトリ／worktree を使う場合（mdev-test 等）の実行時生成物
+/bin/
 /daily/
 /news/
 /tasks/
 /upload-cache/
 /VERSION
+
+# Go のビルド成果物（リリース資産は CI が dist/ に吐く）
+/dist/

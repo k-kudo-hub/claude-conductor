@@ -109,6 +109,30 @@ echo -e "  ${GREEN}✓${NC} Config"
 echo -e "  ${GREEN}✓${NC} Shell functions"
 echo ""
 
+# --- Install the conductor binary ---
+# ペインの描画は Go 製の conductor が担う。リリース資産の取得を試し、
+# 取得できなければ手元の Go でビルドする（リリース前のチェックアウト用）。
+echo -e "${BOLD}Installing conductor binary...${NC}"
+
+# shellcheck source=scripts/update-lib.sh
+source "$CONDUCTOR_HOME/scripts/update-lib.sh"
+# shellcheck source=scripts/binary-lib.sh
+source "$CONDUCTOR_HOME/scripts/binary-lib.sh"
+
+CONDUCTOR_BIN="$CONDUCTOR_HOME/bin/conductor"
+if BIN_SOURCE=$(cb_install_binary "$REPO_DIR" "$CONDUCTOR_BIN" "$VERSION" "$REPO_URL"); then
+    case "$BIN_SOURCE" in
+        download) echo -e "  ${GREEN}✓${NC} conductor $VERSION (downloaded)" ;;
+        *)        echo -e "  ${GREEN}✓${NC} conductor $VERSION (built locally)" ;;
+    esac
+else
+    echo -e "  ${RED}✗${NC} conductor バイナリを取得できませんでした"
+    echo "    リリース資産のダウンロードに失敗し、ローカルビルドもできません。"
+    echo "    ネットワークを確認するか、Go をインストールして再実行してください。"
+    exit 1
+fi
+echo ""
+
 # --- Configure Claude Code hooks ---
 echo -e "${BOLD}Configuring Claude Code hooks...${NC}"
 
