@@ -29,10 +29,10 @@ layout {
                     command "bash"
                     args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/done-loop.sh"
                 }
-                pane {
+                pane borderless=true {
                     name "News"
                     command "bash"
-                    args "-c" "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/news-loop.sh"
+                    args "-c" "exec ${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/conductor news"
                 }
             }
             pane size="30%" {

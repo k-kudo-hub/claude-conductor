@@ -2469,7 +2469,7 @@ bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
 [[ ! -f "$OLD_FILE" ]] && pass "old news file cleaned up" || fail "old news file still exists"
 
 # ============================================================
-section "30. news-loop.sh (displays news from file)"
+section "30. conductor news (displays news from file)"
 # ============================================================
 
 # Create news file for display test
@@ -2491,23 +2491,37 @@ cat > "$NEWS_FILE" << 'NEWSJSON'
 }
 NEWSJSON
 
-# Run news-loop.sh in single-pass mode for testing
-OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+# 描画の詳細（幅・日本語・記事0件）は Go のユニットテストが見る。ここでは
+# 実バイナリが保存済みニュースを読んで並べることを確認する。
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    OUTPUT=$(COLUMNS=70 "$HOME/.claude-conductor/bin/conductor" news --once 2>/dev/null)
 
-echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
-echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
-echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
-echo "$OUTPUT" | grep -qi "reload" && pass "reload key hint displayed" || fail "reload hint not displayed"
+    echo "$OUTPUT" | grep -q "GPT-5 Released" && pass "news title displayed" || fail "news title not displayed"
+    echo "$OUTPUT" | grep -q "OpenAI has released" && pass "description displayed" || fail "description not displayed"
+    echo "$OUTPUT" | grep -q "Claude 4.6" && pass "second item displayed" || fail "second item not displayed"
+    echo "$OUTPUT" | grep -qi "reload" && pass "reload key hint displayed" || fail "reload hint not displayed"
+    echo "$OUTPUT" | grep -q "1-2" && pass "key hint matches item count" || fail "key hint wrong: $OUTPUT"
+else
+    skip "real conductor binary unavailable; conductor news output tests"
+fi
 
 # ============================================================
-section "31. news-loop.sh (handles missing news file)"
+section "31. conductor news (handles missing news file)"
 # ============================================================
 
 rm -f "$NEWS_FILE"
 
-OUTPUT=$(CONDUCTOR_NEWS_ONCE=1 bash "$HOME/.claude-conductor/scripts/news-loop.sh" 2>/dev/null)
+if [[ -n "$REAL_CONDUCTOR" ]]; then
+    OUTPUT=$(COLUMNS=70 "$HOME/.claude-conductor/bin/conductor" news --once 2>/dev/null)
 
-echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
+    echo "$OUTPUT" | grep -qi "no news\|fetch" && pass "shows message when no news file" || fail "no fallback message: $OUTPUT"
+
+    "$HOME/.claude-conductor/bin/conductor" news --bogus >/dev/null 2>&1 \
+      && fail "conductor news accepted an unknown option" \
+      || pass "conductor news rejects an unknown option"
+else
+    skip "real conductor binary unavailable; conductor news empty-state test"
+fi
 
 # ============================================================
 section "30. scripts are executable (mdev-test runs them directly)"
