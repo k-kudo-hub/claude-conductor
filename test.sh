@@ -1174,7 +1174,13 @@ SDL_ST=$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)
 
 # 実時間が経たないうちの再観測では確定しない。ダッシュボードのポーリングは
 # キー入力で早回りしうる（矢印キー1回でreadが3回返る）ため、観測回数だけを
-# 条件にすると同じ1フレームを連続で見て偽doneが出る
+# 条件にすると同じ1フレームを連続で見て偽doneが出る。
+#
+# 判定は秒精度なので、直前の観測から実際に秒がまたぐとこのテストは
+# 「早回り」でなくなってしまう（実行タイミング次第で落ちる）。観測時刻を
+# 今に揃えてから再観測し、境界のゆらぎを外す。
+echo "idle_pending $(date +%s)" > "$SDL_DIR/.screen-state/$SDL_SLUG"
+SDL_ST=$(cat "$SDL_DIR/.screen-state/$SDL_SLUG")
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 [[ ! -f "$SDL_F" ]] && pass "rapid re-observation does not confirm idle" || fail "Stop written without elapsed time"
 [[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle_pending ${SDL_ST#* }" ]] \
