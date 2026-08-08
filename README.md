@@ -233,7 +233,10 @@ and matches its bottom lines against the agent's `patterns`:
   own (a full-screen viewer, a picker). The tab's state and pending entries are
   left exactly as they were — on such a screen the spinner is hidden (which
   would read as a false done) and scrolled-back log lines may quote approval
-  prompts (which would read as a false approval). Empty by default.
+  prompts (which would read as a false approval). Empty by default. Anchor
+  these patterns to the viewer's own chrome (a footer line, a scroll hint) and
+  keep them tight: a pattern loose enough to match a normal screen removes that
+  tab from the dashboard for as long as it matches, silently.
 - A line matching `patterns.blocked` (a known approval prompt) surfaces the
   tab as `Notification` — approval waits show up on the dashboard just like
   Claude Code permission prompts. Approvals are never delayed: they appear on

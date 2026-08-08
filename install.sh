@@ -78,7 +78,8 @@ else
     # ユーザーが設定済みの値は一切上書きしない（デフォルトは不足キーのみ埋める）。
     # patterns はオブジェクト丸ごとではなくキー単位で合成する。丸ごとだと
     # patterns を一度でも触ったユーザーには後から追加された状態（neutral 等）が
-    # 永久に届かず、検出ルールの更新が止まる。
+    # 永久に届かず、検出ルールの更新が止まる。ただし空オブジェクトは
+    # 「検出を止める」という明示の意思表示なので、そのまま残す。
     jq --slurpfile DEF "$CONDUCTOR_HOME/config.default.json" '
         if .agents then
             .agents |= with_entries(
@@ -87,13 +88,19 @@ else
                               | {detection, patterns}
                               | with_entries(select(.value != null)))
                              + $e.value)
-                            | if has("patterns")
+                            | if (.patterns | type) == "object" and (.patterns | length) > 0
                               then .patterns = ((($DEF[0].agents[$e.key].patterns) // {}) + .patterns)
                               else . end))
         else . end' \
         "$CONDUCTOR_HOME/config.json" > "$CONDUCTOR_HOME/config.json.tmp" \
         && mv "$CONDUCTOR_HOME/config.json.tmp" "$CONDUCTOR_HOME/config.json" \
-        || rm -f "$CONDUCTOR_HOME/config.json.tmp"
+        || {
+            # config.json が壊れている / patterns がオブジェクト以外、など。
+            # 既存configはそのまま残すが、黙って落とすと補完されていないことに
+            # 気付けないので必ず知らせる。
+            rm -f "$CONDUCTOR_HOME/config.json.tmp"
+            echo -e "  ${YELLOW}!${NC} config.json のマージをスキップしました（既存設定はそのままです）"
+        }
 fi
 
 echo -e "  ${GREEN}✓${NC} Scripts"

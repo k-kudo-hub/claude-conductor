@@ -65,9 +65,9 @@ agent_detection() {
     echo "$method"
 }
 
-# Screen-detection regexes (grep -E) for one state ("blocked" / "working"),
-# one per line. Empty output means the agent defines no patterns for that
-# state and it can never be classified as such.
+# Screen-detection regexes (grep -E) for one state ("neutral" / "blocked" /
+# "working"), one per line. Empty output means the agent defines no patterns
+# for that state and it can never be classified as such.
 agent_patterns() {
     local agent="$1" state="$2"
     [[ -z "$agent" ]] && return 0

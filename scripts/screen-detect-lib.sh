@@ -5,13 +5,17 @@
 # screen_detect_tick, which snapshots each screen-agent pane via
 # `zellij action dump-screen` and matches the agent's configured patterns:
 #
-#   blocked  (known approval prompt)  -> Notification pending
+#   neutral  (viewer / picker screen) -> nothing changes at all
+#   blocked  (known approval prompt)  -> Notification pending, no delay
 #   working  (turn in progress)       -> the tab's pendings are cleared
-#   idle     (anything else)          -> Stop pending, only after working
+#   idle     (anything else)          -> Stop pending, but only once idle has
+#                                        held for a second (see idle_pending)
 #
 # Unknown dialogs deliberately fall back to idle (herdr's strictness): only
 # a known approval prompt may surface as blocked, so a new UI screen never
-# spams the dashboard with false approvals.
+# spams the dashboard with false approvals. A screen the agent does not own
+# is neutral rather than idle, because on it neither the spinner nor the
+# prompt box is visible and nothing can be concluded from what is shown.
 # Sourced by dashboard-loop.sh; defines functions only.
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"

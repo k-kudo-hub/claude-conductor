@@ -588,6 +588,39 @@ jq -e '.agents.codex.patterns | has("neutral")' "$HOME/.claude-conductor/config.
   && pass "user blocked patterns preserved by key merge" || fail "user blocked patterns overwritten"
 [[ "$(jq -r '.agents.codex.patterns.working[0]' "$HOME/.claude-conductor/config.json")" == "my-spinner" ]] \
   && pass "user working patterns preserved by key merge" || fail "user working patterns overwritten"
+
+# patterns を空オブジェクトにして検出を止めているユーザーの意図は壊さない
+# （キー単位マージで全パターンが復活すると、検出が黙って再有効化される）
+jq '.agents.codex.patterns = {}' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null >/dev/null
+jq -e '(.agents.codex.patterns | length) == 0' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "emptied patterns stay empty" || fail "emptied patterns refilled from defaults"
+
+# patterns がオブジェクト以外でもjqを落とさない（型が違うものを足そうとすると
+# jqはエラーで終了し、マージ全体が無言でスキップされていた）
+jq '.agents.codex.patterns = []' \
+  "$HOME/.claude-conductor/config.json" > "$HOME/.claude-conductor/config.json.tmp"
+mv "$HOME/.claude-conductor/config.json.tmp" "$HOME/.claude-conductor/config.json"
+echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null >/dev/null
+jq -e '(.agents.codex.patterns | type) == "array"' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "non-object patterns survive the merge" || fail "patterns of unexpected type mangled"
+jq -e '.agents.codex.detection == "screen"' "$HOME/.claude-conductor/config.json" >/dev/null \
+  && pass "merge still runs for other keys" || fail "merge aborted by non-object patterns"
+
+# config.json自体が壊れている場合はjqが失敗する。無言でスキップせず警告を出し、
+# 既存のファイルには手を触れない
+cp "$HOME/.claude-conductor/config.json" "$SANDBOX/config.json.bak"
+printf '{ "agents": ' > "$HOME/.claude-conductor/config.json"
+INSTALL_OUT=$(echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null)
+echo "$INSTALL_OUT" | grep -q "config.json のマージをスキップ" \
+  && pass "unmergeable config.json warns" || fail "merge failure was silent"
+[[ "$(cat "$HOME/.claude-conductor/config.json")" == '{ "agents": ' ]] \
+  && pass "broken config.json left intact" || fail "broken config.json was rewritten"
+[[ ! -f "$HOME/.claude-conductor/config.json.tmp" ]] \
+  && pass "failed merge leaves no tmp file" || fail "config.json.tmp left behind"
+cp "$SANDBOX/config.json.bak" "$HOME/.claude-conductor/config.json"
 CUSTOM_TYPE=$(jq -r '.task_types.custom.description' "$HOME/.claude-conductor/config.json")
 [[ "$CUSTOM_TYPE" == "Custom task" ]] && pass "custom task type survives migration" || fail "custom type lost in migration"
 
@@ -1057,7 +1090,7 @@ CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/blocked-command
 jq 'del(.agents.codex.patterns.neutral)' "$CONDUCTOR_CFG" > "$CONDUCTOR_CFG.tmp" \
   && mv "$CONDUCTOR_CFG.tmp" "$CONDUCTOR_CFG"
 CLS=$( source "$SDL" && screen_classify "codex" "$(cat "$SDL_FIX/neutral-viewer.txt")" )
-[[ "$CLS" != "neutral" ]] && pass "no neutral patterns means no neutral state" || fail "classify without neutral = '$CLS'"
+[[ "$CLS" == "idle" ]] && pass "no neutral patterns means no neutral state" || fail "classify without neutral = '$CLS'"
 cp "$HOME/.claude-conductor/config.default.json" "$CONDUCTOR_CFG"
 
 # ============================================================
@@ -1186,7 +1219,27 @@ echo '{"tab":"cx-task","session":"sdl-sess","message":"parked","event":"Waiting"
 [[ ! -f "$SDL_F" ]] && pass "Waiting tab blocks new Notification" || fail "Notification written over Waiting"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 [[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives working" || fail "Waiting entry deleted"
+
+# Waiting中も内部の状態遷移だけは進める（復帰後に整合させるため）が、
+# 確定した idle でも Stop は書かない
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+sdl_age_idle_pending
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "Waiting tab gets no Stop from confirmed idle" || fail "Stop written over Waiting"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle" ]] \
+  && pass "Waiting tab keeps tracking state" \
+  || fail "state under Waiting = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+[[ -f "$SDL_DIR/park.json" ]] && pass "Waiting entry survives idle confirmation" || fail "Waiting entry deleted by idle"
 rm -f "$SDL_DIR/park.json"
+
+# blocked から降りた idle は working を経ていないので、何回観測しても done に
+# ならない（承認をタブ内で答えただけでターンが終わったわけではない）
+rm -rf "$SDL_DIR/.screen-state"
+rm -f "$SDL_DIR"/*.json
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ ! -f "$SDL_F" ]] && pass "blocked->idle never becomes done" || fail "Stop written without a working turn"
 
 # blocked→working遷移はMainへ自動復帰する（Claudeの権限承認後の
 # PostToolUse復帰に相当。タブ内で回答した合図なので引き戻す）
