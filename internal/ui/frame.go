@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -24,18 +25,49 @@ const (
 // Pad は文字列の表示幅をちょうど width に揃える。長ければ切り、短ければ
 // 右を空白で埋める。ANSI エスケープを含む文字列でも表示幅で判断する。
 //
-// 切り詰めに省略記号を付けないのは意図的で、… のような East Asian
-// Ambiguous 文字は端末によって幅 2 と解釈され、枠の右辺がずれるため。
+// 切り詰めに省略記号を付けないのは意図的。… のような East Asian Ambiguous
+// 文字は端末によって幅 2 と解釈されるため、付けると幅が読めなくなる。
+//
+// 切り詰めたあとに必ず測り直して埋める。全角文字の途中で切ると、その文字は
+// まるごと落ちるので結果は width より 1 桁狭くなる。ここで埋め直さないと
+// 枠の右辺が日本語のときだけずれる。
 func Pad(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
 	w := lipgloss.Width(s)
 	if w > width {
-		return ansi.Truncate(s, width, "")
+		s = ansi.Truncate(s, width, "")
+		w = lipgloss.Width(s)
 	}
 	return s + strings.Repeat(" ", width-w)
 }
+
+// Fit は本文を maxLines 行に収める。収まらない場合は末尾を削り、
+// 最終行を「+N more」に差し替えて省略したことを示す。
+//
+// ペインは代替画面に描くので、はみ出した行は見えないまま失われる。
+// 件数が読めなくなるより、省略されたと分かるほうがよい。
+func Fit(body []string, maxLines int) []string {
+	if maxLines <= 0 || len(body) <= maxLines {
+		return body
+	}
+	if maxLines == 1 {
+		return []string{moreLabel(len(body))}
+	}
+
+	out := make([]string, 0, maxLines)
+	out = append(out, body[:maxLines-1]...)
+	return append(out, moreLabel(len(body)-(maxLines-1)))
+}
+
+func moreLabel(n int) string {
+	return "+" + strconv.Itoa(n) + " more"
+}
+
+// BoxOverhead は Box が本文に加える行数（上辺と下辺）。呼び出し側が
+// 本文に割ける行数を計算するために使う。
+const BoxOverhead = 2
 
 // Rule は幅 width の区切り線を返す。
 func Rule(th Theme, width int) string {

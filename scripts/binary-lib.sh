@@ -11,6 +11,15 @@
 #      matching release exists.
 #
 # CONDUCTOR_BINARY_URL overrides the download URL (tests point it at file://).
+# CONDUCTOR_FORCE_BUILD=1 skips the download entirely and builds from source.
+
+# uc_repo_slug lives in update-lib.sh. Source it here so this library works on
+# its own: without it cb_install_binary would silently skip the download path
+# (an empty slug yields an empty URL) and always fall back to a local build.
+if ! command -v uc_repo_slug >/dev/null 2>&1; then
+    # shellcheck source=scripts/update-lib.sh
+    . "${CONDUCTOR_HOME:-$HOME/.claude-conductor}/scripts/update-lib.sh" 2>/dev/null || true
+fi
 
 # Go のバージョン埋め込み先。cmd/conductor のビルドで -ldflags に渡す。
 CB_VERSION_SYMBOL="github.com/k-kudo-hub/claude-conductor/internal/cli.Version"
@@ -84,8 +93,29 @@ cb_build_binary() {
         -o "$dest" ./cmd/conductor ) >/dev/null 2>&1
 }
 
+# cb_repo_is_ahead_of_release <repo-dir>
+# リポジトリの HEAD が、直近のタグそのものより先に進んでいれば真。
+#
+# install.sh はバージョンを `git describe --tags --abbrev=0` で決めるが、
+# これは常に「到達可能な直近タグ」を返すので、開発中のコミットでも
+# 既存リリースの資産がダウンロードできてしまい、手元の変更が反映されない
+# バイナリが黙って入る。タグが無い / git でない場合は偽（判断できない）。
+cb_repo_is_ahead_of_release() {
+    local repo_dir="$1" tag head tagged
+    git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
+
+    tag=$(git -C "$repo_dir" describe --tags --abbrev=0 2>/dev/null) || return 1
+    [ -n "$tag" ] || return 1
+
+    head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 1
+    tagged=$(git -C "$repo_dir" rev-parse "${tag}^{commit}" 2>/dev/null) || return 1
+
+    [ "$head" != "$tagged" ]
+}
+
 # cb_install_binary <repo-dir> <dest> <version> <repo-url>
 # ダウンロードを試し、失敗したらローカルビルドに落とす。
+# CONDUCTOR_FORCE_BUILD=1 のときはダウンロードを飛ばす。
 # 標準出力に採用した経路（download / build）を出す。
 cb_install_binary() {
     local repo_dir="$1" dest="$2" version="$3" repo_url="$4"
@@ -93,7 +123,9 @@ cb_install_binary() {
 
     mkdir -p "$(dirname "$dest")"
 
-    if [ -n "$CONDUCTOR_BINARY_URL" ]; then
+    if [ -n "$CONDUCTOR_FORCE_BUILD" ]; then
+        url=""
+    elif [ -n "$CONDUCTOR_BINARY_URL" ]; then
         url="$CONDUCTOR_BINARY_URL"
     elif [ -n "$repo_url" ] && [ -n "$version" ]; then
         if slug=$(uc_repo_slug "$repo_url" 2>/dev/null); then

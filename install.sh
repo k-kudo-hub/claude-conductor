@@ -57,11 +57,15 @@ cp "$REPO_DIR"/layouts/*.kdl "$CONDUCTOR_HOME/layouts/"
 cp "$REPO_DIR"/init.zsh "$CONDUCTOR_HOME/init.zsh"
 cp "$REPO_DIR"/hooks.json "$CONDUCTOR_HOME/hooks.json"
 
-# バージョンと更新元URLを記録する。
+# バージョンと更新元URLを決める。
 # tarball からの更新など .git が無い文脈では update.sh が
 # CONDUCTOR_VERSION / CONDUCTOR_REPO_URL を渡して正しい値を注入する。
+#
+# VERSION の書き込みはバイナリを置いたあとまで遅らせる。先に書くと、
+# バイナリ取得に失敗して中断したときも「そのバージョンが入っている」
+# ことになり、update.sh も起動時チェックも「既に最新です」と答えて
+# 二度と再試行しなくなる。
 VERSION="${CONDUCTOR_VERSION:-$(git -C "$REPO_DIR" describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")}"
-echo "$VERSION" > "$CONDUCTOR_HOME/VERSION"
 
 REPO_URL="${CONDUCTOR_REPO_URL:-$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "")}"
 echo "$REPO_URL" > "$CONDUCTOR_HOME/REPO_URL"
@@ -119,8 +123,20 @@ source "$CONDUCTOR_HOME/scripts/update-lib.sh"
 # shellcheck source=scripts/binary-lib.sh
 source "$CONDUCTOR_HOME/scripts/binary-lib.sh"
 
+# リポジトリを直接インストールしていて、かつ手元のコミットが
+# タグそのものでない場合は、リリース資産ではなく手元のソースを使う。
+# git describe は常に「到達可能な直近タグ」を返すので、開発中の
+# チェックアウトでも既存リリースのダウンロードが成功してしまい、
+# 変更が反映されないまま古いバイナリが入る。
+# CONDUCTOR_FORCE_BUILD=1 で明示的に強制することもできる。
+if [[ -z "$CONDUCTOR_FORCE_BUILD" ]] && cb_repo_is_ahead_of_release "$REPO_DIR"; then
+    CONDUCTOR_FORCE_BUILD=1
+    echo -e "  ${YELLOW}?${NC} リリース済みタグより先のコミットです。手元のソースからビルドします。"
+fi
+
 CONDUCTOR_BIN="$CONDUCTOR_HOME/bin/conductor"
-if BIN_SOURCE=$(cb_install_binary "$REPO_DIR" "$CONDUCTOR_BIN" "$VERSION" "$REPO_URL"); then
+if BIN_SOURCE=$(CONDUCTOR_FORCE_BUILD="$CONDUCTOR_FORCE_BUILD" \
+        cb_install_binary "$REPO_DIR" "$CONDUCTOR_BIN" "$VERSION" "$REPO_URL"); then
     case "$BIN_SOURCE" in
         download) echo -e "  ${GREEN}✓${NC} conductor $VERSION (downloaded)" ;;
         *)        echo -e "  ${GREEN}✓${NC} conductor $VERSION (built locally)" ;;
@@ -131,6 +147,9 @@ else
     echo "    ネットワークを確認するか、Go をインストールして再実行してください。"
     exit 1
 fi
+
+# ここまで来て初めてバージョンを記録する。
+echo "$VERSION" > "$CONDUCTOR_HOME/VERSION"
 echo ""
 
 # --- Configure Claude Code hooks ---

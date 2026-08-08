@@ -154,3 +154,98 @@ func TestPadPadsAndTruncates(t *testing.T) {
 		}
 	}
 }
+
+// 全角文字の途中で切ると、その文字はまるごと落ちて幅が 1 桁足りなくなる。
+// 切ったあとに埋め直していないと、日本語のときだけ枠の右辺がずれる。
+func TestPadRefillsAfterWideCharTruncation(t *testing.T) {
+	cases := []struct {
+		in    string
+		width int
+	}{
+		{"あいうえお", 5},
+		{"あいうえお", 7},
+		{"あいうえお", 9},
+		{"日本語テキスト", 9},
+		{"🚀🚀🚀", 5},
+		{"aあiいuう", 5},
+		{"あ", 1},
+	}
+
+	for _, tc := range cases {
+		got := Pad(tc.in, tc.width)
+		if w := lipgloss.Width(got); w != tc.width {
+			t.Errorf("Pad(%q, %d) width = %d, want %d (got %q)", tc.in, tc.width, w, tc.width, got)
+		}
+	}
+}
+
+// 同じ崩れは Box 経由でも起きてはならない。
+func TestBoxKeepsWidthWhenWideCharIsCut(t *testing.T) {
+	th := Resolve(DefaultThemeName)
+
+	for _, w := range []int{13, 14, 15, 21, 30} {
+		out := Box(th, "T", []string{"あいうえおかきくけこ", "混在 mixed テキスト"}, w)
+		for i, line := range strings.Split(out, "\n") {
+			if got := lipgloss.Width(line); got != w {
+				t.Errorf("width %d: line %d = %d\nline: %q", w, i, got, line)
+			}
+		}
+	}
+}
+
+// 表示できる行数を超えた本文は、末尾を削って省略されたと分かるようにする。
+func TestFit(t *testing.T) {
+	body := []string{"a", "b", "c", "d", "e"}
+
+	cases := []struct {
+		name     string
+		maxLines int
+		want     []string
+	}{
+		{"fits exactly", 5, []string{"a", "b", "c", "d", "e"}},
+		{"more room than needed", 10, []string{"a", "b", "c", "d", "e"}},
+		{"trims the tail", 3, []string{"a", "b", "+3 more"}},
+		{"single line", 1, []string{"+5 more"}},
+		{"no room", 0, []string{"a", "b", "c", "d", "e"}},
+		{"negative", -1, []string{"a", "b", "c", "d", "e"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Fit(body, tc.maxLines)
+			if len(got) != len(tc.want) {
+				t.Fatalf("Fit(_, %d) = %v, want %v", tc.maxLines, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("line %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// 省略した件数の合計が元の行数と一致すること。数え間違いは
+// 「何件隠れているか」を誤って伝える。
+func TestFitReportsEveryDroppedLine(t *testing.T) {
+	for total := 1; total <= 20; total++ {
+		body := make([]string, total)
+		for i := range body {
+			body[i] = "line"
+		}
+		for maxLines := 1; maxLines <= total; maxLines++ {
+			got := Fit(body, maxLines)
+			if len(got) > maxLines {
+				t.Fatalf("Fit(%d lines, %d) returned %d lines", total, maxLines, len(got))
+			}
+			if len(got) == total {
+				continue
+			}
+			dropped := total - (len(got) - 1)
+			want := moreLabel(dropped)
+			if last := got[len(got)-1]; last != want {
+				t.Errorf("Fit(%d lines, %d) last = %q, want %q", total, maxLines, last, want)
+			}
+		}
+	}
+}

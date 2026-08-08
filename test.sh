@@ -3879,6 +3879,47 @@ cb_download_binary "file://$SANDBOX/does-not-exist" "$MISSING_DEST" 2>/dev/null 
 [[ ! -f "$MISSING_DEST" ]] && pass "cb_download_binary cleans up after a missing source" \
                            || fail "cb_download_binary left a file for a missing source"
 
+# 手元のコミットがタグそのものより先なら、リリース資産ではなく
+# ローカルビルドを選ぶ。git describe は常に直近タグを返すため、これが
+# 無いと開発中のチェックアウトに古いバイナリが黙って入る。
+AHEAD_REPO="$SANDBOX/ahead-repo"
+mkdir -p "$AHEAD_REPO"
+( cd "$AHEAD_REPO" \
+  && git init -q . \
+  && git config user.email t@example.com && git config user.name t \
+  && echo one > f && git add f && git commit -qm one \
+  && git tag v1.0.0 ) >/dev/null 2>&1
+
+cb_repo_is_ahead_of_release "$AHEAD_REPO" \
+  && fail "repo at the tagged commit reported as ahead" \
+  || pass "repo at the tagged commit is not ahead"
+
+( cd "$AHEAD_REPO" && echo two > f && git add f && git commit -qm two ) >/dev/null 2>&1
+cb_repo_is_ahead_of_release "$AHEAD_REPO" \
+  && pass "repo past the tag reported as ahead" \
+  || fail "repo past the tag not detected"
+
+# タグの無いリポジトリや git 以外では判断できないので偽を返す。
+NOTAG_REPO="$SANDBOX/notag-repo"
+mkdir -p "$NOTAG_REPO"
+( cd "$NOTAG_REPO" && git init -q . ) >/dev/null 2>&1
+cb_repo_is_ahead_of_release "$NOTAG_REPO" \
+  && fail "untagged repo reported as ahead" || pass "untagged repo is not ahead"
+cb_repo_is_ahead_of_release "$SANDBOX" \
+  && fail "non-git dir reported as ahead" || pass "non-git dir is not ahead"
+
+# CONDUCTOR_FORCE_BUILD=1 はダウンロードを飛ばす。
+if command -v go >/dev/null 2>&1 && [ -d "$REPO_DIR/cmd/conductor" ]; then
+    FORCE_DEST="$SANDBOX/force-dest/conductor"
+    FORCE_OUT=$(CONDUCTOR_FORCE_BUILD=1 CONDUCTOR_BINARY_URL="file://$DL_SRC" \
+        cb_install_binary "$REPO_DIR" "$FORCE_DEST" v1.2.3 "https://github.com/o/r.git")
+    [[ "$FORCE_OUT" == "build" ]] \
+      && pass "CONDUCTOR_FORCE_BUILD skips the download" \
+      || fail "CONDUCTOR_FORCE_BUILD reported: $FORCE_OUT"
+else
+    skip "Go toolchain unavailable; CONDUCTOR_FORCE_BUILD test"
+fi
+
 # cb_install_binary prefers the download and reports which path it took.
 INSTALL_DEST="$SANDBOX/install-dest/conductor"
 INSTALL_SRC_OUT=$(CONDUCTOR_BINARY_URL="file://$DL_SRC" \
@@ -3888,6 +3929,26 @@ INSTALL_SRC_OUT=$(CONDUCTOR_BINARY_URL="file://$DL_SRC" \
   || fail "cb_install_binary reported: $INSTALL_SRC_OUT"
 [[ -x "$INSTALL_DEST" ]] && pass "cb_install_binary places the binary" \
                          || fail "cb_install_binary did not place the binary"
+
+# ============================================================
+section "54c2. install.sh records VERSION only after the binary lands"
+# ============================================================
+
+# バイナリ取得に失敗したら VERSION を書き残さない。書いてしまうと
+# update.sh も起動時チェックも「既に最新です」と答え、壊れた状態が固定される。
+FAILHOME="$SANDBOX/failhome"
+mkdir -p "$FAILHOME"
+(
+  export HOME="$FAILHOME"
+  export CONDUCTOR_BINARY_URL="file://$SANDBOX/definitely-missing"
+  # Go を隠してローカルビルドも失敗させる
+  export PATH="$MOCK_BIN:/usr/bin:/bin"
+  touch "$FAILHOME/.zshrc"
+  echo "n" | bash "$REPO_DIR/install.sh"
+) >/dev/null 2>&1 || true
+[[ ! -f "$FAILHOME/.claude-conductor/VERSION" ]] \
+  && pass "VERSION is not recorded when the binary cannot be installed" \
+  || fail "VERSION was recorded despite a failed binary install: $(cat "$FAILHOME/.claude-conductor/VERSION" 2>/dev/null)"
 
 # ============================================================
 section "54d. conductor binary build (requires Go)"

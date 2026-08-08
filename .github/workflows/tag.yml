@@ -46,15 +46,17 @@ jobs:
             echo "level=$level" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create and push tag
+      # タグの push はバイナリを作ってから行う。起動時の更新チェックは
+      # `git ls-remote --tags` でタグを見ているため、先に push すると
+      # ビルドが終わるまでの間（失敗したら恒久的に）「資産の無いタグ」を
+      # 全ユーザーが最新版として検知してしまう。
+      - name: Determine next version
         id: tag
         if: steps.bump.outputs.skip != 'true'
         run: |
           current=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           next=$(bash scripts/bump-version.sh "${{ steps.bump.outputs.level }}" "$current")
           echo "Bumping $current -> $next (${{ steps.bump.outputs.level }})"
-          git tag "$next"
-          git push origin "$next"
           echo "next=$next" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
@@ -85,10 +87,13 @@ jobs:
           done
           ls -l dist
 
-      - name: Create release
+      # ここで初めてタグを打ち、同じ手順の中でリリースと資産を作る。
+      - name: Tag and create release
         if: steps.bump.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.tag.outputs.next }}
         run: |
+          git tag "$VERSION"
+          git push origin "$VERSION"
           gh release create "$VERSION" --generate-notes --title "$VERSION" dist/conductor-*
