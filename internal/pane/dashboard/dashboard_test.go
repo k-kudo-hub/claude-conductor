@@ -152,7 +152,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := Render(theme(), "session", tc.entries, tc.prompt, tc.width)
+			out := Render(theme(), "session", tc.entries, tc.prompt, tc.width, 0)
 			want := max(tc.width, ui.MinBoxWidth)
 			for i, line := range strings.Split(out, "\n") {
 				if got := lipgloss.Width(line); got != want {
@@ -164,7 +164,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 }
 
 func TestRenderShowsTitleAndSession(t *testing.T) {
-	out := Render(theme(), "my-session", nil, "", 60)
+	out := Render(theme(), "my-session", nil, "", 60, 0)
 
 	if !strings.Contains(out, Title) {
 		t.Errorf("output does not contain %q:\n%s", Title, out)
@@ -175,7 +175,7 @@ func TestRenderShowsTitleAndSession(t *testing.T) {
 }
 
 func TestRenderEmptyState(t *testing.T) {
-	if out := Render(theme(), "s", nil, "", 60); !strings.Contains(out, "All tasks running") {
+	if out := Render(theme(), "s", nil, "", 60, 0); !strings.Contains(out, "All tasks running") {
 		t.Errorf("output does not contain the empty-state message:\n%s", out)
 	}
 }
@@ -184,7 +184,7 @@ func TestRenderShowsEntryDetails(t *testing.T) {
 	entries := []pending.Entry{
 		{Tab: "api-feature", Message: "Claude needs your permission", Event: "Notification", Time: "18:05:31"},
 	}
-	out := Render(theme(), "s", entries, "", 70)
+	out := Render(theme(), "s", entries, "", 70, 0)
 
 	for _, want := range []string{"1", "api-feature", "18:05:31", "Claude needs your permission"} {
 		if !strings.Contains(out, want) {
@@ -199,7 +199,7 @@ func TestRenderLabelsDoneEntries(t *testing.T) {
 		{Tab: "web-fix", Message: "Task complete", Event: "Stop", Time: "19:20:01"},
 	}
 
-	if out := Render(theme(), "s", entries, "", 70); !strings.Contains(out, "done") {
+	if out := Render(theme(), "s", entries, "", 70, 0); !strings.Contains(out, "done") {
 		t.Errorf("output does not mark the finished turn:\n%s", out)
 	}
 }
@@ -209,7 +209,7 @@ func TestRenderShowsPendingCountAndKeyHints(t *testing.T) {
 		{Tab: "a", Message: "m", Event: "Notification", Time: "1"},
 		{Tab: "b", Message: "m", Event: "Notification", Time: "2"},
 	}
-	out := Render(theme(), "s", entries, "", 70)
+	out := Render(theme(), "s", entries, "", 70, 0)
 
 	for _, want := range []string{"2 pending", "jump", "delete"} {
 		if !strings.Contains(out, want) {
@@ -221,7 +221,7 @@ func TestRenderShowsPendingCountAndKeyHints(t *testing.T) {
 // 削除は取り消せないので、番号入力待ちであることをはっきり出す。
 func TestRenderShowsPrompt(t *testing.T) {
 	entries := []pending.Entry{{Tab: "a", Message: "m", Event: "Notification", Time: "1"}}
-	out := Render(theme(), "s", entries, "Delete which number?", 70)
+	out := Render(theme(), "s", entries, "Delete which number?", 70, 0)
 
 	if !strings.Contains(out, "Delete which number?") {
 		t.Errorf("output does not contain the prompt:\n%s", out)

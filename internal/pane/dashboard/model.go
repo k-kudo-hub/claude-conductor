@@ -42,8 +42,17 @@ const DefaultWidth = 44
 
 type tickMsg time.Time
 
-// entriesMsg は 1 回のポーリングで観測した表示対象。
-type entriesMsg []pending.Entry
+// entriesMsg は 1 回の観測の結果。
+//
+// scheduleNext は「この観測が定期ポーリングの一部か」を表す。ジャンプや
+// 削除の直後にも観測するが、そこで次の tick まで積むとポーリングの鎖が
+// 1 本ずつ増えていく。増えると screen-detect-tick.sh の実行頻度が上がり、
+// 旧 dashboard-loop.sh のコメントが警告していた「短い間隔で観測が重なり
+// idle 確定が一瞬で成立する」状態を招く。
+type entriesMsg struct {
+	entries      []pending.Entry
+	scheduleNext bool
+}
 
 // promptTimeoutMsg は番号入力待ちの打ち切り。世代番号で古いタイマーを弾く。
 type promptTimeoutMsg int
@@ -68,6 +77,7 @@ type Model struct {
 	dir     string
 	theme   ui.Theme
 	width   int
+	height  int
 	entries []pending.Entry
 
 	awaitingDelete bool
@@ -119,14 +129,14 @@ func restoreSession() tea.Cmd {
 // bash 版はこれを描画ループの中で同期実行していたため、画面取得が遅いと
 // ペインごと固まっていた。コマンドとして走らせ、待っている間も入力を
 // 受け付けられるようにする。
-func observe(session, dir string) tea.Cmd {
+func observe(session, dir string, scheduleNext bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), DetectTimeout)
 		defer cancel()
 
 		_ = exec.CommandContext(ctx, "bash",
 			paths.Script("screen-detect-tick.sh"), session).Run()
-		return entriesMsg(Snapshot(dir))
+		return entriesMsg{entries: Snapshot(dir), scheduleNext: scheduleNext}
 	}
 }
 
@@ -194,25 +204,34 @@ func detectionMethod(agent string) string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Sequence(restoreSession(), observe(m.session, m.dir))
+	return tea.Sequence(restoreSession(), observe(m.session, m.dir, true))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 
 	case tickMsg:
-		return m, observe(m.session, m.dir)
+		return m, observe(m.session, m.dir, true)
 
 	case entriesMsg:
-		m.entries = msg
-		// 観測が終わってから次を予約する。遅い観測が重ならないようにする。
-		return m, tick()
+		// 番号入力を待っている間は一覧を固定する。並びが変わると、
+		// 押した番号が別のタブを指してしまう。
+		if !m.awaitingDelete {
+			m.entries = msg.entries
+		}
+		// 次の予約は定期ポーリング由来の観測でだけ行う。こうしないと
+		// ジャンプや削除のたびに鎖が 1 本ずつ増える。
+		if msg.scheduleNext {
+			return m, tick()
+		}
+		return m, nil
 
 	case jumpedMsg:
-		return m, observe(m.session, m.dir)
+		return m, observe(m.session, m.dir, false)
 
 	case deleteResultMsg:
 		return m.handleDeleteResult(msg)
@@ -242,16 +261,20 @@ func (m Model) handleDeleteResult(msg deleteResultMsg) (tea.Model, tea.Cmd) {
 
 	if msg.err != nil {
 		m.status = "Upload failed. Deletion cancelled."
-		return m, tea.Batch(clearStatus(m.statusGen), observe(m.session, m.dir))
+		return m, tea.Batch(clearStatus(m.statusGen), observe(m.session, m.dir, false))
 	}
 
 	// アップロード先の URL が返るので、タブが閉じる前に見えるよう少し残す。
 	// 何も出ない場合はアップロードが無効か対象が無かったということ。
 	m.status = msg.output
-	return m, tea.Batch(clearStatus(m.statusGen), observe(m.session, m.dir))
+	return m, tea.Batch(clearStatus(m.statusGen), observe(m.session, m.dir, false))
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if ui.IsQuit(msg) {
+		return m, tea.Quit
+	}
+
 	// 削除の実行中は取り消せない。誤入力を拾わないよう伏せる。
 	if m.deleting {
 		return m, nil
@@ -304,7 +327,7 @@ func (m Model) prompt() string {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.session, m.entries, m.prompt(), m.width))
+	v := tea.NewView(Render(m.theme, m.session, m.entries, m.prompt(), m.width, m.height))
 	v.AltScreen = true
 	return v
 }
@@ -334,7 +357,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		_ = exec.CommandContext(ctx, "bash",
 			paths.Script("screen-detect-tick.sh"), session).Run()
-		fmt.Fprintln(stdout, Render(th, session, Snapshot(pending.Dir(session)), "", envWidth()))
+		fmt.Fprintln(stdout, Render(th, session, Snapshot(pending.Dir(session)), "", envWidth(), 0))
 		return 0
 	}
 

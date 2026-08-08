@@ -3896,6 +3896,26 @@ fi
 grep -q 'close-tab-by-id 9' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "task-delete closes its own tab by id" || fail "close-tab-by-id not called: $(cat "$HOME/.claude-pending/zellij-calls.log")"
 
+# list-tabs が id を返さないときは close-tab に落ちる。ここまで来ると
+# pending もレジストリも消えているので、タブだけ残すと操作できなくなる。
+cat > "$MOCK_BIN/zellij" << 'MOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1 $2" == "action list-tabs" ]]; then
+    printf 'TAB_ID  POSITION  NAME\n'
+fi
+MOCK
+chmod +x "$MOCK_BIN/zellij"
+mkdir -p "$TD_DIR"
+cat > "$TD_DIR/td2.json" << 'EOF'
+{ "tab":"td-orphan","session":"td-sess","message":"done","event":"Stop","time":"12:00:00" }
+EOF
+: > "$HOME/.claude-pending/zellij-calls.log"
+ZELLIJ_SESSION_NAME="$TD_SESSION" bash "$HOME/.claude-conductor/scripts/task-delete.sh" td-orphan >/dev/null 2>&1
+grep -q 'action close-tab$' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "task-delete falls back to close-tab when the id is unknown" \
+  || fail "no close-tab fallback: $(cat "$HOME/.claude-pending/zellij-calls.log")"
+
 # タブ名が無ければ何も消さずに 2 で戻る（誤用の検出）。
 bash "$HOME/.claude-conductor/scripts/task-delete.sh" >/dev/null 2>&1 \
   && fail "task-delete accepted an empty tab name" || pass "task-delete rejects an empty tab name"

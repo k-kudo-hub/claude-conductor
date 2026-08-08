@@ -56,6 +56,11 @@ TAB_ID=$(zellij action list-tabs 2>/dev/null | awk -v name="$TAB" \
     'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
 if [ -n "$TAB_ID" ]; then
     zellij action close-tab-by-id "$TAB_ID" 2>/dev/null || true
+else
+    # id を引けなかった場合でも閉じる。ここまで来ると pending・レジストリ・
+    # screen-state は既に消えているので、タブだけ残すと操作できない
+    # 孤児タブになる。旧 task-control.sh も同じフォールバックを持っていた。
+    zellij action close-tab 2>/dev/null || true
 fi
 
 # Report the upload result without the script's own prefix so callers can show

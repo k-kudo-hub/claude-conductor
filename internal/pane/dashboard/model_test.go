@@ -227,13 +227,53 @@ func TestPromptPrecedence(t *testing.T) {
 func TestEntriesMsgSchedulesNextPoll(t *testing.T) {
 	entries := []pending.Entry{{Tab: "a", Event: "Notification"}}
 
-	m, cmd := modelWithEntries().Update(entriesMsg(entries))
+	m, cmd := modelWithEntries().Update(entriesMsg{entries: entries, scheduleNext: true})
 
 	if len(m.(Model).entries) != 1 {
 		t.Errorf("entries = %d, want 1", len(m.(Model).entries))
 	}
 	if cmd == nil {
 		t.Error("no command returned; the next poll must be scheduled after an observation")
+	}
+}
+
+// ジャンプや削除の直後の観測では次を予約しない。予約するとポーリングの
+// 鎖が1本ずつ増え、スクリーン検出の実行頻度が上がってしまう。
+func TestOneOffObservationDoesNotSchedulePoll(t *testing.T) {
+	entries := []pending.Entry{{Tab: "a", Event: "Notification"}}
+
+	m, cmd := modelWithEntries().Update(entriesMsg{entries: entries, scheduleNext: false})
+
+	if len(m.(Model).entries) != 1 {
+		t.Errorf("entries = %d, want 1", len(m.(Model).entries))
+	}
+	if cmd != nil {
+		t.Error("a command was returned; a one-off observation must not chain another poll")
+	}
+}
+
+// 番号入力を待っている間は一覧を固定する。並びが変わると押した番号が
+// 別のタブを指す。
+func TestListIsFrozenWhileAwaitingDelete(t *testing.T) {
+	prompted, _ := modelWithEntries().Update(key("d"))
+	m := prompted.(Model)
+	before := len(m.entries)
+
+	after, _ := m.Update(entriesMsg{entries: nil, scheduleNext: true})
+	if len(after.(Model).entries) != before {
+		t.Errorf("entries = %d, want %d kept while the prompt is open",
+			len(after.(Model).entries), before)
+	}
+}
+
+func TestCtrlCQuits(t *testing.T) {
+	_, cmd := modelWithEntries().Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	if cmd == nil {
+		t.Fatal("no command returned for ctrl+c")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c did not produce a quit")
 	}
 }
 

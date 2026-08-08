@@ -60,7 +60,7 @@ const WaitingEvent = "Waiting"
 
 // Render はタスク一覧を枠付きで描く。prompt が空でなければ、キーヒントの
 // 代わりにその案内を出す（削除の番号入力待ちなど）。
-func Render(th ui.Theme, session string, entries []pending.Entry, prompt string, width int) string {
+func Render(th ui.Theme, session string, entries []pending.Entry, prompt string, width, height int) string {
 	w := max(width, ui.MinBoxWidth)
 	inner := w - 4
 
@@ -69,10 +69,17 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 	name := lipgloss.NewStyle().Foreground(th.Text).Bold(true)
 
 	if len(entries) == 0 {
+		// 最後の 1 件を削除した直後もここに来る。prompt には
+		// アップロード先やキャンセルの知らせが入っているので捨てない。
+		last := muted.Render(ui.SpaceBetween("", session, inner))
+		if prompt != "" {
+			last = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).
+				Render(ui.Pad(prompt, inner))
+		}
 		body := []string{
 			lipgloss.NewStyle().Foreground(th.Done).Render("All tasks running"),
 			"",
-			muted.Render(ui.SpaceBetween("", session, inner)),
+			last,
 		}
 		return ui.Box(th, Title, body, w)
 	}
@@ -105,6 +112,9 @@ func Render(th ui.Theme, session string, entries []pending.Entry, prompt string,
 		"[num] jump · d+[num] delete", inner))
 	if prompt != "" {
 		footer = lipgloss.NewStyle().Foreground(th.Danger).Bold(true).Render(prompt)
+	}
+	if lines := ui.BodyLines(height); lines > 0 {
+		body = ui.Fit(body, lines-2)
 	}
 	body = append(body, "", footer)
 
