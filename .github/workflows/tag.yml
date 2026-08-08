@@ -46,14 +46,54 @@ jobs:
             echo "level=$level" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create and push tag
+      # タグの push はバイナリを作ってから行う。起動時の更新チェックは
+      # `git ls-remote --tags` でタグを見ているため、先に push すると
+      # ビルドが終わるまでの間（失敗したら恒久的に）「資産の無いタグ」を
+      # 全ユーザーが最新版として検知してしまう。
+      - name: Determine next version
+        id: tag
         if: steps.bump.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           current=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           next=$(bash scripts/bump-version.sh "${{ steps.bump.outputs.level }}" "$current")
           echo "Bumping $current -> $next (${{ steps.bump.outputs.level }})"
-          git tag "$next"
-          git push origin "$next"
-          gh release create "$next" --generate-notes --title "$next"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.bump.outputs.skip != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # ペインを描画する conductor バイナリをリリースに添付する。
+      # install.sh はこの資産を取得するため、ユーザー側に Go は不要になる。
+      - name: Build release binaries
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.tag.outputs.next }}
+        run: |
+          # バージョン埋め込み先のシンボルは install 側と同じ定義を使う。
+          # shellcheck source=scripts/binary-lib.sh
+          source scripts/binary-lib.sh
+
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            echo "Building conductor-${os}-${arch}"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build \
+              -ldflags "-s -w -X ${CB_VERSION_SYMBOL}=${VERSION}" \
+              -o "dist/conductor-${os}-${arch}" ./cmd/conductor
+          done
+          ls -l dist
+
+      # ここで初めてタグを打ち、同じ手順の中でリリースと資産を作る。
+      - name: Tag and create release
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.next }}
+        run: |
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" --generate-notes --title "$VERSION" dist/conductor-*
