@@ -109,7 +109,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := Render(theme(), tc.items, "2026-08-08", tc.loading, tc.width)
+			out := Render(theme(), tc.items, "2026-08-08", tc.loading, tc.width, 0)
 			want := max(tc.width, ui.MinBoxWidth)
 			for i, line := range strings.Split(out, "\n") {
 				if got := lipgloss.Width(line); got != want {
@@ -121,7 +121,7 @@ func TestRenderEveryLineHasExactWidth(t *testing.T) {
 }
 
 func TestRenderShowsTitleAndDate(t *testing.T) {
-	out := Render(theme(), nil, "2026-08-08", false, 60)
+	out := Render(theme(), nil, "2026-08-08", false, 60, 0)
 
 	if !strings.Contains(out, Title) {
 		t.Errorf("output does not contain %q:\n%s", Title, out)
@@ -132,7 +132,7 @@ func TestRenderShowsTitleAndDate(t *testing.T) {
 }
 
 func TestRenderEmptyState(t *testing.T) {
-	out := Render(theme(), nil, "2026-08-08", false, 60)
+	out := Render(theme(), nil, "2026-08-08", false, 60, 0)
 
 	if !strings.Contains(out, "No news yet") {
 		t.Errorf("output does not contain the empty-state message:\n%s", out)
@@ -140,7 +140,7 @@ func TestRenderEmptyState(t *testing.T) {
 }
 
 func TestRenderLoadingState(t *testing.T) {
-	out := Render(theme(), nil, "2026-08-08", true, 60)
+	out := Render(theme(), nil, "2026-08-08", true, 60, 0)
 
 	if !strings.Contains(out, "Fetching news") {
 		t.Errorf("output does not contain the loading message:\n%s", out)
@@ -153,7 +153,7 @@ func TestRenderNumbersItems(t *testing.T) {
 		{Title: "First story", Description: "d1"},
 		{Title: "Second story", Description: "d2"},
 	}
-	out := Render(theme(), items, "2026-08-08", false, 60)
+	out := Render(theme(), items, "2026-08-08", false, 60, 0)
 
 	for _, want := range []string{"1", "First story", "2", "Second story", "d1", "d2"} {
 		if !strings.Contains(out, want) {
@@ -166,7 +166,7 @@ func TestRenderNumbersItems(t *testing.T) {
 func TestRenderKeyHintMatchesItemCount(t *testing.T) {
 	items := []Item{{Title: "a"}, {Title: "b"}, {Title: "c"}}
 
-	if out := Render(theme(), items, "2026-08-08", false, 60); !strings.Contains(out, "1-3") {
+	if out := Render(theme(), items, "2026-08-08", false, 60, 0); !strings.Contains(out, "1-3") {
 		t.Errorf("output does not contain the key hint for 3 items:\n%s", out)
 	}
 }
@@ -174,12 +174,30 @@ func TestRenderKeyHintMatchesItemCount(t *testing.T) {
 func TestRenderSingleItemKeyHint(t *testing.T) {
 	items := []Item{{Title: "only"}}
 
-	out := Render(theme(), items, "2026-08-08", false, 60)
+	out := Render(theme(), items, "2026-08-08", false, 60, 0)
 	if strings.Contains(out, "1-1") {
 		t.Errorf("key hint should not be a range for a single item:\n%s", out)
 	}
 	if !strings.Contains(out, "reload") {
 		t.Errorf("output does not contain the reload hint:\n%s", out)
+	}
+}
+
+// ペインの高さを超える記事数でも枠の中に収まり、キーヒントは残ること。
+func TestRenderFitsWithinHeight(t *testing.T) {
+	items := make([]Item, 10)
+	for i := range items {
+		items[i] = Item{Title: "headline", Description: "description"}
+	}
+
+	for _, height := range []int{6, 10, 14} {
+		out := Render(theme(), items, "2026-08-08", false, 44, height)
+		if got := len(strings.Split(out, "\n")); got > height {
+			t.Errorf("height %d: rendered %d lines\n%s", height, got, out)
+		}
+		if !strings.Contains(out, "reload") {
+			t.Errorf("height %d: key hint was dropped\n%s", height, out)
+		}
 	}
 }
 

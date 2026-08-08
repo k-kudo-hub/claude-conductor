@@ -34,6 +34,7 @@ type Model struct {
 	dir     string
 	theme   ui.Theme
 	width   int
+	height  int
 	date    string
 	items   []Item
 	loading bool
@@ -67,11 +68,20 @@ func reload() tea.Cmd {
 }
 
 // openURL は既定のブラウザで記事を開く。開けなくても描画は続ける。
+//
+// 起動したら必ず Wait で回収する。Go は子プロセスを自動では刈らないので、
+// 常駐するこのペインで記事を開くたびにゾンビが 1 つずつ残ってしまう。
+// 待つのはコマンド側の goroutine なので、描画は止まらない。
 func openURL(url string) tea.Cmd {
 	return func() tea.Msg {
-		if cmd := browserCommand(url); cmd != nil {
-			_ = cmd.Start()
+		cmd := browserCommand(url)
+		if cmd == nil {
+			return nil
 		}
+		if err := cmd.Start(); err != nil {
+			return nil
+		}
+		go func() { _ = cmd.Wait() }()
 		return nil
 	}
 }
@@ -95,6 +105,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 
 	case tickMsg:
@@ -117,6 +128,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// raw モードでは ^C が SIGINT にならないので自分で受ける。
+	if ui.IsQuit(msg) {
+		return m, tea.Quit
+	}
+
 	switch key := msg.String(); key {
 	case "r", "R":
 		if m.loading {
@@ -137,7 +153,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.items, m.date, m.loading, m.width))
+	v := tea.NewView(Render(m.theme, m.items, m.date, m.loading, m.width, m.height))
 	v.AltScreen = true
 	return v
 }
@@ -160,7 +176,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if once {
 		date := today()
-		fmt.Fprintln(stdout, Render(th, Load(dir, date), date, false, envWidth()))
+		fmt.Fprintln(stdout, Render(th, Load(dir, date), date, false, envWidth(), 0))
 		return 0
 	}
 

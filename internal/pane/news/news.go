@@ -55,7 +55,9 @@ func URLForIndex(items []Item, i int) string {
 }
 
 // Render は記事一覧を枠付きで描く。loading 中は取得中の表示に差し替える。
-func Render(th ui.Theme, items []Item, date string, loading bool, width int) string {
+//
+// height が正のときは、その高さに収まるよう記事を削る。
+func Render(th ui.Theme, items []Item, date string, loading bool, width, height int) string {
 	w := max(width, ui.MinBoxWidth)
 	inner := w - 4
 
@@ -93,7 +95,12 @@ func Render(th ui.Theme, items []Item, date string, loading bool, width int) str
 		}
 	}
 
-	body = append(body, "", muted.Render(ui.SpaceBetween(keyHint(len(items)), date, inner)))
+	// キーヒントと日付は必ず残す。省略はその前で行う。
+	footer := muted.Render(ui.SpaceBetween(keyHint(len(items)), date, inner))
+	if lines := ui.BodyLines(height); lines > 0 {
+		body = ui.Fit(body, lines-2)
+	}
+	body = append(body, "", footer)
 
 	return ui.Box(th, Title, body, w)
 }

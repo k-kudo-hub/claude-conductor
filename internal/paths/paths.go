@@ -9,6 +9,14 @@ import (
 	"path/filepath"
 )
 
+// FallbackHome は HOME も CONDUCTOR_HOME も無い環境で使う退避先。
+//
+// os.UserHomeDir は Unix では HOME を読むだけなので、失敗したときに
+// もう一度 HOME を読んでも必ず空になる。空のまま join すると相対パス
+// （カレントディレクトリ配下）を指してしまい、ニュースや日次ログを
+// 別の場所に読み書きし始める。絶対パスに倒しておく。
+const FallbackHome = "/tmp/claude-conductor"
+
 // Home は Conductor のインストール先を返す。CONDUCTOR_HOME があれば
 // それを使う（mdev-test などが差し替える）。
 func Home() string {
@@ -16,8 +24,8 @@ func Home() string {
 		return h
 	}
 	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
+	if err != nil || home == "" {
+		return FallbackHome
 	}
 	return filepath.Join(home, ".claude-conductor")
 }
