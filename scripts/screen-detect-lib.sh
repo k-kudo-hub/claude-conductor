@@ -110,7 +110,18 @@ screen_update_pending() {
     # || true: callers may run under set -e (test.sh) and a missing state
     # file on the first observation must not abort them.
     prev=$(cat "$state_file" 2>/dev/null || true)
-    echo "$state" > "$state_file"
+
+    # working -> idle は1回の観測では確定させず idle_pending に置く。codex の
+    # スピナー行はツール実行の切れ目や再描画の1フレームで消えるため、2秒
+    # ポーリングがその瞬間に当たると偽の done がダッシュボードに出る。次の
+    # ポーリングでも idle なら確定する（herdr の PendingIdleConfirmation
+    # 相当。あちらは 100ms x 3回、こちらはポーリング粒度が2秒なので2回）。
+    # blocked には遅延をかけない: 人間を待たせている状態は即時性が要る。
+    local effective="$state"
+    if [[ "$state" == "idle" && "$prev" == "working" ]]; then
+        effective="idle_pending"
+    fi
+    echo "$effective" > "$state_file"
 
     # A Waiting tab is parked on an external response (waiting-toggle.sh):
     # neither surface it again nor clear it until the user un-parks it.
@@ -144,8 +155,9 @@ screen_update_pending() {
             # inside the tab (approved, or submitted a prompt): mirror the
             # claude PostToolUse / UserPromptSubmit auto-return to Main.
             # Not on the first observation (prev empty) so a dashboard
-            # restart mid-turn never yanks the focus.
-            if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
+            # restart mid-turn never yanks the focus. idle_pending counts as
+            # idle here: the turn was about to be called done and resumed.
+            if [[ "$prev" == "blocked" || "$prev" == "idle" || "$prev" == "idle_pending" ]]; then
                 zellij action go-to-tab-name Main 2>/dev/null || true
             fi
             ;;
@@ -167,10 +179,11 @@ screen_update_pending() {
                     fi
                 done
             fi
-            # Stop only on a working->idle transition: a freshly created tab
-            # idles at the composer and must not appear as done. Skip when
-            # the tab already has a pending (usually the notify Stop).
-            if [[ "$prev" == "working" ]]; then
+            # Stop only once idle is confirmed (idle_pending -> idle): a
+            # freshly created tab idles at the composer and must not appear
+            # as done, and a single idle frame mid-turn is not a turn end.
+            # Skip when the tab already has a pending (usually the notify Stop).
+            if [[ "$prev" == "idle_pending" ]]; then
                 for f in "$pending_dir"/*.json; do
                     [[ -f "$f" ]] || continue
                     if [[ "$(jq -r '.tab' "$f" 2>/dev/null)" == "$tab" ]]; then

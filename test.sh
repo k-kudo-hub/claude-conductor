@@ -1041,9 +1041,48 @@ echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop"
 [[ ! -f "$SDL_F" ]] && pass "working clears screen pending" || fail "screen pending survived working"
 [[ ! -f "$SDL_DIR/thread-1.json" ]] && pass "working clears notify Stop pending" || fail "notify pending survived working"
 
-# working直後の idle は Stop を書く（turn完了のフォールバック）
+# working直後の idle 1回では Stop を書かない。スピナー行はツール実行の
+# 切れ目や再描画の1フレームで消えるため、そこを拾うと偽doneになる
+# （herdr の PendingIdleConfirmation 相当。ポーリングが2秒なので2回で確定）
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
-[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "working->idle writes Stop" || fail "no Stop after working->idle"
+[[ ! -f "$SDL_F" ]] && pass "single idle after working writes no Stop" || fail "Stop written on first idle"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle_pending" ]] \
+  && pass "first idle after working parks as idle_pending" \
+  || fail "state = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+
+# 2回連続の idle で Stop を確定する
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] && pass "second idle confirms Stop" || fail "no Stop after two idles"
+[[ "$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)" == "idle" ]] \
+  && pass "confirmed idle clears idle_pending" \
+  || fail "state after confirm = '$(cat "$SDL_DIR/.screen-state/$SDL_SLUG" 2>/dev/null)'"
+
+# 確定後は idle が続いても Stop を書き直さない（検出時刻を維持）
+jq '.time = "00:00:00"' "$SDL_F" > "$SDL_F.tmp" && mv "$SDL_F.tmp" "$SDL_F"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+[[ "$(jq -r '.time' "$SDL_F" 2>/dev/null)" == "00:00:00" ]] && pass "confirmed idle keeps first Stop entry" || fail "Stop entry rewritten"
+rm -f "$SDL_F"
+
+# idle保留中に working へ戻ったらpendingを消してMainへ復帰する
+# （承認やプロンプト送信をタブ内で行った合図）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+echo '{"tab":"cx-task","session":"sdl-sess","message":"stale","event":"Notification","time":"10:01:00","agent":"codex"}' > "$SDL_DIR/thread-p.json"
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+[[ ! -f "$SDL_DIR/thread-p.json" ]] && pass "idle_pending->working clears pending" || fail "pending survived idle_pending->working"
+grep -q 'go-to-tab-name Main' "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "idle_pending->working returns to Main" || fail "no auto-return from idle_pending"
+
+# idle保留中に承認ダイアログが出たら即座にNotificationを出す
+# （blocked に確定遅延はかけない: 人間を待たせている状態なので即時性が要る）
+rm -rf "$SDL_DIR/.screen-state"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "blocked" "approval" )
+[[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Notification" ]] \
+  && pass "idle_pending->blocked notifies immediately" || fail "blocked delayed from idle_pending"
 rm -f "$SDL_F"
 
 # 起動直後など、workingを経ていない idle は何も書かない（新規タブの誤done防止）
@@ -1052,8 +1091,10 @@ rm -rf "$SDL_DIR/.screen-state"
 [[ ! -f "$SDL_F" ]] && pass "fresh idle writes nothing" || fail "fresh idle wrote pending"
 
 # notify由来のStopが既にあるタブでは idle でも重複Stopを書かない
+# （確定に2回必要になったので、Stop判定まで到達させるため2回観測する）
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
 echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:05:00","agent":"codex"}' > "$SDL_DIR/thread-2.json"
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 [[ ! -f "$SDL_F" ]] && pass "idle defers to existing notify Stop" || fail "duplicate Stop written"
 [[ -f "$SDL_DIR/thread-2.json" ]] && pass "notify Stop untouched by idle" || fail "notify Stop removed"
@@ -1138,6 +1179,7 @@ rm -f "$SDL_F"
 # 二重done表示に収束する
 rm -rf "$SDL_DIR/.screen-state"
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "working" "" )
+( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 ( source "$SDL" && screen_update_pending "$SDL_SESS" "cx-task" "codex" "idle" "" )
 [[ "$(jq -r '.event' "$SDL_F" 2>/dev/null)" == "Stop" ]] || fail "precondition: screen Stop not written"
 echo '{"tab":"cx-task","session":"sdl-sess","message":"turn done","event":"Stop","time":"10:07:00","agent":"codex"}' > "$SDL_DIR/thread-4.json"
