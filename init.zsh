@@ -201,7 +201,12 @@ mdev-test() {
     if [[ "$TERM_PROGRAM" == "WarpTerminal" ]]; then
         local lc_dir="$HOME/.warp/launch_configurations"
         mkdir -p "$lc_dir"
-        rm -f "$lc_dir"/mdev-test-*.yaml(N)        # clean up previous runs (N: no error if none)
+        # Clean up previous runs. The (N) glob qualifier is not available when
+        # BARE_GLOB_QUAL is off, and there the pattern is taken literally: the
+        # shell reports "no matches found" and aborts the function before the
+        # session ever launches. Set the option locally instead.
+        setopt local_options null_glob
+        rm -f "$lc_dir"/mdev-test-*.yaml
         local lc_name="mdev-test-$session"
         {
             echo "---"
