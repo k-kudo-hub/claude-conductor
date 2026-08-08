@@ -153,9 +153,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(Render(m.theme, m.items, m.date, m.loading, m.width, m.height))
-	v.AltScreen = true
-	return v
+	// 代替画面には入らない（Zellij のペイン境界ドラッグとタブ操作を
+	// 妨げるため）。詳細は waiting ペインの同じ箇所を参照。
+	return tea.NewView(Render(m.theme, m.items, m.date, m.loading, m.width, m.height))
 }
 
 // Run は news サブコマンドの本体。
