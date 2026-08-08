@@ -17,6 +17,8 @@ mdev-test <worktree>
 
 `CONDUCTOR_HOME` をworktreeに向けた `test-<worktree>` セッションが別ターミナルウィンドウで起動する。実データ（pending/daily）とも分離される。この場合、本スキルのデプロイ/ロールバック手順は不要。
 
+ペインの描画は Go 製の `conductor` が担うため、`mdev-test` は起動前に worktree の `cmd/conductor` をビルドして `<worktree>/bin/conductor` に置く。したがって `cmd/`・`internal/` の変更も `mdev-test` だけで検証できる（Go が必要）。
+
 ただし `hooks.json` の**構造**（イベント追加・コマンド差し替え）の変更は、グローバルな `~/.claude/settings.json` 依存のため `mdev-test` ではテストできない。その場合は以下の手順で settings.json にマージして検証する。
 
 ## 前提条件
@@ -34,7 +36,19 @@ worktree内で変更されたファイルを特定する:
 git diff --name-only
 ```
 
-対象が `scripts/`, `layouts/`, `init.zsh`, `hooks.json` のいずれかであることを確認する。
+対象が `scripts/`, `layouts/`, `init.zsh`, `hooks.json`, `cmd/`, `internal/` のいずれかであることを確認する。
+
+`cmd/` や `internal/`（Go）を変更した場合は、コピーではなくビルドしたバイナリを差し替える:
+
+```bash
+# バックアップ
+cp ~/.claude-conductor/bin/conductor ~/.claude-conductor/bin/conductor.bak
+
+# worktree からビルドして配置
+cd <worktree> && go build -o ~/.claude-conductor/bin/conductor ./cmd/conductor
+```
+
+ロールバックは `mv ~/.claude-conductor/bin/conductor.bak ~/.claude-conductor/bin/conductor`。
 
 ### 2. バックアップの作成
 

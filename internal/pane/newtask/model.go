@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -21,6 +22,14 @@ import (
 
 // DefaultWidth は端末サイズを問い合わせられないときに使う幅。
 const DefaultWidth = 44
+
+// 名前入力欄の位置。枠の "│ " と、その上のラベル行のぶん。
+const (
+	nameFieldLeft = 2
+	nameFieldTop  = 2
+	// 左右の枠と余白で使う桁数。
+	nameFieldOverhead = 4
+)
 
 // step はタスク作成の進行段階。
 type step int
@@ -39,8 +48,13 @@ type pickedMsg struct {
 // createdMsg はタスク作成の完了。
 type createdMsg struct{ err error }
 
-// clearStatusMsg は進行表示の消去。
-type clearStatusMsg struct{}
+// clearStatusMsg は進行表示の消去。世代番号で古いタイマーを弾く。
+type clearStatusMsg int
+
+// StatusDuration は失敗の知らせを出しておく時間。これを過ぎたら消して
+// 操作を受け付ける状態に戻す。消さないと status が立ったままになり、
+// handleKey の「作成中は [n] を受け付けない」判定に永久に引っかかる。
+const StatusDuration = 3 * time.Second
 
 // Model は New Task ペインの状態。
 type Model struct {
@@ -48,9 +62,10 @@ type Model struct {
 	theme   ui.Theme
 	width   int
 
-	step   step
-	status string
-	input  textinput.Model
+	step      step
+	status    string
+	statusGen int
+	input     textinput.Model
 
 	// 選択済みの内容。名前入力まで持ち越す。
 	dir      string
@@ -78,20 +93,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		return m, nil
 
+	case runPickerMsg:
+		return m, pick(msg.kind, msg.prompt, msg.options)
+
 	case pickedMsg:
 		return m.handlePicked(msg)
 
 	case createdMsg:
 		m.step = stepIdle
 		if msg.err != nil {
-			m.status = "Failed to create the task."
-		} else {
-			m.status = ""
+			return m.withStatus("Failed to create the task.")
 		}
+		m.status = ""
 		return m, nil
 
 	case clearStatusMsg:
-		m.status = ""
+		if int(msg) == m.statusGen {
+			m.status = ""
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -107,14 +126,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if ui.IsQuit(msg) {
+		return m, tea.Quit
+	}
+
 	if m.step == stepName {
 		switch msg.String() {
 		case "enter":
 			name := ResolveName(DefaultName(m.dir, m.taskType), m.input.Value())
-			name = UniqueTabName(name, zellij.QueryTabNames())
 			m.step = stepIdle
 			m.input.Blur()
-			m.status = fmt.Sprintf("Creating %s task '%s'...", m.taskType, name)
+			m.status = fmt.Sprintf("Creating %s task...", m.taskType)
 			return m, createTask(m.dir, m.taskType, name, m.agent)
 		case "esc":
 			m.step = stepIdle
@@ -157,8 +179,7 @@ func (m Model) handlePicked(msg pickedMsg) (tea.Model, tea.Cmd) {
 		m.taskType = ParseChoice(msg.value)
 		cfg, err := config.Load()
 		if err != nil {
-			m.status = "Failed to read the config."
-			return m, nil
+			return m.withStatus("Failed to read the config.")
 		}
 		// エージェントが 1 つも設定されていなければ、従来どおり単一
 		// エージェントの経路で作る（エージェント名は空のまま）。
@@ -177,8 +198,7 @@ func (m Model) handlePicked(msg pickedMsg) (tea.Model, tea.Cmd) {
 		m.agent = msg.value
 		cfg, err := config.Load()
 		if err != nil {
-			m.status = "Failed to read the config."
-			return m, nil
+			return m.withStatus("Failed to read the config.")
 		}
 		return m.startNameInput(cfg)
 	}
@@ -186,57 +206,85 @@ func (m Model) handlePicked(msg pickedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// withStatus は一時メッセージを表示し、消去も同時に予約する。予約を
+// 忘れるとメッセージが残り続け、[n] が受け付けられなくなる。
+func (m Model) withStatus(text string) (tea.Model, tea.Cmd) {
+	m.status = text
+	m.statusGen++
+	gen := m.statusGen
+	return m, tea.Tick(StatusDuration, func(time.Time) tea.Msg {
+		return clearStatusMsg(gen)
+	})
+}
+
 // startNameInput は名前入力に進む。設定で入力を省く場合はそのまま作成する。
 func (m Model) startNameInput(cfg *config.Config) (tea.Model, tea.Cmd) {
 	def := DefaultName(m.dir, m.taskType)
 
 	if cfg.SkipTaskNameInput {
-		name := UniqueTabName(def, zellij.QueryTabNames())
-		m.status = fmt.Sprintf("Creating %s task '%s'...", m.taskType, name)
-		return m, createTask(m.dir, m.taskType, name, m.agent)
+		m.status = fmt.Sprintf("Creating %s task...", m.taskType)
+		return m, createTask(m.dir, m.taskType, def, m.agent)
 	}
 
 	// 候補を初期値として編集できる状態で出す。bash 3.2 には read -i が
 	// 無く、シェル版は候補の提示と入力受け取りを分けていた。
 	m.step = stepName
+	// 枠の内側に収まる幅を与える。設定しないと長い名前がスクロールせず、
+	// 枠に切り取られて入力中の文字が見えなくなる。
+	m.input.SetWidth(max(m.width-nameFieldOverhead, 1))
 	m.input.SetValue(def)
 	m.input.CursorEnd()
 	return m, m.input.Focus()
 }
 
 // pickDirectory は fd で候補を作り fzf に選ばせる。
+//
+// 候補作りは tea.Cmd の中で行う。Update から直に呼ぶと、fd が走っている
+// 間だけ描画もキー入力も止まる（search_dirs が広いと体感できる長さになる）。
 func pickDirectory() tea.Cmd {
-	cfg, err := config.Load()
-	if err != nil {
-		return func() tea.Msg { return pickedMsg{kind: "dir"} }
-	}
+	return func() tea.Msg {
+		cfg, err := config.Load()
+		if err != nil {
+			return pickedMsg{kind: "dir"}
+		}
 
-	dirs := existingDirs(cfg.ExpandedSearchDirs())
-	if len(dirs) == 0 {
-		return func() tea.Msg { return pickedMsg{kind: "dir"} }
-	}
+		dirs := existingDirs(cfg.ExpandedSearchDirs())
+		if len(dirs) == 0 {
+			return pickedMsg{kind: "dir"}
+		}
 
-	args := append([]string{"--type", "d", "--max-depth", strconv.Itoa(cfg.Depth()), "."}, dirs...)
-	out, err := exec.Command("fd", args...).Output()
-	if err != nil {
-		return func() tea.Msg { return pickedMsg{kind: "dir"} }
+		args := append([]string{"--type", "d", "--max-depth", strconv.Itoa(cfg.Depth()), "."}, dirs...)
+		out, err := exec.Command("fd", args...).Output()
+		if err != nil {
+			return pickedMsg{kind: "dir"}
+		}
+		return runPickerMsg{kind: "dir", prompt: "Directory: ", options: splitLines(string(out))}
 	}
-
-	return pick("dir", "Directory: ", splitLines(string(out)))
 }
 
 func pickTaskType() tea.Cmd {
-	cfg, err := config.Load()
-	if err != nil {
-		return func() tea.Msg { return pickedMsg{kind: "type"} }
-	}
+	return func() tea.Msg {
+		cfg, err := config.Load()
+		if err != nil {
+			return pickedMsg{kind: "type"}
+		}
 
-	names := cfg.TaskTypeNames()
-	choices := make([]string, 0, len(names))
-	for _, name := range names {
-		choices = append(choices, FormatChoice(name, cfg.TaskTypes[name].Description))
+		names := cfg.TaskTypeNames()
+		choices := make([]string, 0, len(names))
+		for _, name := range names {
+			choices = append(choices, FormatChoice(name, cfg.TaskTypes[name].Description))
+		}
+		return runPickerMsg{kind: "type", prompt: "Task type: ", options: choices}
 	}
-	return pick("type", "Task type: ", choices)
+}
+
+// runPickerMsg は候補が揃ったので fzf を出す、という指示。fzf の起動は
+// tea.ExecProcess でなければならず、これは Cmd の戻り値としてしか
+// 扱えないため、候補作りと起動を 2 段に分ける。
+type runPickerMsg struct {
+	kind    string
+	prompt  string
+	options []string
 }
 
 func pickAgent(names []string) tea.Cmd {
@@ -263,10 +311,14 @@ func pick(kind, prompt string, options []string) tea.Cmd {
 
 // createTask はタスクのタブを作る。レイアウト適用やレジストリ登録を含む
 // 手順は task-lib.sh の create_task が持っている。
+//
+// タブ名の一意化もここで行う。zellij への問い合わせは応答しないことが
+// あり（上限 3 秒）、Update から直に呼ぶとその間ペインが止まる。
 func createTask(dir, taskType, name, agent string) tea.Cmd {
 	return func() tea.Msg {
+		unique := UniqueTabName(name, zellij.QueryTabNames())
 		err := exec.Command("bash", paths.Script("task-create.sh"),
-			dir, taskType, name, "", agent).Run()
+			dir, taskType, unique, "", agent).Run()
 		return createdMsg{err: err}
 	}
 }
@@ -295,7 +347,13 @@ func (m Model) View() tea.View {
 	if m.step == stepName {
 		v := tea.NewView(renderNameInput(m.theme, m.input.View(), m.width))
 		v.AltScreen = true
-		v.Cursor = m.input.Cursor()
+		// textinput が返すのは入力欄内の座標。実際の欄は枠の中の
+		// 2 行目・2 桁目に描くので、その分ずらさないと罫線の上に出る。
+		if c := m.input.Cursor(); c != nil {
+			c.X += nameFieldLeft
+			c.Y += nameFieldTop
+			v.Cursor = c
+		}
 		return v
 	}
 

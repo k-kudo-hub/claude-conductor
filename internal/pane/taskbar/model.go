@@ -106,10 +106,15 @@ func goToMain() tea.Cmd {
 	}
 }
 
+// waitingToggledMsg は Waiting の切り替え完了。tickMsg を返すと
+// その handler が次の tick を積むため、押すたびにポーリングの鎖が
+// 1 本ずつ増えてしまう。専用の型にして状態の読み直しだけを行う。
+type waitingToggledMsg struct{}
+
 func toggleWaiting(tab string) tea.Cmd {
 	return func() tea.Msg {
 		_ = exec.Command("bash", paths.Script("waiting-toggle.sh"), tab).Run()
-		return tickMsg(time.Time{})
+		return waitingToggledMsg{}
 	}
 }
 
@@ -132,6 +137,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.waiting = isWaiting(m.dir, m.tab)
 		return m, tick()
+
+	case waitingToggledMsg:
+		// 次の tick は既に走っているので、ここでは積まない。
+		m.waiting = isWaiting(m.dir, m.tab)
+		return m, nil
 
 	case confirmTimeoutMsg:
 		if int(msg) == m.confirmGen {
@@ -164,6 +174,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if ui.IsQuit(msg) {
+		return m, tea.Quit
+	}
+
 	if m.deleting {
 		return m, nil
 	}
