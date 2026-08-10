@@ -10,6 +10,9 @@
 #   2  entry has no recorded dir (older entry, cannot recreate the tab)
 #   3  recorded dir no longer exists (e.g. the worktree was removed)
 #   4  tab recreation failed (entry left in Done for retry)
+#      create_task はタブ登録待ち/フォーカス確認に失敗した場合も非0を返す。この
+#      ときタブ自体は存在しうるが、ペイン構築を諦めた側（= Main を壊さない側）に
+#      倒しているのでここでも失敗として扱い、エントリは Done に残す。
 #   5  tab created but daily-log update failed (task may reappear in Done)
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
