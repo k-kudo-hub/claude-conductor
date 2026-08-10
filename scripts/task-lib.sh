@@ -171,14 +171,15 @@ create_task() {
         return "$rc"
     fi
 
+    sleep 0.3
+
     # zellij 0.44.1 degrades by dropping only new-tab's *implicit* focus switch
     # (an explicit go-to-tab-name still works), which would leave the caller on
     # the old tab while every pane command below lands on the new one. Focusing
     # by name removes that dependency; it is a no-op when new-tab already moved
-    # focus there.
+    # focus there. Runs after the settle sleep so a slow server has registered
+    # the tab by the time we address it by name.
     zellij action go-to-tab-name "$name" 2>/dev/null
-
-    sleep 0.3
 
     zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
     local i
