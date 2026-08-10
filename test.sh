@@ -2494,6 +2494,104 @@ CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
 rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
+section "26i1b. record-output.sh (codex rollout v2: item_completed)"
+# ============================================================
+
+# 新しい codex は会話とツール実行を event_msg/item_completed の item として
+# 記録し、旧 user_message / agent_message イベントを出さない（実機の
+# ~/.codex/sessions を調査して確認、cli_version では判別できない）。
+# content 要素の type は UserMessage が "text"、AgentMessage が "Text" と
+# 大文字小文字が揺れるため、fixture でも実データどおりに揺らしておく。
+CXV2_TRANSCRIPT="$SANDBOX/codex-rollout-v2.jsonl"
+cat > "$CXV2_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T16:24:48.000Z","type":"session_meta","payload":{"id":"thread-cxv2","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-10T16:24:48.100Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T16:24:49.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-08-10T16:24:50.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"V2USERMARKER fix the bug","text_elements":[]}]}}}
+{"timestamp":"2026-08-10T16:24:51.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning","id":"r1","content":[{"type":"Text","text":"V2REASONMARKER internal deliberation"}]}}}
+{"timestamp":"2026-08-10T16:24:52.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","process_id":"111","command":["/bin/zsh","-lc","npm test"],"cwd":"file:///tmp/myapp","status":"completed"}}}
+{"timestamp":"2026-08-10T16:24:53.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"exec-2","server":"node_repl","tool":"js","arguments":{"code":"console.log(1)"}}}}
+{"timestamp":"2026-08-10T16:24:54.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m1","content":[{"type":"Text","text":"V2AGENTMARKER tests pass"}],"phase":"commentary"}}}
+{"timestamp":"2026-08-10T16:24:55.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"now merge it","text_elements":[]}]}}}
+{"timestamp":"2026-08-10T16:24:56.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-3","process_id":"112","command":["/bin/zsh","-lc","gh pr merge 12 --squash"],"cwd":"file:///tmp/myapp","status":"completed"}}}
+{"timestamp":"2026-08-10T16:24:57.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500000,"cached_input_tokens":500000,"cache_write_input_tokens":200000,"output_tokens":100000,"reasoning_output_tokens":0,"total_tokens":1600000}}}}
+{"timestamp":"2026-08-10T16:24:58.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m2","content":[{"type":"Text","text":"merged"}],"phase":"final_answer"}}}
+{"timestamp":"2026-08-10T16:24:58.100Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"merged","turn_id":"t1"}}
+ROLLOUT
+
+cat > "$PENDING_DIR/thread-cxv2.json" << EOF
+{"tab":"cxv2-test","session":"test-session","claude_session_id":"thread-cxv2","message":"merged","event":"Stop","time":"16:24:58","transcript_path":"$CXV2_TRANSCRIPT","dir":"/tmp/myapp","task_type":"dev","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-test"
+
+CXV2_REC=$(tail -1 "$DAILY_FILE")
+[[ "$(echo "$CXV2_REC" | jq -r '.summary.total_turns')" == "2" ]] \
+  && pass "v2 turns counted from UserMessage items" || fail "v2 turns wrong: $(echo "$CXV2_REC" | jq -r '.summary.total_turns')"
+# response_item が無い rollout では item_completed のツール系 item で数える
+# （Reasoning / メッセージ item は対象外）
+[[ "$(echo "$CXV2_REC" | jq -r '.summary.total_tool_calls')" == "3" ]] \
+  && pass "v2 tool calls counted from item_completed" || fail "v2 tool calls wrong: $(echo "$CXV2_REC" | jq -r '.summary.total_tool_calls')"
+[[ "$(echo "$CXV2_REC" | jq -c '.summary.tools_used')" == '["CommandExecution","McpToolCall"]' ]] \
+  && pass "v2 tools_used from item types" || fail "v2 tools_used wrong: $(echo "$CXV2_REC" | jq -c '.summary.tools_used')"
+[[ "$(echo "$CXV2_REC" | jq -r '.summary.model')" == "gpt-5.6-sol" ]] \
+  && pass "v2 model still from turn_context" || fail "v2 model wrong"
+[[ "$(echo "$CXV2_REC" | jq -r '.summary.total_cost_usd')" == "9.5" ]] \
+  && pass "v2 cost still from token_count" || fail "v2 cost wrong: $(echo "$CXV2_REC" | jq -r '.summary.total_cost_usd')"
+[[ "$(echo "$CXV2_REC" | jq -r '.markers.merged')" == "true" ]] \
+  && pass "v2 merged marker from CommandExecution command" || fail "v2 merged marker wrong"
+
+# response_item のツール呼び出しがある rollout では従来どおりそちらで数える
+# （同じ活動の別ビューなので合算すると二重計上になる）
+CXV2M_TRANSCRIPT="$SANDBOX/codex-rollout-v2-mixed.jsonl"
+cp "$CXV2_TRANSCRIPT" "$CXV2M_TRANSCRIPT"
+cat >> "$CXV2M_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T16:24:59.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"c1","status":"completed","call_id":"call1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"ls\"});"}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2m.json" << EOF
+{"tab":"cxv2-mixed-test","session":"test-session","claude_session_id":"thread-cxv2m","message":"done","event":"Stop","time":"16:25:00","transcript_path":"$CXV2M_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-mixed-test"
+CXV2M_REC=$(tail -1 "$DAILY_FILE")
+[[ "$(echo "$CXV2M_REC" | jq -r '.summary.total_tool_calls')" == "1" ]] \
+  && pass "response_item view wins over item view (no double count)" || fail "mixed tool count wrong: $(echo "$CXV2M_REC" | jq -r '.summary.total_tool_calls')"
+[[ "$(echo "$CXV2M_REC" | jq -c '.summary.tools_used')" == '["exec"]' ]] \
+  && pass "mixed rollout uses response_item tool names" || fail "mixed tools_used wrong: $(echo "$CXV2M_REC" | jq -c '.summary.tools_used')"
+[[ "$(echo "$CXV2M_REC" | jq -r '.markers.merged')" == "true" ]] \
+  && pass "merged marker scans both views" || fail "mixed merged marker wrong"
+
+# CommandExecution item は stdout / aggregated_output も持つ。実機の rollout
+# には「gh pr merge を含むファイルを cat しただけ」の item があり、item 全体を
+# 走査すると merged マーカーが誤検知する。走査対象は実行したコマンドに限る。
+CXV2S_TRANSCRIPT="$SANDBOX/codex-rollout-v2-stdout.jsonl"
+cat > "$CXV2S_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T17:00:00.000Z","type":"session_meta","payload":{"id":"thread-cxv2s","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-10T17:00:00.100Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T17:00:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"read the docs","text_elements":[]}]}}}
+{"timestamp":"2026-08-10T17:00:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","process_id":"1","command":["/bin/zsh","-lc","cat NOTES.md"],"cwd":"file:///tmp/myapp","status":"completed","exit_code":0,"stdout":"To land a PR run: gh pr merge 12 --squash\n","aggregated_output":"To land a PR run: gh pr merge 12 --squash\n"}}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2s.json" << EOF
+{"tab":"cxv2-stdout-test","session":"test-session","claude_session_id":"thread-cxv2s","message":"done","event":"Stop","time":"17:00:03","transcript_path":"$CXV2S_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-stdout-test"
+[[ "$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')" == "false" ]] \
+  && pass "merged marker ignores command output" || fail "merged marker false-positive from stdout"
+rm -f "$PENDING_DIR/thread-cxv2s.json"
+
+# 旧形式イベントと新形式 item が同居しても turns を二重に数えない
+CXV2D_TRANSCRIPT="$SANDBOX/codex-rollout-v2-dual.jsonl"
+cp "$CXV2_TRANSCRIPT" "$CXV2D_TRANSCRIPT"
+cat >> "$CXV2D_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T16:25:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"legacy duplicate of the same turn"}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2d.json" << EOF
+{"tab":"cxv2-dual-test","session":"test-session","claude_session_id":"thread-cxv2d","message":"done","event":"Stop","time":"16:25:01","transcript_path":"$CXV2D_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-dual-test"
+[[ "$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_turns')" == "2" ]] \
+  && pass "legacy and item turns are not double counted" || fail "dual turns wrong: $(tail -1 "$DAILY_FILE" | jq -r '.summary.total_turns')"
+rm -f "$PENDING_DIR/thread-cxv2.json" "$PENDING_DIR/thread-cxv2m.json" "$PENDING_DIR/thread-cxv2d.json"
+
+# ============================================================
 section "26i2. record-output.sh (retry replaces the daily entry)"
 # ============================================================
 

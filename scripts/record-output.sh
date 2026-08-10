@@ -62,14 +62,39 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 OUT=""
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex" ]; then
-    # Codex rollout jsonl: turns are user_message events, tool calls are
-    # response_items whose type ends in "_call" (custom_tool_call etc.),
-    # usage is the cumulative total of the last token_count event, and the
-    # model comes from turn_context. Unknown models yield a null cost rather
-    # than borrowing claude pricing.
+    # Codex rollout jsonl. Two layouts exist in the wild and the codex version
+    # does not tell them apart (the same cli_version 0.147.0 writes both), so
+    # each value is read from whichever shape the rollout actually uses:
+    #   turns: v1 counts user_message events; v2 counts item_completed events
+    #     whose item.type is "UserMessage". The two are picked, never summed —
+    #     they are two ways of logging the same turn (no rollout under
+    #     ~/.codex/sessions carries both, but summing would double count if one
+    #     ever did).
+    #   tool calls: v1 logs response_items whose type ends in "_call"
+    #     (custom_tool_call etc.); v2 also logs item_completed items of type
+    #     CommandExecution / McpToolCall / FileChange / Extension. These are two
+    #     views of the same activity and real v2 rollouts carry both, so the
+    #     response_item view wins and the item view is only a fallback for
+    #     rollouts that have no response_item calls at all. Reasoning and
+    #     message items are not tool calls. The item view names a tool by its
+    #     item type, since those items carry no tool name field.
+    #   merged marker: scanned in both views (a boolean cannot double count),
+    #     so a `gh pr merge` run only recorded as a CommandExecution command is
+    #     still detected. Only the command itself is scanned (.command /
+    #     .arguments), never the item's stdout / aggregated_output: a real
+    #     rollout was found where `cat`ing a file that mentions gh pr merge
+    #     would otherwise mark an unmerged task as merged.
+    # usage is the cumulative total of the last token_count event and the model
+    # comes from turn_context; both are unchanged in v2. Unknown models yield a
+    # null cost rather than borrowing claude pricing.
     RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" '
-        ([.[] | select(.type == "event_msg" and .payload.type == "user_message")] | length) as $turns |
-        [.[] | select(.type == "response_item") | .payload | select(.type != null) | select(.type | test("_call$"))] as $tools |
+        ([.[] | select(.type == "event_msg" and .payload.type == "user_message")] | length) as $turns_v1 |
+        ([.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "UserMessage")] | length) as $turns_v2 |
+        (if $turns_v2 > 0 then $turns_v2 else $turns_v1 end) as $turns |
+        [.[] | select(.type == "response_item") | .payload | select(.type != null) | select(.type | test("_call$"))] as $tools_v1 |
+        [.[] | select(.type == "event_msg" and .payload.type == "item_completed") | .payload.item
+             | select(.type == "CommandExecution" or .type == "McpToolCall" or .type == "FileChange" or .type == "Extension")] as $tools_v2 |
+        (if ($tools_v1 | length) > 0 then $tools_v1 else $tools_v2 end) as $tools |
         ($tools | length) as $calls |
         ($tools | [.[] | .name // .type] | unique) as $used |
         ([.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage | select(. != null)] | last) as $usage |
@@ -87,7 +112,8 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex
                 ($cache_write * ($p.cache_write // 0))
             ) / 1000000
         end) as $cost |
-        ($tools | [.[] | ((.input // .arguments // "") | tostring) | select(test("gh\\s+pr\\s+merge"))] | length > 0) as $has_merged |
+        (($tools_v1 | [.[] | ((.input // .arguments // "") | tostring) | select(test("gh\\s+pr\\s+merge"))] | length > 0)
+         or ($tools_v2 | [.[] | (((.command // []) | join(" ")) + " " + ((.arguments // "") | tostring)) | select(test("gh\\s+pr\\s+merge"))] | length > 0)) as $has_merged |
         {
             tab: $tab,
             session: $session,
