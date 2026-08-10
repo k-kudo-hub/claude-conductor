@@ -59,12 +59,11 @@ filter_secrets() {
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
 #
-# Two transcript formats are supported. They are told apart by the transcript's
-# own content rather than by the pending file's `agent` field: the transcript is
-# the only source that is always available and always correct here (a pending
-# file written before agent recording, or a hand-restored entry, can lack or
-# carry a stale agent), and each extractor yields an empty string on the other
-# format, which makes "try, then fall back" an exact discriminator.
+# Two transcript formats are supported, and both are extracted by one jq pass
+# instead of branching on the pending file's `agent` field: no format detection
+# is needed because a record matches at most one of the two selectors, so the
+# other array is always empty. This also keeps working when the pending entry
+# lacks an agent (written before agent recording) or carries a stale one.
 #   claude: .type=="user"/"assistant" with .message.content
 #   codex : rollout jsonl - conversation lives in .type=="event_msg" whose
 #           .payload.type is user_message / agent_message, both carrying the
@@ -79,28 +78,22 @@ generate_summary() {
     # Extract human-readable text (user + assistant text blocks) from the JSONL transcript
     local convo
     convo=$(jq -rs '
-        [ .[]
-          | select(.type == "user" or .type == "assistant")
-          | .message.content as $c
-          | (if ($c | type) == "string" then $c
-             else ([ $c[]? | select(.type == "text") | .text ] | join("\n"))
-             end)
-          | select(. != null and . != "")
-        ] | join("\n")
+        ([ .[]
+           | select(.type == "user" or .type == "assistant")
+           | .message.content as $c
+           | (if ($c | type) == "string" then $c
+              else ([ $c[]? | select(.type == "text") | .text ] | join("\n"))
+              end)
+           | select(. != null and . != "")
+         ]
+         + [ .[]
+             | select(.type == "event_msg")
+             | .payload
+             | select(.type == "user_message" or .type == "agent_message")
+             | .message
+             | select(type == "string" and . != "")
+           ]) | join("\n")
     ' "$transcript" 2>/dev/null)
-
-    # Empty means this is not a claude transcript: retry as a codex rollout.
-    if [ -z "$convo" ]; then
-        convo=$(jq -rs '
-            [ .[]
-              | select(.type == "event_msg")
-              | .payload
-              | select(.type == "user_message" or .type == "agent_message")
-              | .message
-              | select(type == "string" and . != "")
-            ] | join("\n")
-        ' "$transcript" 2>/dev/null)
-    fi
 
     [ -n "$convo" ] || return 1
 
