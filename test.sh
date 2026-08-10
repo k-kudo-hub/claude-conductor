@@ -2494,6 +2494,88 @@ CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
 rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
+section "26i2. record-output.sh (retry replaces the daily entry)"
+# ============================================================
+
+# アップロード失敗で dd が中止されると record-output は同じ pending に対して
+# 何度も走る。(tab, claude_session_id) が同じ未 restore 行は置換されて Done に
+# エントリが増殖しないことを確認する。専用セッションを使い、他セクションが
+# 参照する $DAILY_FILE には触れない。
+DDS_SESSION="dedupe-session"
+DDS_PENDING="$HOME/.claude-pending/$DDS_SESSION"
+DDS_DAILY="$HOME/.claude-conductor/daily/$DDS_SESSION/$(date '+%Y-%m-%d').jsonl"
+mkdir -p "$DDS_PENDING"
+rm -rf "$HOME/.claude-conductor/daily/$DDS_SESSION"
+
+DDS_TRANSCRIPT="$SANDBOX/dedupe-transcript.jsonl"
+cat > "$DDS_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","timestamp":"2026-08-10T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"a1","timestamp":"2026-08-10T10:00:01Z"}
+TRANSCRIPT
+
+# pending は 1 タブ 1 ファイルなので、毎回同じパスを書き換えて再実行を模す
+dds_pending_write() {
+    # dds_pending_write <claude_session_id> <message>
+    cat > "$DDS_PENDING/dedupe.json" << EOF
+{"tab":"dedupe-tab","session":"$DDS_SESSION","claude_session_id":"$1","message":"$2","event":"Stop","time":"10:00:00","transcript_path":"$DDS_TRANSCRIPT","dir":"/tmp/myapp","task_type":"dev"}
+EOF
+}
+dds_run() { ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-tab"; }
+dds_lines() { wc -l < "$DDS_DAILY" | tr -d ' '; }
+
+dds_pending_write "sid-A" "first"
+dds_run
+[[ "$(dds_lines)" == "1" ]] && pass "first record appended" || fail "first record count wrong: $(dds_lines)"
+
+# 同一 tab + 同一 claude_session_id の再実行は行を増やさず内容を置き換える
+dds_pending_write "sid-A" "second"
+dds_run
+[[ "$(dds_lines)" == "1" ]] && pass "retry keeps a single daily entry" || fail "retry duplicated entry: $(dds_lines)"
+[[ "$(jq -r '.message' "$DDS_DAILY")" == "second" ]] \
+  && pass "retry updates the entry content" || fail "entry not updated: $(jq -r '.message' "$DDS_DAILY")"
+
+# 別 claude_session_id は別行（--resume で sid が変わったケース）
+dds_pending_write "sid-B" "third"
+dds_run
+[[ "$(dds_lines)" == "2" ]] && pass "different claude_session_id appends a new entry" || fail "sid-B count wrong: $(dds_lines)"
+[[ "$(head -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-A" ]] \
+  && pass "existing entry of another sid kept" || fail "sid-A entry lost"
+
+# 置換は「削除して末尾に追記」＝置換された行は最終行へ移動する
+dds_pending_write "sid-A" "fourth"
+dds_run
+[[ "$(dds_lines)" == "2" ]] && pass "replacement does not grow the file" || fail "replacement count wrong: $(dds_lines)"
+[[ "$(head -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-B" ]] \
+  && pass "untouched entry keeps its position" || fail "sid-B moved unexpectedly"
+[[ "$(tail -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-A" ]] \
+  && [[ "$(tail -1 "$DDS_DAILY" | jq -r '.message')" == "fourth" ]] \
+  && pass "replaced entry is appended at the tail" || fail "replaced entry not at tail"
+
+# restored:true の行は置換対象外（復元済みの履歴は残す）
+DDS_TMP="$SANDBOX/dedupe-restored.jsonl"
+jq -c '. + {restored:true}' "$DDS_DAILY" > "$DDS_TMP" && mv "$DDS_TMP" "$DDS_DAILY"
+dds_pending_write "sid-A" "fifth"
+dds_run
+[[ "$(dds_lines)" == "3" ]] && pass "restored entries are not replaced" || fail "restored entry replaced: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.restored == true)] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "restored entries kept intact" || fail "restored entries changed"
+[[ "$(tail -1 "$DDS_DAILY" | jq -r '.message')" == "fifth" ]] \
+  && pass "new entry appended alongside restored ones" || fail "new entry missing after restored"
+
+# claude_session_id を持たないレコードは dedupe キーが無いので無条件追記
+rm -f "$DDS_PENDING/dedupe.json"
+cat > "$DDS_PENDING/nosid.json" << EOF
+{"tab":"dedupe-nosid","session":"$DDS_SESSION","message":"sixth","event":"Stop","time":"10:00:00"}
+EOF
+ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-nosid"
+ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-nosid"
+[[ "$(dds_lines)" == "5" ]] && pass "records without claude_session_id always append" || fail "no-sid count wrong: $(dds_lines)"
+rm -f "$DDS_PENDING/nosid.json"
+
+# ロックは持ち越されない（次の record-output がブロックされない）
+[[ ! -d "$DDS_DAILY.lock" ]] && pass "daily-log lock released after replace" || fail "daily-log lock left behind"
+
+# ============================================================
 section "26j. restore-session.sh (rebuild tasks from registry)"
 # ============================================================
 

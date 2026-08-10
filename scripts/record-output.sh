@@ -259,16 +259,44 @@ else
         + (if $agent != "" then {agent: $agent} else {} end)')
 fi
 
-# Append under the daily-log lock, held only for the write itself so the hold
-# time stays sub-millisecond — a slow transcript parse above must never block a
+# Write under the daily-log lock, held only for the write itself so the hold
+# time stays short — a slow transcript parse above must never block a
 # concurrent restore long enough to trip its fail-open rewrite.
+#
+# The write replaces rather than appends: an upload failure cancels dd, so the
+# same tab is recorded again on every retry and the Done pane would otherwise
+# grow one entry per attempt. The dedupe key is (tab, claude_session_id) and
+# only entries not yet restored are replaced — a restored entry is the history
+# of a task that went back to the dashboard and must survive. Records without a
+# claude_session_id have no key and are always appended, as before.
+# Rewrite via lock + mktemp + mv, the same way restore-task.sh edits the file.
 if [ -n "$OUT" ]; then
     DAILY_LOCK="$DAILY_FILE.lock"
+    LOCK_HELD=0
     if acquire_lock "$DAILY_LOCK" 2; then
-        printf '%s\n' "$OUT" >> "$DAILY_FILE"
-        release_lock "$DAILY_LOCK"
+        LOCK_HELD=1
     else
         echo "record-output: proceeding without daily-log lock" >&2
-        printf '%s\n' "$OUT" >> "$DAILY_FILE"
     fi
+
+    if [ -n "$CLAUDE_SESSION_ID" ] && [ -f "$DAILY_FILE" ]; then
+        TMP=$(mktemp)
+        # A jq failure (unparsable daily file) leaves the file untouched and
+        # falls through to a plain append: a duplicate entry is recoverable,
+        # a truncated daily log is not.
+        if jq -c --arg tab "$TAB_NAME" --arg sid "$CLAUDE_SESSION_ID" \
+            'select(((.tab == $tab) and ((.claude_session_id // "") == $sid) and ((.restored // false) != true)) | not)' \
+            "$DAILY_FILE" > "$TMP" 2>/dev/null; then
+            mv "$TMP" "$DAILY_FILE"
+        else
+            rm -f "$TMP"
+        fi
+    fi
+
+    # The replaced entry is re-added at the tail, so the daily log stays ordered
+    # by the time each entry was written (done-loop reads it in that order).
+    printf '%s\n' "$OUT" >> "$DAILY_FILE"
+    [ "$LOCK_HELD" = 1 ] && release_lock "$DAILY_LOCK"
 fi
+
+exit 0
