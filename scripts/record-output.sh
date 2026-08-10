@@ -18,6 +18,10 @@ CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
 # shellcheck source=scripts/lock-lib.sh
 source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
+if [ -f "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh" ]; then
+    # shellcheck source=scripts/codex-rollout-lib.sh
+    source "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh"
+fi
 
 mkdir -p "$DAILY_DIR"
 
@@ -62,16 +66,17 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 OUT=""
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex" ]; then
-    # Codex rollout jsonl: turns are user_message events, tool calls are
-    # response_items whose type ends in "_call" (custom_tool_call etc.),
-    # usage is the cumulative total of the last token_count event, and the
-    # model comes from turn_context. Unknown models yield a null cost rather
-    # than borrowing claude pricing.
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" '
-        ([.[] | select(.type == "event_msg" and .payload.type == "user_message")] | length) as $turns |
-        [.[] | select(.type == "response_item") | .payload | select(.type != null) | select(.type | test("_call$"))] as $tools |
+    # Codex rollout jsonl. The layout knowledge (v1 events vs v2 item_completed
+    # items, and why the tool views are picked rather than summed) lives in
+    # codex-rollout-lib.sh; only the pricing and record shaping are local.
+    # usage is the cumulative total of the last token_count event and the model
+    # comes from turn_context; both are unchanged in v2. Unknown models yield a
+    # null cost rather than borrowing claude pricing.
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" "$CODEX_ROLLOUT_JQ"'
+        codex_turns as $turns |
+        codex_tools as $tools |
         ($tools | length) as $calls |
-        ($tools | [.[] | .name // .type] | unique) as $used |
+        ($tools | [.[] | codex_tool_name] | unique) as $used |
         ([.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage | select(. != null)] | last) as $usage |
         ((($usage.input_tokens // 0) - ($usage.cached_input_tokens // 0)) ) as $in |
         ($usage.output_tokens // 0) as $out |
@@ -87,7 +92,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex
                 ($cache_write * ($p.cache_write // 0))
             ) / 1000000
         end) as $cost |
-        ($tools | [.[] | ((.input // .arguments // "") | tostring) | select(test("gh\\s+pr\\s+merge"))] | length > 0) as $has_merged |
+        codex_merged as $has_merged |
         {
             tab: $tab,
             session: $session,

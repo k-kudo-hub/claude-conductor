@@ -14,8 +14,16 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
-# This script is self-contained (no external lib): the helpers below define
-# everything the upload flow needs.
+# Apart from the codex rollout layout knowledge, which is shared with
+# record-output.sh so a format change is a single-file edit, this script is
+# self-contained: the helpers below define everything the upload flow needs.
+# The no-op default keeps claude transcripts summarizable (rather than failing
+# every upload, which would block every dd) if that lib is ever missing.
+CODEX_ROLLOUT_JQ='def codex_texts: [];'
+if [ -f "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh" ]; then
+    # shellcheck source=scripts/codex-rollout-lib.sh
+    source "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh"
+fi
 
 # ------------------------------------------------------------------
 # Helper functions (unit-tested by test.sh via UPLOAD_LOG_LIB=1)
@@ -59,17 +67,14 @@ filter_secrets() {
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
 #
-# Two transcript formats are supported, and both are extracted by one jq pass
-# instead of branching on the pending file's `agent` field: no format detection
-# is needed because a record matches at most one of the two selectors, so the
-# other array is always empty. This also keeps working when the pending entry
-# lacks an agent (written before agent recording) or carries a stale one.
+# Claude transcripts and codex rollouts are extracted by one jq pass instead of
+# branching on the pending file's `agent` field: no format detection is needed
+# because a record matches at most one of the selectors, so the other array is
+# empty. This also keeps working when the pending entry lacks an agent (written
+# before agent recording) or carries a stale one.
 #   claude: .type=="user"/"assistant" with .message.content
-#   codex : rollout jsonl - conversation lives in .type=="event_msg" whose
-#           .payload.type is user_message / agent_message, both carrying the
-#           text in .payload.message. response_items are skipped on purpose:
-#           their role=="developer" entries are the system prompt, not the
-#           conversation.
+#   codex : codex_texts from codex-rollout-lib.sh, which reads both codex
+#           layouts (see that file for the shapes and the evidence).
 generate_summary() {
     local transcript="$1"
     command -v claude >/dev/null 2>&1 || return 1
@@ -77,7 +82,7 @@ generate_summary() {
 
     # Extract human-readable text (user + assistant text blocks) from the JSONL transcript
     local convo
-    convo=$(jq -rs '
+    convo=$(jq -rs "$CODEX_ROLLOUT_JQ"'
         ([ .[]
            | select(.type == "user" or .type == "assistant")
            | .message.content as $c
@@ -86,13 +91,7 @@ generate_summary() {
               end)
            | select(. != null and . != "")
          ]
-         + [ .[]
-             | select(.type == "event_msg")
-             | .payload
-             | select(.type == "user_message" or .type == "agent_message")
-             | .message
-             | select(type == "string" and . != "")
-           ]) | join("\n")
+         + codex_texts) | join("\n")
     ' "$transcript" 2>/dev/null)
 
     [ -n "$convo" ] || return 1
