@@ -802,6 +802,44 @@ grep -q 'action new-tab -n restore-me --cwd /tmp/proj -- env TASK_TAB_NAME=resto
 grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume-me TASK_TYPE=dev claude --resume sess-xyz' "$HOME/.claude-pending/zellij-calls.log" \
   && pass "create_task resumes session with claude --resume" || fail "create_task did not pass --resume"
 
+# zellij 0.44.1はサーバ劣化時にnew-tabの「暗黙のフォーカス切替」だけを
+# 遅延・喪失させる（明示的なgo-to-tab-nameは効く）。create_taskは暗黙
+# フォーカスに依存せず、new-tabの直後に明示フォーカスを発行する。
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "focus-me" ) >/dev/null 2>&1
+FOCUS_AFTER=$(grep -A1 'action new-tab -n focus-me' "$HOME/.claude-pending/zellij-calls.log" | tail -1)
+[[ "$FOCUS_AFTER" == "mock-zellij: action go-to-tab-name focus-me" ]] \
+  && pass "create_task focuses the new tab explicitly" \
+  || fail "no go-to-tab-name right after new-tab: '$FOCUS_AFTER'"
+
+# 復元経路（--resume付き）でも同じく明示フォーカスが入る
+: > "$HOME/.claude-pending/zellij-calls.log"
+( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "focus-resume" "sess-xyz" ) >/dev/null 2>&1
+FOCUS_AFTER=$(grep -A1 'action new-tab -n focus-resume' "$HOME/.claude-pending/zellij-calls.log" | tail -1)
+[[ "$FOCUS_AFTER" == "mock-zellij: action go-to-tab-name focus-resume" ]] \
+  && pass "create_task focuses the resumed tab explicitly" \
+  || fail "no go-to-tab-name right after resume new-tab: '$FOCUS_AFTER'"
+
+# new-tab自体が失敗したら非0で返る（restoreがこの戻り値に依存する）。
+# 明示フォーカスの追加でタブ作成の成否判定が上書きされないこと。
+FAIL_BIN="$SANDBOX/fail-bin"
+mkdir -p "$FAIL_BIN"
+cat > "$FAIL_BIN/zellij" << 'FAILMOCK'
+#!/bin/bash
+echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+if [[ "$1" == "action" && "$2" == "new-tab" ]]; then exit 1; fi
+exit 0
+FAILMOCK
+chmod +x "$FAIL_BIN/zellij"
+: > "$HOME/.claude-pending/zellij-calls.log"
+CT_RC=0
+( PATH="$FAIL_BIN:$PATH"; source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "failed-tab" ) >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -ne 0 ]] && pass "create_task returns non-zero when new-tab fails" \
+  || fail "create_task returned 0 despite new-tab failure"
+grep -q 'action go-to-tab-name failed-tab' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "focused a tab that was never created" || pass "no focus attempt when new-tab fails"
+rm -rf "$FAIL_BIN"
+
 # ============================================================
 section "17b2. configurable agent command (.agent.command)"
 # ============================================================
