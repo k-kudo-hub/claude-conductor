@@ -171,6 +171,7 @@ echo "n" | bash "$REPO_DIR/install.sh" 2>/dev/null
 [[ -f "$HOME/.claude-conductor/scripts/task-lib.sh" ]] && pass "task-lib.sh installed" || fail "task-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/lock-lib.sh" ]] && pass "lock-lib.sh installed" || fail "lock-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/registry-lib.sh" ]] && pass "registry-lib.sh installed" || fail "registry-lib.sh missing"
+[[ -f "$HOME/.claude-conductor/scripts/codex-rollout-lib.sh" ]] && pass "codex-rollout-lib.sh installed" || fail "codex-rollout-lib.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/restore-session.sh" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-toggle.sh" ]] && pass "waiting-toggle.sh installed" || fail "waiting-toggle.sh missing"
 [[ -f "$HOME/.claude-conductor/scripts/waiting-loop.sh" ]] && pass "waiting-loop.sh installed" || fail "waiting-loop.sh missing"
@@ -2511,6 +2512,8 @@ cat > "$CXV2_TRANSCRIPT" << 'ROLLOUT'
 {"timestamp":"2026-08-10T16:24:51.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning","id":"r1","content":[{"type":"Text","text":"V2REASONMARKER internal deliberation"}]}}}
 {"timestamp":"2026-08-10T16:24:52.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","process_id":"111","command":["/bin/zsh","-lc","npm test"],"cwd":"file:///tmp/myapp","status":"completed"}}}
 {"timestamp":"2026-08-10T16:24:53.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"exec-2","server":"node_repl","tool":"js","arguments":{"code":"console.log(1)"}}}}
+{"timestamp":"2026-08-10T16:24:53.200Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"exec-4","changes":{"/tmp/myapp/app.ts":{"type":"update","unified_diff":"@@ -0,0 +1 @@\n+fixed\n","move_path":null}},"status":"completed"}}}
+{"timestamp":"2026-08-10T16:24:53.400Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","id":"exec-5","query":"how to fix","action":{"type":"search","query":null,"queries":["how to fix"]},"results":[]}}}
 {"timestamp":"2026-08-10T16:24:54.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m1","content":[{"type":"Text","text":"V2AGENTMARKER tests pass"}],"phase":"commentary"}}}
 {"timestamp":"2026-08-10T16:24:55.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"now merge it","text_elements":[]}]}}}
 {"timestamp":"2026-08-10T16:24:56.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-3","process_id":"112","command":["/bin/zsh","-lc","gh pr merge 12 --squash"],"cwd":"file:///tmp/myapp","status":"completed"}}}
@@ -2529,10 +2532,11 @@ CXV2_REC=$(tail -1 "$DAILY_FILE")
   && pass "v2 turns counted from UserMessage items" || fail "v2 turns wrong: $(echo "$CXV2_REC" | jq -r '.summary.total_turns')"
 # response_item が無い rollout では item_completed のツール系 item で数える
 # （Reasoning / メッセージ item は対象外）
-[[ "$(echo "$CXV2_REC" | jq -r '.summary.total_tool_calls')" == "3" ]] \
+[[ "$(echo "$CXV2_REC" | jq -r '.summary.total_tool_calls')" == "5" ]] \
   && pass "v2 tool calls counted from item_completed" || fail "v2 tool calls wrong: $(echo "$CXV2_REC" | jq -r '.summary.total_tool_calls')"
-[[ "$(echo "$CXV2_REC" | jq -c '.summary.tools_used')" == '["CommandExecution","McpToolCall"]' ]] \
-  && pass "v2 tools_used from item types" || fail "v2 tools_used wrong: $(echo "$CXV2_REC" | jq -c '.summary.tools_used')"
+# 名前は .name // .tool // .kind // .type（McpToolCall は .tool、Extension は .kind）
+[[ "$(echo "$CXV2_REC" | jq -c '.summary.tools_used')" == '["CommandExecution","FileChange","js","web.search"]' ]] \
+  && pass "v2 tools_used from tool/kind/type fields" || fail "v2 tools_used wrong: $(echo "$CXV2_REC" | jq -c '.summary.tools_used')"
 [[ "$(echo "$CXV2_REC" | jq -r '.summary.model')" == "gpt-5.6-sol" ]] \
   && pass "v2 model still from turn_context" || fail "v2 model wrong"
 [[ "$(echo "$CXV2_REC" | jq -r '.summary.total_cost_usd')" == "9.5" ]] \
@@ -2540,8 +2544,11 @@ CXV2_REC=$(tail -1 "$DAILY_FILE")
 [[ "$(echo "$CXV2_REC" | jq -r '.markers.merged')" == "true" ]] \
   && pass "v2 merged marker from CommandExecution command" || fail "v2 merged marker wrong"
 
-# response_item のツール呼び出しがある rollout では従来どおりそちらで数える
-# （同じ活動の別ビューなので合算すると二重計上になる）
+# response_item のツール呼び出しがある rollout では従来どおりそちらで数える。
+# 実機の rollout では custom_tool_call(name="exec") の input が
+# tools.web__run / tools.exec_command / tools.mcp__* と多岐にわたり、それぞれが
+# Extension / CommandExecution / McpToolCall item として描画される。つまり両者は
+# 同一活動の別ビューであり、合算やカテゴリ別 union は二重計上になる。
 CXV2M_TRANSCRIPT="$SANDBOX/codex-rollout-v2-mixed.jsonl"
 cp "$CXV2_TRANSCRIPT" "$CXV2M_TRANSCRIPT"
 cat >> "$CXV2M_TRANSCRIPT" << 'ROLLOUT'
@@ -2576,6 +2583,72 @@ ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-ou
 [[ "$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')" == "false" ]] \
   && pass "merged marker ignores command output" || fail "merged marker false-positive from stdout"
 rm -f "$PENDING_DIR/thread-cxv2s.json"
+
+# .command の型が揺れても jq を落とさない。落とすとレコードが丸ごと
+# summary:null に退避してしまうため、string や配列内 object も許容する。
+CXV2T_TRANSCRIPT="$SANDBOX/codex-rollout-v2-cmdtype.jsonl"
+cat > "$CXV2T_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T17:10:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T17:10:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"go"}]}}}
+{"timestamp":"2026-08-10T17:10:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":"gh pr merge 12 --squash","status":"completed"}}}
+{"timestamp":"2026-08-10T17:10:03.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e2","command":["/bin/zsh",{"arg":"weird"},"ls"],"status":"completed"}}}
+{"timestamp":"2026-08-10T17:10:04.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e3","status":"completed"}}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2t.json" << EOF
+{"tab":"cxv2-cmdtype-test","session":"test-session","claude_session_id":"thread-cxv2t","message":"done","event":"Stop","time":"17:10:05","transcript_path":"$CXV2T_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-cmdtype-test"
+CXV2T_REC=$(tail -1 "$DAILY_FILE")
+[[ "$(echo "$CXV2T_REC" | jq -r '.summary')" != "null" ]] \
+  && pass "odd .command types do not abort the parse" || fail "record fell back to summary:null on odd .command"
+[[ "$(echo "$CXV2T_REC" | jq -r '.summary.total_tool_calls')" == "3" ]] \
+  && pass "odd .command items are still counted" || fail "cmdtype tool count wrong: $(echo "$CXV2T_REC" | jq -r '.summary.total_tool_calls')"
+[[ "$(echo "$CXV2T_REC" | jq -r '.markers.merged')" == "true" ]] \
+  && pass "merged detected from a string .command" || fail "string .command merge not detected"
+rm -f "$PENDING_DIR/thread-cxv2t.json"
+
+# MCP 経由のマージはツール名で判定する。引数テキストは走査しない
+# （Slack 投稿などが gh pr merge を含むだけで誤検知するため）。
+CXV2P_TRANSCRIPT="$SANDBOX/codex-rollout-v2-mcp.jsonl"
+cat > "$CXV2P_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T17:20:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T17:20:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"merge it"}]}}}
+{"timestamp":"2026-08-10T17:20:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"github","tool":"merge_pull_request","arguments":{"pullNumber":12}}}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2p.json" << EOF
+{"tab":"cxv2-mcp-test","session":"test-session","claude_session_id":"thread-cxv2p","message":"done","event":"Stop","time":"17:20:03","transcript_path":"$CXV2P_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-mcp-test"
+[[ "$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')" == "true" ]] \
+  && pass "merged detected from an MCP merge_pull_request call" || fail "MCP merge not detected"
+
+CXV2N_TRANSCRIPT="$SANDBOX/codex-rollout-v2-mcp-noise.jsonl"
+cat > "$CXV2N_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T17:30:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T17:30:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"tell the team"}]}}}
+{"timestamp":"2026-08-10T17:30:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"slack","tool":"send_message","arguments":{"text":"次は gh pr merge 12 をお願いします"}}}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv2n.json" << EOF
+{"tab":"cxv2-noise-test","session":"test-session","claude_session_id":"thread-cxv2n","message":"done","event":"Stop","time":"17:30:03","transcript_path":"$CXV2N_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv2-noise-test"
+[[ "$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')" == "false" ]] \
+  && pass "merged ignores gh pr merge quoted in MCP arguments" || fail "MCP argument text false-positive"
+
+# 旧ビュー側の MCP マージ（ツール名一致）も拾う
+CXV1P_TRANSCRIPT="$SANDBOX/codex-rollout-v1-mcp.jsonl"
+cat > "$CXV1P_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T17:40:00.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T17:40:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"merge it"}}
+{"timestamp":"2026-08-10T17:40:02.000Z","type":"response_item","payload":{"type":"function_call","id":"f1","call_id":"c1","name":"mcp__github__merge_pull_request","arguments":"{\"pullNumber\":12}"}}
+ROLLOUT
+cat > "$PENDING_DIR/thread-cxv1p.json" << EOF
+{"tab":"cxv1-mcp-test","session":"test-session","claude_session_id":"thread-cxv1p","message":"done","event":"Stop","time":"17:40:03","transcript_path":"$CXV1P_TRANSCRIPT","agent":"codex"}
+EOF
+ZELLIJ_SESSION_NAME=test-session bash "$HOME/.claude-conductor/scripts/record-output.sh" "cxv1-mcp-test"
+[[ "$(tail -1 "$DAILY_FILE" | jq -r '.markers.merged')" == "true" ]] \
+  && pass "merged detected from a v1 MCP merge call name" || fail "v1 MCP merge not detected"
+rm -f "$PENDING_DIR/thread-cxv2p.json" "$PENDING_DIR/thread-cxv2n.json" "$PENDING_DIR/thread-cxv1p.json"
 
 # 旧形式イベントと新形式 item が同居しても turns を二重に数えない
 CXV2D_TRANSCRIPT="$SANDBOX/codex-rollout-v2-dual.jsonl"
@@ -3729,6 +3802,38 @@ if CXV2S=$(run_summary "$CXV2_TRANSCRIPT"); then
         && pass "v2 Reasoning item excluded from the conversation" || fail "reasoning leaked: $CXV2S"
 else
     fail "generate_summary failed on a v2 codex rollout"
+fi
+
+# content 要素の形が揺れても、読める分だけ拾って要約は続行する（dd を止めない）。
+# 素の文字列要素、.text を持たない要素が混ざっても落ちないこと。
+CXV2L_TRANSCRIPT="$SANDBOX/codex-rollout-v2-lenient.jsonl"
+cat > "$CXV2L_TRANSCRIPT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T18:00:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":["LENIENTSTRINGMARKER bare string element"]}}}
+{"timestamp":"2026-08-10T18:00:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"m1","content":[{"type":"Image","url":"https://example.com/x.png"},{"type":"Text","text":"LENIENTTEXTMARKER done"}]}}}
+ROLLOUT
+if CXV2L=$(run_summary "$CXV2L_TRANSCRIPT"); then
+    echo "$CXV2L" | grep -q "LENIENTSTRINGMARKER" \
+        && pass "bare string content elements are accepted" || fail "string element dropped: $CXV2L"
+    echo "$CXV2L" | grep -q "LENIENTTEXTMARKER" \
+        && pass "unknown content elements degrade instead of aborting" || fail "text lost beside unknown element: $CXV2L"
+else
+    fail "generate_summary failed on an odd v2 content shape"
+fi
+
+# codex-rollout-lib.sh が無い環境（部分的な更新など）でも claude transcript の
+# 要約は動き、codex 側だけが安全に失敗する。ここが壊れると全 dd が止まる。
+NOLIB_HOME="$SANDBOX/nolib-conductor"
+mkdir -p "$NOLIB_HOME/scripts"
+if NOLIB_SUM=$(CONDUCTOR_HOME="$NOLIB_HOME" bash -c "UPLOAD_LOG_LIB=1 source '$UPLOAD_SCRIPT'; generate_summary '$MOCK_TRANSCRIPT'" 2>/dev/null); then
+    echo "$NOLIB_SUM" | grep -q "fix the bug" \
+        && pass "claude summary works without codex-rollout-lib.sh" || fail "claude summary broken without the lib: $NOLIB_SUM"
+else
+    fail "generate_summary failed on a claude transcript without the lib"
+fi
+if CONDUCTOR_HOME="$NOLIB_HOME" bash -c "UPLOAD_LOG_LIB=1 source '$UPLOAD_SCRIPT'; generate_summary '$CXV2_TRANSCRIPT'" >/dev/null 2>&1; then
+    fail "codex summary should fail safely without the lib"
+else
+    pass "codex summary fails safely without the lib"
 fi
 
 # Restore working mock claude for later sections

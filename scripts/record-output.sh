@@ -18,6 +18,10 @@ CONFIG_DEFAULT="$CONDUCTOR_HOME/config.default.json"
 
 # shellcheck source=scripts/lock-lib.sh
 source "$CONDUCTOR_HOME/scripts/lock-lib.sh"
+if [ -f "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh" ]; then
+    # shellcheck source=scripts/codex-rollout-lib.sh
+    source "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh"
+fi
 
 mkdir -p "$DAILY_DIR"
 
@@ -62,41 +66,17 @@ COMPLETED_AT=$(date '+%Y-%m-%dT%H:%M:%S%z')
 OUT=""
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex" ]; then
-    # Codex rollout jsonl. Two layouts exist in the wild and the codex version
-    # does not tell them apart (the same cli_version 0.147.0 writes both), so
-    # each value is read from whichever shape the rollout actually uses:
-    #   turns: v1 counts user_message events; v2 counts item_completed events
-    #     whose item.type is "UserMessage". The two are picked, never summed —
-    #     they are two ways of logging the same turn (no rollout under
-    #     ~/.codex/sessions carries both, but summing would double count if one
-    #     ever did).
-    #   tool calls: v1 logs response_items whose type ends in "_call"
-    #     (custom_tool_call etc.); v2 also logs item_completed items of type
-    #     CommandExecution / McpToolCall / FileChange / Extension. These are two
-    #     views of the same activity and real v2 rollouts carry both, so the
-    #     response_item view wins and the item view is only a fallback for
-    #     rollouts that have no response_item calls at all. Reasoning and
-    #     message items are not tool calls. The item view names a tool by its
-    #     item type, since those items carry no tool name field.
-    #   merged marker: scanned in both views (a boolean cannot double count),
-    #     so a `gh pr merge` run only recorded as a CommandExecution command is
-    #     still detected. Only the command itself is scanned (.command /
-    #     .arguments), never the item's stdout / aggregated_output: a real
-    #     rollout was found where `cat`ing a file that mentions gh pr merge
-    #     would otherwise mark an unmerged task as merged.
+    # Codex rollout jsonl. The layout knowledge (v1 events vs v2 item_completed
+    # items, and why the tool views are picked rather than summed) lives in
+    # codex-rollout-lib.sh; only the pricing and record shaping are local.
     # usage is the cumulative total of the last token_count event and the model
     # comes from turn_context; both are unchanged in v2. Unknown models yield a
     # null cost rather than borrowing claude pricing.
-    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" '
-        ([.[] | select(.type == "event_msg" and .payload.type == "user_message")] | length) as $turns_v1 |
-        ([.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "UserMessage")] | length) as $turns_v2 |
-        (if $turns_v2 > 0 then $turns_v2 else $turns_v1 end) as $turns |
-        [.[] | select(.type == "response_item") | .payload | select(.type != null) | select(.type | test("_call$"))] as $tools_v1 |
-        [.[] | select(.type == "event_msg" and .payload.type == "item_completed") | .payload.item
-             | select(.type == "CommandExecution" or .type == "McpToolCall" or .type == "FileChange" or .type == "Extension")] as $tools_v2 |
-        (if ($tools_v1 | length) > 0 then $tools_v1 else $tools_v2 end) as $tools |
+    RECORD=$(jq -sc --arg tab "$TAB_NAME" --arg completed_at "$COMPLETED_AT" --arg message "$MESSAGE" --arg session "$SESSION_NAME" --arg dir "$DIR" --arg task_type "$TASK_TYPE" --arg claude_session_id "$CLAUDE_SESSION_ID" --arg transcript_path "$TRANSCRIPT_PATH" --arg agent "$AGENT" --argjson pricing "$PRICING_JSON" "$CODEX_ROLLOUT_JQ"'
+        codex_turns as $turns |
+        codex_tools as $tools |
         ($tools | length) as $calls |
-        ($tools | [.[] | .name // .type] | unique) as $used |
+        ($tools | [.[] | codex_tool_name] | unique) as $used |
         ([.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage | select(. != null)] | last) as $usage |
         ((($usage.input_tokens // 0) - ($usage.cached_input_tokens // 0)) ) as $in |
         ($usage.output_tokens // 0) as $out |
@@ -112,8 +92,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ "$AGENT" = "codex
                 ($cache_write * ($p.cache_write // 0))
             ) / 1000000
         end) as $cost |
-        (($tools_v1 | [.[] | ((.input // .arguments // "") | tostring) | select(test("gh\\s+pr\\s+merge"))] | length > 0)
-         or ($tools_v2 | [.[] | (((.command // []) | join(" ")) + " " + ((.arguments // "") | tostring)) | select(test("gh\\s+pr\\s+merge"))] | length > 0)) as $has_merged |
+        codex_merged as $has_merged |
         {
             tab: $tab,
             session: $session,

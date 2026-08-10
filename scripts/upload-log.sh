@@ -14,8 +14,16 @@
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 
-# This script is self-contained (no external lib): the helpers below define
-# everything the upload flow needs.
+# Apart from the codex rollout layout knowledge, which is shared with
+# record-output.sh so a format change is a single-file edit, this script is
+# self-contained: the helpers below define everything the upload flow needs.
+# The no-op default keeps claude transcripts summarizable (rather than failing
+# every upload, which would block every dd) if that lib is ever missing.
+CODEX_ROLLOUT_JQ='def codex_texts: [];'
+if [ -f "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh" ]; then
+    # shellcheck source=scripts/codex-rollout-lib.sh
+    source "$CONDUCTOR_HOME/scripts/codex-rollout-lib.sh"
+fi
 
 # ------------------------------------------------------------------
 # Helper functions (unit-tested by test.sh via UPLOAD_LOG_LIB=1)
@@ -59,28 +67,14 @@ filter_secrets() {
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
 #
-# Three transcript layouts are supported, and all are extracted by one jq pass
-# instead of branching on the pending file's `agent` field: no format detection
-# is needed because a record matches at most one of the selectors, so the other
-# arrays are empty. This also keeps working when the pending entry lacks an
-# agent (written before agent recording) or carries a stale one.
-#   claude   : .type=="user"/"assistant" with .message.content
-#   codex v1 : rollout jsonl - conversation in .type=="event_msg" whose
-#              .payload.type is user_message / agent_message, text in
-#              .payload.message.
-#   codex v2 : newer rollout - conversation in .type=="event_msg" with
-#              .payload.type=="item_completed" and .payload.item.type
-#              "UserMessage" / "AgentMessage", text in .payload.item.content[]
-#              .text. The content element's own .type is "text" for UserMessage
-#              but "Text" for AgentMessage in real rollouts, so the elements are
-#              taken by their .text field rather than filtered by type.
-# v1 and v2 never appear in the same rollout (checked across every rollout under
-# ~/.codex/sessions), and the codex version does not tell them apart: the same
-# cli_version 0.147.0 writes both. Only the content can decide, which is exactly
-# what selecting on both shapes does.
-# response_items are skipped on purpose in both codex layouts: their
-# role=="developer" entries are the system prompt, not the conversation. So are
-# Reasoning items, which are internal deliberation rather than the conversation.
+# Claude transcripts and codex rollouts are extracted by one jq pass instead of
+# branching on the pending file's `agent` field: no format detection is needed
+# because a record matches at most one of the selectors, so the other array is
+# empty. This also keeps working when the pending entry lacks an agent (written
+# before agent recording) or carries a stale one.
+#   claude: .type=="user"/"assistant" with .message.content
+#   codex : codex_texts from codex-rollout-lib.sh, which reads both codex
+#           layouts (see that file for the shapes and the evidence).
 generate_summary() {
     local transcript="$1"
     command -v claude >/dev/null 2>&1 || return 1
@@ -88,7 +82,7 @@ generate_summary() {
 
     # Extract human-readable text (user + assistant text blocks) from the JSONL transcript
     local convo
-    convo=$(jq -rs '
+    convo=$(jq -rs "$CODEX_ROLLOUT_JQ"'
         ([ .[]
            | select(.type == "user" or .type == "assistant")
            | .message.content as $c
@@ -97,21 +91,7 @@ generate_summary() {
               end)
            | select(. != null and . != "")
          ]
-         + [ .[]
-             | select(.type == "event_msg")
-             | .payload
-             | select(.type == "user_message" or .type == "agent_message")
-             | .message
-             | select(type == "string" and . != "")
-           ]
-         + [ .[]
-             | select(.type == "event_msg" and .payload.type == "item_completed")
-             | .payload.item
-             | select(.type == "UserMessage" or .type == "AgentMessage")
-             | [ .content[]? | .text? | select(type == "string" and . != "") ]
-             | join("\n")
-             | select(. != "")
-           ]) | join("\n")
+         + codex_texts) | join("\n")
     ' "$transcript" 2>/dev/null)
 
     [ -n "$convo" ] || return 1
