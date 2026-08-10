@@ -155,20 +155,31 @@ create_task() {
     local -a envs=(TASK_TAB_NAME="$name" TASK_TYPE="$type")
     [[ -n "$agent" ]] && envs+=(TASK_AGENT="$agent")
 
+    local rc
     if [[ -n "$resume" ]]; then
         local -a resume_flags
         read -r -a resume_flags <<< "$(agent_resume_args "$agent")"
         zellij action new-tab -n "$name" --cwd "$dir" -- env "${envs[@]}" "${agent_cmd[@]}" "${resume_flags[@]}" "$resume"
+        rc=$?
     else
         zellij action new-tab -n "$name" --cwd "$dir" -- env "${envs[@]}" "${agent_cmd[@]}"
+        rc=$?
     fi
     # Report tab-creation success to the caller (restore relies on this).
     # Bail out before building panes if the tab itself could not be created.
-    local rc=$?
     if [[ $rc -ne 0 ]]; then
         return "$rc"
     fi
+
     sleep 0.3
+
+    # zellij 0.44.1 degrades by dropping only new-tab's *implicit* focus switch
+    # (an explicit go-to-tab-name still works), which would leave the caller on
+    # the old tab while every pane command below lands on the new one. Focusing
+    # by name removes that dependency; it is a no-op when new-tab already moved
+    # focus there. Runs after the settle sleep so a slow server has registered
+    # the tab by the time we address it by name.
+    zellij action go-to-tab-name "$name" 2>/dev/null
 
     zellij action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
     local i
