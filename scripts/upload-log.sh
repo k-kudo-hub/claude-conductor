@@ -59,17 +59,28 @@ filter_secrets() {
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
 #
-# Two transcript formats are supported, and both are extracted by one jq pass
+# Three transcript layouts are supported, and all are extracted by one jq pass
 # instead of branching on the pending file's `agent` field: no format detection
-# is needed because a record matches at most one of the two selectors, so the
-# other array is always empty. This also keeps working when the pending entry
-# lacks an agent (written before agent recording) or carries a stale one.
-#   claude: .type=="user"/"assistant" with .message.content
-#   codex : rollout jsonl - conversation lives in .type=="event_msg" whose
-#           .payload.type is user_message / agent_message, both carrying the
-#           text in .payload.message. response_items are skipped on purpose:
-#           their role=="developer" entries are the system prompt, not the
-#           conversation.
+# is needed because a record matches at most one of the selectors, so the other
+# arrays are empty. This also keeps working when the pending entry lacks an
+# agent (written before agent recording) or carries a stale one.
+#   claude   : .type=="user"/"assistant" with .message.content
+#   codex v1 : rollout jsonl - conversation in .type=="event_msg" whose
+#              .payload.type is user_message / agent_message, text in
+#              .payload.message.
+#   codex v2 : newer rollout - conversation in .type=="event_msg" with
+#              .payload.type=="item_completed" and .payload.item.type
+#              "UserMessage" / "AgentMessage", text in .payload.item.content[]
+#              .text. The content element's own .type is "text" for UserMessage
+#              but "Text" for AgentMessage in real rollouts, so the elements are
+#              taken by their .text field rather than filtered by type.
+# v1 and v2 never appear in the same rollout (checked across every rollout under
+# ~/.codex/sessions), and the codex version does not tell them apart: the same
+# cli_version 0.147.0 writes both. Only the content can decide, which is exactly
+# what selecting on both shapes does.
+# response_items are skipped on purpose in both codex layouts: their
+# role=="developer" entries are the system prompt, not the conversation. So are
+# Reasoning items, which are internal deliberation rather than the conversation.
 generate_summary() {
     local transcript="$1"
     command -v claude >/dev/null 2>&1 || return 1
@@ -92,6 +103,14 @@ generate_summary() {
              | select(.type == "user_message" or .type == "agent_message")
              | .message
              | select(type == "string" and . != "")
+           ]
+         + [ .[]
+             | select(.type == "event_msg" and .payload.type == "item_completed")
+             | .payload.item
+             | select(.type == "UserMessage" or .type == "AgentMessage")
+             | [ .content[]? | .text? | select(type == "string" and . != "") ]
+             | join("\n")
+             | select(. != "")
            ]) | join("\n")
     ' "$transcript" 2>/dev/null)
 

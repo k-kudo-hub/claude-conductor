@@ -3718,6 +3718,19 @@ else
     pass "generate_summary fails on an unrecognised transcript"
 fi
 
+# 新形式(item_completed)の rollout からも会話が抽出できること。
+# ここでは 26i1b の fixture をそのまま一次情報として使う。
+if CXV2S=$(run_summary "$CXV2_TRANSCRIPT"); then
+    echo "$CXV2S" | grep -q "V2USERMARKER" \
+        && pass "v2 UserMessage item extracted" || fail "v2 user text missing: $CXV2S"
+    echo "$CXV2S" | grep -q "V2AGENTMARKER" \
+        && pass "v2 AgentMessage item extracted" || fail "v2 agent text missing: $CXV2S"
+    ! echo "$CXV2S" | grep -q "V2REASONMARKER" \
+        && pass "v2 Reasoning item excluded from the conversation" || fail "reasoning leaked: $CXV2S"
+else
+    fail "generate_summary failed on a v2 codex rollout"
+fi
+
 # Restore working mock claude for later sections
 cat > "$MOCK_BIN/claude" << 'MOCK'
 #!/bin/bash
