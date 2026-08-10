@@ -203,7 +203,10 @@ screen_update_pending() {
             # An answered approval still comes through as blocked -> working,
             # and a prompt sent after a finished turn as idle -> working.
             if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
-                zellij action go-to-tab-name Main 2>/dev/null || true
+                # 毎tick走る経路なので、ここもガード必須（素の呼び出しだと
+                # 劣化サーバでダッシュボードごと止まる）
+                _zellij_guarded "$(_zj_call_timeout)" action go-to-tab-name Main \
+                    >/dev/null 2>&1 || true
             fi
             ;;
         idle)

@@ -12,46 +12,99 @@ CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
 # `zellij action` 自体が戻ってこないことがあり、実測ではハングした list-panes が
 # 200 個以上のプロセスとして積み上がった。
 #
-# macOS には timeout(1) が無く、bash 3.2 には `wait -n` も無い。そこで zellij を
-# バックグラウンドで起動し、ポーリングで見張って期限を過ぎたら kill する。
+# macOS には timeout(1) が無く、bash 3.2 には `wait -n` も無い。代わりに perl の
+# alarm(2) を使う。alarm は exec を跨いで生き残り、SIGALRM の既定動作がプロセス終了
+# なので `perl -e 'alarm N; exec @ARGV' N zellij ...` は fork 1回だけの timeout(1)
+# 相当になる（見張りプロセスも sleep も残らない）。perl が無い環境用に、従来の
+# ポーリング方式もフォールバックとして残す。
 
 # 1回の `zellij action` を諦めるまでの秒数
 _zj_call_timeout() { echo "${CONDUCTOR_ZELLIJ_TIMEOUT:-10}"; }
 # new-tab 後のハンドシェイク（タブ登録待ち + フォーカス検証）全体の予算（ミリ秒）
 _zj_tab_ready_ms() { echo "${CONDUCTOR_TAB_READY_MS:-10000}"; }
-# 上記ポーリングの間隔（ミリ秒）
+# create_task 全体（new-tab からレイアウト適用まで）の予算（秒）
+_zj_setup_budget() { echo "${CONDUCTOR_TASK_SETUP_BUDGET:-30}"; }
+# 登録待ち・フォーカス検証のポーリング間隔（ミリ秒。fork を増やさない固定値）
 _ZJ_POLL_MS=100
 
+# alarm 方式に使う perl。source 時に一度だけ解決する。
+_ZJ_PERL="$(command -v perl 2>/dev/null)"
+
 # _zellij_guarded <timeout_sec> <zellij の引数...>
-# `zellij "$@"` を実行し、<timeout_sec> 以内に終わらなければ kill する。
+# `zellij "$@"` を実行し、<timeout_sec> 以内に終わらなければ打ち切る。
 # 子プロセスはこの関数の stdout をそのまま引き継ぐので、
 # `out=$(_zellij_guarded 10 action go-to-tab-name foo)` で出力を取れる。
-# 戻り値は zellij の終了ステータス。kill した場合は timeout(1) と同じ 124。
+# 戻り値は zellij の終了ステータス。打ち切った場合は timeout(1) と同じ 124。
 _zellij_guarded() {
-    local limit_ms=$(( ${1:-10} * 1000 )); shift
-    local pid rc waited=0
+    local limit="${1:-10}"; shift
+    local pid rc
+    if [[ -n "$_ZJ_PERL" && -z "$CONDUCTOR_GUARD_NO_PERL" ]]; then
+        # exec の対象を {$ARGV[0]} で明示し、引数が1個でも perl がシェル解釈に
+        # 落ちないようにする（引数中の空白もそのまま渡る）。
+        # バックグラウンド + wait にするのは、SIGALRM で死んだ子を前景で回収すると
+        # bash が "Alarm clock" を stderr へ出してしまうため（wait を黙らせれば漏れない）。
+        "$_ZJ_PERL" -e 'alarm shift; exec {$ARGV[0]} @ARGV or exit 127' \
+            "$limit" zellij "$@" &
+        pid=$!
+        wait "$pid" 2>/dev/null
+        rc=$?
+        # SIGALRM(14) で打ち切られた = 142。timeout(1) 準拠の 124 に正規化する
+        [[ $rc -eq 142 ]] && rc=124
+        return $rc
+    fi
+    _zellij_guarded_poll "$limit" "$@"
+}
+
+# perl が無い環境向けのフォールバック。1回の sleep が短いほど時刻精度は上がるが
+# その分 fork が増えるので、100ms 固定で回して実時間（SECONDS）でも期限を見る。
+_zellij_guarded_poll() {
+    local limit="${1:-10}"; shift
+    local pid rc waited=0 start=$SECONDS
     zellij "$@" &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
-        if [[ $waited -ge $limit_ms ]]; then
+        # 判定は「ポーリング間隔の累計」を主、「実時間」を保険にする。
+        # SECONDS は1秒単位なので、比較は -gt にして「早く切ってしまう」側には
+        # 倒さない（-ge だと start の位相次第で最大1秒早く殺してしまう）。
+        if [[ $waited -ge $(( limit * 1000 )) || $(( SECONDS - start )) -gt $limit ]]; then
             # kill/wait はブロックごと黙らせる。非対話 bash は signal で死んだ
             # ジョブを "Terminated" と報告し、それが呼び出し元の stderr を汚す。
             { kill -TERM "$pid"; sleep 0.2; kill -KILL "$pid"; wait "$pid"; } 2>/dev/null
             return 124
         fi
-        # 健全なサーバなら `zellij action` は数十msで返る。最初だけ細かく見て
-        # 正常系の追加待ちを実質ゼロにし、待たされるほど間隔を伸ばす。
+        # 健全なサーバの `zellij action` は数十msで返るので、最初の100msだけ細かく
+        # 見て正常系の待ちを詰める。細かい刻みは10回まで（＝sleepのfork10回まで）に
+        # 制限し、それ以降は100ms固定。累計と実時間のずれが数%に収まる範囲。
         if [[ $waited -lt 100 ]]; then
-            sleep 0.002; waited=$((waited + 2))
-        elif [[ $waited -lt 1000 ]]; then
-            sleep 0.02; waited=$((waited + 20))
+            sleep 0.01
+            waited=$((waited + 10))
         else
-            sleep 0.1; waited=$((waited + 100))
+            sleep 0.1
+            waited=$((waited + 100))
         fi
     done
     wait "$pid"
     rc=$?
     return $rc
+}
+
+# _zj_budget_cap <開始SECONDS> <予算秒> <1回のタイムアウト秒>
+# 「残り予算」と「1回のタイムアウト」の小さい方を返す。予算切れなら 0 を返し、
+# 呼び出し元はそれ以上コマンドを撃たない。予算が空なら無制限（= タイムアウトのまま）。
+_zj_budget_cap() {
+    local start="$1" budget="$2" timeout="$3" left
+    if [[ -z "$budget" ]]; then
+        echo "$timeout"
+        return 0
+    fi
+    left=$(( budget - (SECONDS - start) ))
+    if [[ $left -le 0 ]]; then
+        echo 0
+    elif [[ $left -lt $timeout ]]; then
+        echo "$left"
+    else
+        echo "$timeout"
+    fi
 }
 
 # _wait_tab_registered <name>
@@ -89,6 +142,13 @@ _wait_tab_registered() {
 # したがって「stdout 非空 = フォーカス成功」で判定する。将来の zellij がこの出力を
 # やめた場合はフォーカスが永久に未確認となり、create_task はペインを作らずに
 # 失敗を返す（= Main を壊すより中止を選ぶ）方向に倒れる。
+#
+# 出力仕様が変わった場合の構造的な代替:
+#   zellij action list-panes -t -c -j の各要素にある is_focused と tab_name を
+#   突き合わせ、目的のタブにフォーカス中のペインが在るかで事後確認する
+#   （両フィールドとも 0.44.1 の出力に実在。screen_detect_tick が同じ JSON を
+#   使っているので追加の依存も無い）。stdout ヒューリスティックより重いぶん、
+#   出力が消えたときの置き換え先として記録しておく。
 _focus_tab_verified() {
     local name="$1"
     local budget_ms; budget_ms=$(_zj_tab_ready_ms)
@@ -188,9 +248,15 @@ _screen_tab_slug() {
     printf '%s-%s' "$safe" "$hash"
 }
 
+# apply_layout <dir> <type> [残り予算秒]
+# 残り予算を渡すと、その秒数を超えた時点で残りのレイアウト操作を打ち切る
+# （劣化サーバで1コマンドずつタイムアウトを積み上げて数分固まらないため）。
+# 省略時は無制限（従来どおり）。
 apply_layout() {
     local dir="$1"
     local type="$2"
+    local budget="${3:-}"
+    local start=$SECONDS
     local config_file
     config_file=$(load_config)
 
@@ -205,7 +271,7 @@ apply_layout() {
 
     # レイアウト適用中もサーバが劣化しうるので、各アクションに kill ガードを噛ませる
     # （1本ハングしただけでタスク作成が永久に止まらないようにする）
-    local zj_timeout
+    local zj_timeout cap
     zj_timeout=$(_zj_call_timeout)
 
     while IFS= read -r step; do
@@ -214,26 +280,37 @@ apply_layout() {
         direction=$(echo "$step" | jq -r '.direction')
         command=$(echo "$step" | jq -r '.command // empty')
 
+        cap=$(_zj_budget_cap "$start" "$budget" "$zj_timeout")
+        if [[ "$cap" -le 0 ]]; then
+            echo "apply_layout: budget exhausted; skipping the rest of the '$type' layout" >&2
+            return 0
+        fi
+
         case "$action" in
             new-pane)
                 if [[ -n "$command" ]]; then
-                    _zellij_guarded "$zj_timeout" action new-pane --direction "$direction" --cwd "$dir" -- "$command"
+                    _zellij_guarded "$cap" action new-pane --direction "$direction" --cwd "$dir" -- "$command"
                 else
-                    _zellij_guarded "$zj_timeout" action new-pane --direction "$direction" --cwd "$dir"
+                    _zellij_guarded "$cap" action new-pane --direction "$direction" --cwd "$dir"
                 fi
                 ;;
             move-focus)
-                _zellij_guarded "$zj_timeout" action move-focus "$direction"
+                _zellij_guarded "$cap" action move-focus "$direction"
                 ;;
             focus-previous-pane)
-                _zellij_guarded "$zj_timeout" action focus-previous-pane
+                _zellij_guarded "$cap" action focus-previous-pane
                 ;;
             resize)
                 local amount
                 amount=$(echo "$step" | jq -r '.amount // 1')
                 local j
                 for (( j=0; j<amount; j++ )); do
-                    _zellij_guarded "$zj_timeout" action resize "$direction"
+                    cap=$(_zj_budget_cap "$start" "$budget" "$zj_timeout")
+                    if [[ "$cap" -le 0 ]]; then
+                        echo "apply_layout: budget exhausted; skipping the rest of the '$type' layout" >&2
+                        return 0
+                    fi
+                    _zellij_guarded "$cap" action resize "$direction"
                 done
                 ;;
         esac
@@ -262,8 +339,14 @@ create_task() {
     local -a envs=(TASK_TAB_NAME="$name" TASK_TYPE="$type")
     [[ -n "$agent" ]] && envs+=(TASK_AGENT="$agent")
 
-    local rc zj_timeout
+    local rc zj_timeout cap
     zj_timeout=$(_zj_call_timeout)
+    # タスク作成全体の予算。劣化サーバでは1コマンドごとにタイムアウトぶん待たされ、
+    # 素の合計は new-tab 10s + 登録待ち 10s + フォーカス 10s + 各ペイン操作 10s×35 =
+    # 6分超になりうる。フォーカス確認後は残り予算でタイムアウトを頭打ちにし、
+    # 尽きたらレイアウト系を諦める（タブとエージェントは既に動いている）。
+    local setup_start=$SECONDS setup_budget
+    setup_budget=$(_zj_setup_budget)
     if [[ -n "$resume" ]]; then
         local -a resume_flags
         read -r -a resume_flags <<< "$(agent_resume_args "$agent")"
@@ -293,14 +376,31 @@ create_task() {
         return 3
     fi
 
-    _zellij_guarded "$zj_timeout" action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
+    # task-control ペインはタスクの中核なので、予算が尽きていても最低1秒は試す
+    cap=$(_zj_budget_cap "$setup_start" "$setup_budget" "$zj_timeout")
+    [[ "$cap" -le 0 ]] && cap=1
+    _zellij_guarded "$cap" action new-pane --direction down --cwd "$dir" -- bash "$CONDUCTOR_HOME/scripts/task-control.sh" "$name"
+
+    # ここから下（リサイズ・レイアウト）は見た目の調整で、タブとしては既に
+    # 機能している。予算切れなら黙って諦めて rc=0 で返す。
     local i
     for i in {1..30}; do
-        _zellij_guarded "$zj_timeout" action resize decrease up
+        cap=$(_zj_budget_cap "$setup_start" "$setup_budget" "$zj_timeout")
+        if [[ "$cap" -le 0 ]]; then
+            echo "create_task: setup budget (${setup_budget}s) exhausted for tab '$name'; skipping the remaining layout" >&2
+            return 0
+        fi
+        _zellij_guarded "$cap" action resize decrease up
     done
-    _zellij_guarded "$zj_timeout" action focus-previous-pane
+
+    cap=$(_zj_budget_cap "$setup_start" "$setup_budget" "$zj_timeout")
+    if [[ "$cap" -le 0 ]]; then
+        echo "create_task: setup budget (${setup_budget}s) exhausted for tab '$name'; skipping the remaining layout" >&2
+        return 0
+    fi
+    _zellij_guarded "$cap" action focus-previous-pane
 
     # Layout is cosmetic; its status must not mask tab-creation success.
-    apply_layout "$dir" "$type"
+    apply_layout "$dir" "$type" "$(( setup_budget - (SECONDS - setup_start) ))"
     return 0
 }

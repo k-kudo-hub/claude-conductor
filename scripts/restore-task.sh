@@ -6,13 +6,14 @@
 #
 # Exit codes:
 #   0  restored (tab recreated, daily entry marked)
+#      create_task の rc=3（タブは出来たがフォーカス未確認でペイン未構築）も
+#      ここに含める。タブとエージェントは動いており、Done に残すと再試行で
+#      同名タブが二重に作られるため、復元成功として扱う。
 #   1  invalid arguments / entry not found
 #   2  entry has no recorded dir (older entry, cannot recreate the tab)
 #   3  recorded dir no longer exists (e.g. the worktree was removed)
 #   4  tab recreation failed (entry left in Done for retry)
-#      create_task はタブ登録待ち/フォーカス確認に失敗した場合も非0を返す。この
-#      ときタブ自体は存在しうるが、ペイン構築を諦めた側（= Main を壊さない側）に
-#      倒しているのでここでも失敗として扱い、エントリは Done に残す。
+#      タブがそもそも作られなかった場合のみ。
 #   5  tab created but daily-log update failed (task may reappear in Done)
 
 CONDUCTOR_HOME="${CONDUCTOR_HOME:-$HOME/.claude-conductor}"
@@ -75,8 +76,15 @@ fi
 # a missing agent falls back to the legacy single-agent path (claude).
 # Only mark the entry restored if the tab was actually created, otherwise the
 # task would vanish from the Done pane with no working tab to show for it.
-if ! create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID" "$AGENT"; then
+# rc=3 は「タブは作られたが control ペインとレイアウトが未構築」。タブは存在する
+# ので Done に残して再試行させると同名タブが増えるだけになる。復元済みとして進む。
+create_task "$DIR" "$TASK_TYPE" "$TAB" "$RESUME_ID" "$AGENT"
+CT_RC=$?
+if [ "$CT_RC" -ne 0 ] && [ "$CT_RC" -ne 3 ]; then
     exit 4
+fi
+if [ "$CT_RC" -eq 3 ]; then
+    echo "restore-task: tab '$TAB' restored without its control pane" >&2
 fi
 
 # Mark the entry restored (temp file + move, per repo convention).

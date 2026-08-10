@@ -1617,6 +1617,99 @@ pkill -f '^sleep 251$' 2>/dev/null || true
 rm -rf "$SDL_DIR3"
 
 # ============================================================
+section "17b10. guard timeout accuracy, setup budget, guarded call sites"
+# ============================================================
+
+# ミリ秒計測（perl があれば高精度、無ければ秒精度にフォールバック）
+now_ms() {
+    if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf("%d\n", time * 1000)'
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
+# 既定の perl alarm 方式: 打ち切り時刻が指定秒数からほとんどずれない
+mock_zellij_reset
+G_T0=$(now_ms)
+G_RC=0
+( export MOCK_HANG_CMD=list-tabs
+  source "$TL" && _zellij_guarded 2 action list-tabs ) >/dev/null 2>&1 || G_RC=$?
+G_MS=$(( $(now_ms) - G_T0 ))
+[[ $G_RC -eq 124 ]] && pass "guard returns 124 on timeout" || fail "guard rc wrong: $G_RC"
+[[ $G_MS -ge 1800 && $G_MS -le 2600 ]] \
+  && pass "timeout fires close to the limit (${G_MS}ms for 2s)" \
+  || fail "timeout drifted: ${G_MS}ms for a 2s limit"
+
+# perl が無い環境向けフォールバック（ポーリング）。時刻精度の保証は上の本経路が
+# 持つので、ここでは「期限より早く殺さない」「実時間で必ず打ち切る」の両端を見る。
+# 早切りは実際に踏んだバグで、SECONDS（1秒単位）を -ge で比較すると start の位相
+# 次第で最大1秒早くコマンドを殺してしまう。
+mock_zellij_reset
+G_T0=$(now_ms)
+G_RC=0
+( export MOCK_HANG_CMD=list-tabs CONDUCTOR_GUARD_NO_PERL=1
+  source "$TL" && _zellij_guarded 3 action list-tabs ) >/dev/null 2>&1 || G_RC=$?
+G_MS=$(( $(now_ms) - G_T0 ))
+[[ $G_RC -eq 124 ]] && pass "fallback guard returns 124 on timeout" || fail "fallback rc wrong: $G_RC"
+[[ $G_MS -ge 2900 ]] && pass "fallback never kills before the limit (${G_MS}ms for 3s)" \
+  || fail "fallback killed early: ${G_MS}ms for a 3s limit"
+[[ $G_MS -le 4500 ]] \
+  && pass "fallback timeout bounded by real time (${G_MS}ms for 3s)" \
+  || fail "fallback timeout drifted: ${G_MS}ms for a 3s limit"
+
+# 正常系では両方式とも zellij の終了ステータスをそのまま返す
+( source "$TL" && _zellij_guarded 5 action list-tabs ) >/dev/null 2>&1 \
+  && pass "guard passes through success" || fail "guard broke a successful call"
+( export CONDUCTOR_GUARD_NO_PERL=1; source "$TL" && _zellij_guarded 5 action list-tabs ) >/dev/null 2>&1 \
+  && pass "fallback guard passes through success" || fail "fallback guard broke a successful call"
+
+# 全体予算: ハングするコマンドが並んでも create_task は予算内で切り上げ、
+# タブとペインは機能しているので rc=0 で返る（1コマンドずつ 10 秒待つと数分かかる）
+mock_zellij_reset
+B_T0=$(now_ms)
+CT_RC=0
+( export MOCK_HANG_CMD=resize CONDUCTOR_ZELLIJ_TIMEOUT=1 CONDUCTOR_TASK_SETUP_BUDGET=3
+  source "$TL" && create_task "/tmp/proj" "dev" "budget-tab" ) >/dev/null 2>&1 || CT_RC=$?
+B_MS=$(( $(now_ms) - B_T0 ))
+[[ $CT_RC -eq 0 ]] && pass "budget exhaustion still reports success (tab is usable)" \
+  || fail "create_task failed on budget exhaustion: $CT_RC"
+B_RESIZES=$(grep -c 'action resize' "$CALLS_LOG" | tr -d ' ')
+[[ "$B_RESIZES" -lt 30 ]] && pass "resize loop stops when the budget runs out ($B_RESIZES/30)" \
+  || fail "ran the whole resize loop despite the budget: $B_RESIZES"
+[[ $B_MS -le 8000 ]] && pass "create_task stays within its setup budget (${B_MS}ms)" \
+  || fail "setup budget not enforced: ${B_MS}ms"
+grep -q 'action new-pane --direction down --cwd /tmp/proj -- bash .*task-control.sh budget-tab' "$CALLS_LOG" \
+  && pass "task-control pane is still built under a tight budget" || fail "task-control pane skipped"
+
+# ダッシュボードの render は毎秒回る。list-tabs が固まっても抜けてくること
+mock_zellij_reset
+dash_hang_probe() {
+    export MOCK_HANG_CMD=list-tabs CONDUCTOR_ZELLIJ_TIMEOUT=1 CONDUCTOR_DASHBOARD_ONCE=1 \
+           ZELLIJ_SESSION_NAME=dash-hang
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+}
+D_RC=0
+run_with_watchdog 20 dash_hang_probe >/dev/null 2>&1 || D_RC=$?
+[[ $D_RC -ne 124 ]] && pass "dashboard render survives a hung list-tabs" \
+  || fail "dashboard render hung on list-tabs"
+pkill -f '^sleep 251$' 2>/dev/null || true
+
+# ダッシュボード経路の zellij 呼び出しは全てガード経由であること（素の呼び出しが
+# 1本でも残ると、そこだけ劣化サーバで無限に固まる）
+raw_zellij_calls() {
+    grep -n 'zellij action' "$1" \
+      | sed -e 's/^[0-9]*://' -e 's/^[[:space:]]*//' \
+      | grep -v '^#' \
+      | grep -v '_zellij_guarded' || true
+}
+for GF in task-lib.sh screen-detect-lib.sh dashboard-loop.sh; do
+    RAW=$(raw_zellij_calls "$HOME/.claude-conductor/scripts/$GF")
+    [[ -z "$RAW" ]] && pass "$GF has no unguarded zellij action call" \
+      || fail "$GF still calls zellij directly: $RAW"
+done
+
+# ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
 # ============================================================
 
@@ -2235,6 +2328,27 @@ ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/res
 GONE_FLAG=$(jq -r 'select(.tab=="gone-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
 [[ "$GONE_FLAG" == "absent" ]] && pass "gone-dir entry left in Done (not marked)" || fail "gone-dir entry wrongly marked: $GONE_FLAG"
 
+# create_task の rc=3（タブは出来たがフォーカス未確認でペイン未構築）は復元成功扱い。
+# Done に残すと再試行のたびに同名タブが増えるだけで、タブ自体は機能している。
+HB_AT="${RESTORE_TODAY}T05:00:00+0900"
+cat >> "$RESTORE_DAILY_FILE" << JSONL
+{"tab":"halfbuilt","session":"$RESTORE_SESSION","completed_at":"$HB_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ_DIR","task_type":"dev"}
+JSONL
+mock_zellij_reset
+HB_RC=0
+MOCK_FOCUS_EMPTY_UNTIL=99999 CONDUCTOR_TAB_READY_MS=300 \
+  ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" \
+  "halfbuilt" "$RESTORE_SESSION" "$HB_AT" 2>/dev/null || HB_RC=$?
+[[ $HB_RC -eq 0 ]] && pass "restore-task exits 0 when the tab is created but not focus-confirmed" \
+  || fail "half-built restore exit wrong: $HB_RC"
+grep -q "action new-tab -n halfbuilt" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "half-built restore did create the tab" || fail "half-built restore created no tab"
+grep -q 'action new-pane' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "half-built restore built panes without confirmed focus" || pass "half-built restore built no panes"
+HB_FLAG=$(jq -r 'select(.tab=="halfbuilt") | .restored' "$RESTORE_DAILY_FILE")
+[[ "$HB_FLAG" == "true" ]] && pass "half-built restore marks the entry restored (no duplicate on retry)" \
+  || fail "half-built entry left in Done: $HB_FLAG"
+
 # ============================================================
 section "26f. done-loop.sh (r+number triggers restore)"
 # ============================================================
@@ -2465,6 +2579,21 @@ echo '{broken json' > "$CONDUCTOR_HOME/tasks/rs-sess/corrupt.json"
 ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
 grep -q "new-tab -n gamma-dev" "$RS_CALLS" \
   && pass "corrupt registry entry does not abort restore" || fail "restore aborted on corrupt entry: $(cat "$RS_CALLS")"
+
+# create_task が rc=3（タブは出来たがフォーカス未確認）でも「復元済み（不完全）」
+# として数える。硬い失敗と同じ扱いにすると、次回起動では同名タブが既存として
+# スキップされるので永遠に直らず、最後の go-to-tab-name Main も出ないため
+# フォーカスが半端なタブに残ってしまう。
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-7" "halfbuilt-dev" "$RS_DIR1" "" "" ""
+mock_zellij_reset
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" MOCK_FOCUS_EMPTY_UNTIL=99999 \
+  CONDUCTOR_TAB_READY_MS=300 bash "$RS" 2>/dev/null
+grep -q "new-tab -n halfbuilt-dev" "$RS_CALLS" \
+  && pass "half-built restore creates the tab" || fail "no tab created: $(cat "$RS_CALLS")"
+grep -q "go-to-tab-name Main" "$RS_CALLS" \
+  && pass "focus returns to Main even when a tab stays half-built" \
+  || fail "did not return to Main after a half-built restore"
 
 # ============================================================
 section "26k. dashboard-loop.sh triggers restore on startup"

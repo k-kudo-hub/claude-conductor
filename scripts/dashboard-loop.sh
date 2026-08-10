@@ -40,8 +40,11 @@ render() {
     screen_detect_tick "$SESSION_NAME" 2>/dev/null
 
     # Display pending items sorted by Zellij tab position
+    # 毎renderで叩くので kill ガード経由にする（素の呼び出しだと劣化サーバで
+    # ダッシュボードが描画のたびに固まる）
     local tab_order
-    tab_order=$(zellij action list-tabs 2>/dev/null | tail -n +2 | awk '{print $3}')
+    tab_order=$(_zellij_guarded "$(_zj_call_timeout)" action list-tabs 2>/dev/null \
+        | tail -n +2 | awk '{print $3}')
 
     echo -e "${BOLD}  Current Tasks${NC} ${DIM}[$SESSION_NAME]${NC}"
     echo -e "${DIM}  ──────────────────────────${NC}"
@@ -168,14 +171,16 @@ while true; do
                 rm -f "$PENDING_DIR/.screen-state/$(_screen_tab_slug "$target_tab")"
                 # Match the tab name as everything past the id/position columns,
                 # so names containing spaces still resolve to the right tab id.
-                tab_id=$(zellij action list-tabs 2>/dev/null | awk -v name="$target_tab" \
+                tab_id=$(_zellij_guarded "$(_zj_call_timeout)" action list-tabs 2>/dev/null \
+                    | awk -v name="$target_tab" \
                     'NR>1 { line=$0; sub(/^[^ ]+ +[^ ]+ +/, "", line); if (line == name) print $1 }')
                 if [[ -n "$tab_id" ]]; then
-                    zellij action close-tab-by-id "$tab_id" 2>/dev/null
+                    _zellij_guarded "$(_zj_call_timeout)" action close-tab-by-id "$tab_id" 2>/dev/null
                 fi
             fi
         elif [[ "$key" =~ [1-9] ]] && [[ $key -le $count ]]; then
-            zellij action go-to-tab-name "${tabs[$((key-1))]}" 2>/dev/null
+            _zellij_guarded "$(_zj_call_timeout)" action go-to-tab-name "${tabs[$((key-1))]}" \
+                >/dev/null 2>&1
             # An entry is cleared on jump only for agents with neither hooks
             # nor screen detection — nothing else would ever clear it. claude
             # hooks and screen detection own their lifecycles: a screen

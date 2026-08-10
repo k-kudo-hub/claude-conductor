@@ -58,9 +58,23 @@ while IFS= read -r entry; do
         resume_id="$sid"
     fi
 
-    if create_task "$dir" "$task_type" "$tab" "$resume_id" "$agent"; then
-        RESTORED=$((RESTORED + 1))
-    fi
+    create_task "$dir" "$task_type" "$tab" "$resume_id" "$agent"
+    ct_rc=$?
+    case "$ct_rc" in
+        0)
+            RESTORED=$((RESTORED + 1))
+            ;;
+        3)
+            # タブは出来たがフォーカスが確認できず、control バーとレイアウトが
+            # 未構築のまま（エージェント自体は動いている）。次回以降はこのタブが
+            # query-tab-names に載って「既存タブ」としてスキップされるので、
+            # 失敗として数えても永久に直らない。復元済み（不完全）として扱う。
+            # 数えないと最後の go-to-tab-name Main も発火せず、フォーカスが
+            # 半端なタブに残ったままになる。
+            echo "restore-session: tab '$tab' restored without its control pane" >&2
+            RESTORED=$((RESTORED + 1))
+            ;;
+    esac
 done <<EOF
 $(for f in "$REG_DIR"/*.json; do
     # Validate per file: jq -s is all-or-nothing, and one corrupt entry
