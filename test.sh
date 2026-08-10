@@ -3445,6 +3445,84 @@ MOCK
 chmod +x "$MOCK_BIN/claude"
 
 # ============================================================
+section "42b. upload-log.sh generate_summary (codex rollout)"
+# ============================================================
+
+# codex の rollout は .type=="user"/"assistant" を持たないため、claude 形式の
+# 抽出では会話が空になり dd が必ず中止されていた。要約へ渡される会話テキストを
+# 確認するため、claude モックには stdin をそのまま吐かせる。
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+echo "SUMMARY-OF:"
+cat
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+CXS_ROLLOUT="$SANDBOX/codex-summary-rollout.jsonl"
+cat > "$CXS_ROLLOUT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T10:00:00.000Z","type":"session_meta","payload":{"id":"thread-cxs","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-10T10:00:00.100Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T10:00:00.200Z","type":"response_item","payload":{"type":"message","id":"m0","role":"developer","content":[{"type":"input_text","text":"DEVELOPERPROMPTMARKER system instructions"}]}}
+{"timestamp":"2026-08-10T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-08-10T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"CODEXUSERMARKER fix the bug","images":[],"text_elements":[]}}
+{"timestamp":"2026-08-10T10:00:03.000Z","type":"event_msg","payload":{"type":"agent_message","message":"CODEXAGENTMARKER fixed and pushed","phase":"final_answer","memory_citation":null}}
+{"timestamp":"2026-08-10T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}}
+{"timestamp":"2026-08-10T10:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"CODEXAGENTMARKER fixed and pushed","turn_id":"t1"}}
+ROLLOUT
+
+if CXS=$(run_summary "$CXS_ROLLOUT"); then
+    echo "$CXS" | grep -q "CODEXUSERMARKER" \
+        && pass "codex user_message extracted" || fail "codex user text missing: $CXS"
+    echo "$CXS" | grep -q "CODEXAGENTMARKER" \
+        && pass "codex agent_message extracted" || fail "codex agent text missing: $CXS"
+    ! echo "$CXS" | grep -q "DEVELOPERPROMPTMARKER" \
+        && pass "codex developer prompt excluded" || fail "developer prompt leaked: $CXS"
+else
+    fail "generate_summary failed on a codex rollout"
+fi
+
+# claude 形式は従来どおり抽出できる（回帰確認）
+if CLS=$(run_summary "$MOCK_TRANSCRIPT"); then
+    echo "$CLS" | grep -q "fix the bug" \
+        && pass "claude transcript still extracted" || fail "claude text missing: $CLS"
+else
+    fail "generate_summary failed on a claude transcript"
+fi
+
+# codex の secrets も要約前にマスクされる
+CXS_SECRET="$SANDBOX/codex-secret-rollout.jsonl"
+cat > "$CXS_SECRET" << 'ROLLOUT'
+{"timestamp":"2026-08-10T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 here"}}
+ROLLOUT
+if CXSEC=$(run_summary "$CXS_SECRET"); then
+    ! echo "$CXSEC" | grep -q "ghp_abcdef" \
+        && pass "codex conversation is secret-filtered" || fail "codex secret leaked: $CXSEC"
+else
+    fail "generate_summary failed on the codex secret rollout"
+fi
+
+# どちらの形式でもない jsonl は会話が取れないので従来どおり失敗する
+CXS_BROKEN="$SANDBOX/broken-transcript.jsonl"
+cat > "$CXS_BROKEN" << 'BROKEN'
+{"timestamp":"2026-08-10T10:00:00.000Z","type":"session_meta","payload":{"id":"x"}}
+{"timestamp":"2026-08-10T10:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}
+BROKEN
+if run_summary "$CXS_BROKEN" >/dev/null 2>&1; then
+    fail "generate_summary should fail on an unrecognised transcript"
+else
+    pass "generate_summary fails on an unrecognised transcript"
+fi
+
+# Restore working mock claude for later sections
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+# ============================================================
 section "43. upload-log.sh build_log_path / build_markdown"
 # ============================================================
 

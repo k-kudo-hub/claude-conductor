@@ -58,6 +58,19 @@ filter_secrets() {
 
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
+#
+# Two transcript formats are supported. They are told apart by the transcript's
+# own content rather than by the pending file's `agent` field: the transcript is
+# the only source that is always available and always correct here (a pending
+# file written before agent recording, or a hand-restored entry, can lack or
+# carry a stale agent), and each extractor yields an empty string on the other
+# format, which makes "try, then fall back" an exact discriminator.
+#   claude: .type=="user"/"assistant" with .message.content
+#   codex : rollout jsonl - conversation lives in .type=="event_msg" whose
+#           .payload.type is user_message / agent_message, both carrying the
+#           text in .payload.message. response_items are skipped on purpose:
+#           their role=="developer" entries are the system prompt, not the
+#           conversation.
 generate_summary() {
     local transcript="$1"
     command -v claude >/dev/null 2>&1 || return 1
@@ -75,6 +88,19 @@ generate_summary() {
           | select(. != null and . != "")
         ] | join("\n")
     ' "$transcript" 2>/dev/null)
+
+    # Empty means this is not a claude transcript: retry as a codex rollout.
+    if [ -z "$convo" ]; then
+        convo=$(jq -rs '
+            [ .[]
+              | select(.type == "event_msg")
+              | .payload
+              | select(.type == "user_message" or .type == "agent_message")
+              | .message
+              | select(type == "string" and . != "")
+            ] | join("\n")
+        ' "$transcript" 2>/dev/null)
+    fi
 
     [ -n "$convo" ] || return 1
 
