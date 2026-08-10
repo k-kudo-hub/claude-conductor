@@ -2572,6 +2572,31 @@ ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-
 [[ "$(dds_lines)" == "5" ]] && pass "records without claude_session_id always append" || fail "no-sid count wrong: $(dds_lines)"
 rm -f "$DDS_PENDING/nosid.json"
 
+# screen-<slug> はタブ名だけから作られる合成 ID（screen-detect-lib.sh）なので、
+# 無関係な過去タスクが同名タブを使っていると同じキーになる。dedupe 対象外とし、
+# 常に追記する（重複は回復できるが、他タスクの履歴削除は回復できない）。
+dds_pending_write "screen-dedupe-tab" "seventh"
+dds_run
+dds_pending_write "screen-dedupe-tab" "eighth"
+dds_run
+[[ "$(dds_lines)" == "7" ]] && pass "screen-<slug> session ids are never deduped" || fail "screen sid deduped: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.claude_session_id == "screen-dedupe-tab")] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "both screen-detected entries kept" || fail "screen entries lost"
+
+# ロックを取れなかった場合（fail-open）は全体書き換えを行わず追記のみ。
+# 非ロックの書き換えは並行 restore が立てた restored:true を巻き戻しうる。
+mkdir -p "$DDS_DAILY.lock"
+echo "$$" > "$DDS_DAILY.lock/pid"
+dds_pending_write "sid-A" "ninth"
+dds_run
+[[ -d "$DDS_DAILY.lock" ]] && pass "record-output leaves a lock it does not hold" || fail "record-output released a foreign lock"
+release_lock "$DDS_DAILY.lock"
+[[ "$(dds_lines)" == "8" ]] \
+  && pass "record without the lock appends instead of rewriting" || fail "unlocked write count wrong: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.claude_session_id == "sid-A" and (.restored // false) != true)] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "unlocked write leaves the existing entry untouched" || fail "unlocked write replaced an entry"
+rm -f "$DDS_PENDING/dedupe.json"
+
 # ロックは持ち越されない（次の record-output がブロックされない）
 [[ ! -d "$DDS_DAILY.lock" ]] && pass "daily-log lock released after replace" || fail "daily-log lock left behind"
 
