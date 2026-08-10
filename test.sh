@@ -2494,6 +2494,113 @@ CXP2_COST=$(tail -1 "$DAILY_FILE" | jq -r '.summary.total_cost_usd')
 rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 
 # ============================================================
+section "26i2. record-output.sh (retry replaces the daily entry)"
+# ============================================================
+
+# アップロード失敗で dd が中止されると record-output は同じ pending に対して
+# 何度も走る。(tab, claude_session_id) が同じ未 restore 行は置換されて Done に
+# エントリが増殖しないことを確認する。専用セッションを使い、他セクションが
+# 参照する $DAILY_FILE には触れない。
+DDS_SESSION="dedupe-session"
+DDS_PENDING="$HOME/.claude-pending/$DDS_SESSION"
+DDS_DAILY="$HOME/.claude-conductor/daily/$DDS_SESSION/$(date '+%Y-%m-%d').jsonl"
+mkdir -p "$DDS_PENDING"
+rm -rf "$HOME/.claude-conductor/daily/$DDS_SESSION"
+
+DDS_TRANSCRIPT="$SANDBOX/dedupe-transcript.jsonl"
+cat > "$DDS_TRANSCRIPT" << 'TRANSCRIPT'
+{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","timestamp":"2026-08-10T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"a1","timestamp":"2026-08-10T10:00:01Z"}
+TRANSCRIPT
+
+# pending は 1 タブ 1 ファイルなので、毎回同じパスを書き換えて再実行を模す
+dds_pending_write() {
+    # dds_pending_write <claude_session_id> <message>
+    cat > "$DDS_PENDING/dedupe.json" << EOF
+{"tab":"dedupe-tab","session":"$DDS_SESSION","claude_session_id":"$1","message":"$2","event":"Stop","time":"10:00:00","transcript_path":"$DDS_TRANSCRIPT","dir":"/tmp/myapp","task_type":"dev"}
+EOF
+}
+dds_run() { ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-tab"; }
+dds_lines() { wc -l < "$DDS_DAILY" | tr -d ' '; }
+
+dds_pending_write "sid-A" "first"
+dds_run
+[[ "$(dds_lines)" == "1" ]] && pass "first record appended" || fail "first record count wrong: $(dds_lines)"
+
+# 同一 tab + 同一 claude_session_id の再実行は行を増やさず内容を置き換える
+dds_pending_write "sid-A" "second"
+dds_run
+[[ "$(dds_lines)" == "1" ]] && pass "retry keeps a single daily entry" || fail "retry duplicated entry: $(dds_lines)"
+[[ "$(jq -r '.message' "$DDS_DAILY")" == "second" ]] \
+  && pass "retry updates the entry content" || fail "entry not updated: $(jq -r '.message' "$DDS_DAILY")"
+
+# 別 claude_session_id は別行（--resume で sid が変わったケース）
+dds_pending_write "sid-B" "third"
+dds_run
+[[ "$(dds_lines)" == "2" ]] && pass "different claude_session_id appends a new entry" || fail "sid-B count wrong: $(dds_lines)"
+[[ "$(head -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-A" ]] \
+  && pass "existing entry of another sid kept" || fail "sid-A entry lost"
+
+# 置換は「削除して末尾に追記」＝置換された行は最終行へ移動する
+dds_pending_write "sid-A" "fourth"
+dds_run
+[[ "$(dds_lines)" == "2" ]] && pass "replacement does not grow the file" || fail "replacement count wrong: $(dds_lines)"
+[[ "$(head -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-B" ]] \
+  && pass "untouched entry keeps its position" || fail "sid-B moved unexpectedly"
+[[ "$(tail -1 "$DDS_DAILY" | jq -r '.claude_session_id')" == "sid-A" ]] \
+  && [[ "$(tail -1 "$DDS_DAILY" | jq -r '.message')" == "fourth" ]] \
+  && pass "replaced entry is appended at the tail" || fail "replaced entry not at tail"
+
+# restored:true の行は置換対象外（復元済みの履歴は残す）
+DDS_TMP="$SANDBOX/dedupe-restored.jsonl"
+jq -c '. + {restored:true}' "$DDS_DAILY" > "$DDS_TMP" && mv "$DDS_TMP" "$DDS_DAILY"
+dds_pending_write "sid-A" "fifth"
+dds_run
+[[ "$(dds_lines)" == "3" ]] && pass "restored entries are not replaced" || fail "restored entry replaced: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.restored == true)] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "restored entries kept intact" || fail "restored entries changed"
+[[ "$(tail -1 "$DDS_DAILY" | jq -r '.message')" == "fifth" ]] \
+  && pass "new entry appended alongside restored ones" || fail "new entry missing after restored"
+
+# claude_session_id を持たないレコードは dedupe キーが無いので無条件追記
+rm -f "$DDS_PENDING/dedupe.json"
+cat > "$DDS_PENDING/nosid.json" << EOF
+{"tab":"dedupe-nosid","session":"$DDS_SESSION","message":"sixth","event":"Stop","time":"10:00:00"}
+EOF
+ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-nosid"
+ZELLIJ_SESSION_NAME="$DDS_SESSION" bash "$HOME/.claude-conductor/scripts/record-output.sh" "dedupe-nosid"
+[[ "$(dds_lines)" == "5" ]] && pass "records without claude_session_id always append" || fail "no-sid count wrong: $(dds_lines)"
+rm -f "$DDS_PENDING/nosid.json"
+
+# screen-<slug> はタブ名だけから作られる合成 ID（screen-detect-lib.sh）なので、
+# 無関係な過去タスクが同名タブを使っていると同じキーになる。dedupe 対象外とし、
+# 常に追記する（重複は回復できるが、他タスクの履歴削除は回復できない）。
+dds_pending_write "screen-dedupe-tab" "seventh"
+dds_run
+dds_pending_write "screen-dedupe-tab" "eighth"
+dds_run
+[[ "$(dds_lines)" == "7" ]] && pass "screen-<slug> session ids are never deduped" || fail "screen sid deduped: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.claude_session_id == "screen-dedupe-tab")] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "both screen-detected entries kept" || fail "screen entries lost"
+
+# ロックを取れなかった場合（fail-open）は全体書き換えを行わず追記のみ。
+# 非ロックの書き換えは並行 restore が立てた restored:true を巻き戻しうる。
+mkdir -p "$DDS_DAILY.lock"
+echo "$$" > "$DDS_DAILY.lock/pid"
+dds_pending_write "sid-A" "ninth"
+dds_run
+[[ -d "$DDS_DAILY.lock" ]] && pass "record-output leaves a lock it does not hold" || fail "record-output released a foreign lock"
+release_lock "$DDS_DAILY.lock"
+[[ "$(dds_lines)" == "8" ]] \
+  && pass "record without the lock appends instead of rewriting" || fail "unlocked write count wrong: $(dds_lines)"
+[[ "$(jq -sr '[.[] | select(.claude_session_id == "sid-A" and (.restored // false) != true)] | length' "$DDS_DAILY")" == "2" ]] \
+  && pass "unlocked write leaves the existing entry untouched" || fail "unlocked write replaced an entry"
+rm -f "$DDS_PENDING/dedupe.json"
+
+# ロックは持ち越されない（次の record-output がブロックされない）
+[[ ! -d "$DDS_DAILY.lock" ]] && pass "daily-log lock released after replace" || fail "daily-log lock left behind"
+
+# ============================================================
 section "26j. restore-session.sh (rebuild tasks from registry)"
 # ============================================================
 
@@ -3433,6 +3540,84 @@ if run_summary "$MOCK_TRANSCRIPT" >/dev/null 2>&1; then
     fail "generate_summary should fail when claude errors"
 else
     pass "generate_summary fails when claude errors"
+fi
+
+# Restore working mock claude for later sections
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+cat >/dev/null
+echo "- モックの作業要約1"
+echo "- モックの作業要約2"
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+# ============================================================
+section "42b. upload-log.sh generate_summary (codex rollout)"
+# ============================================================
+
+# codex の rollout は .type=="user"/"assistant" を持たないため、claude 形式の
+# 抽出では会話が空になり dd が必ず中止されていた。要約へ渡される会話テキストを
+# 確認するため、claude モックには stdin をそのまま吐かせる。
+cat > "$MOCK_BIN/claude" << 'MOCK'
+#!/bin/bash
+echo "SUMMARY-OF:"
+cat
+MOCK
+chmod +x "$MOCK_BIN/claude"
+
+CXS_ROLLOUT="$SANDBOX/codex-summary-rollout.jsonl"
+cat > "$CXS_ROLLOUT" << 'ROLLOUT'
+{"timestamp":"2026-08-10T10:00:00.000Z","type":"session_meta","payload":{"id":"thread-cxs","cwd":"/tmp/myapp","cli_version":"0.147.0","source":"exec"}}
+{"timestamp":"2026-08-10T10:00:00.100Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","approval_policy":"never"}}
+{"timestamp":"2026-08-10T10:00:00.200Z","type":"response_item","payload":{"type":"message","id":"m0","role":"developer","content":[{"type":"input_text","text":"DEVELOPERPROMPTMARKER system instructions"}]}}
+{"timestamp":"2026-08-10T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-08-10T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"CODEXUSERMARKER fix the bug","images":[],"text_elements":[]}}
+{"timestamp":"2026-08-10T10:00:03.000Z","type":"event_msg","payload":{"type":"agent_message","message":"CODEXAGENTMARKER fixed and pushed","phase":"final_answer","memory_citation":null}}
+{"timestamp":"2026-08-10T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}}
+{"timestamp":"2026-08-10T10:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"CODEXAGENTMARKER fixed and pushed","turn_id":"t1"}}
+ROLLOUT
+
+if CXS=$(run_summary "$CXS_ROLLOUT"); then
+    echo "$CXS" | grep -q "CODEXUSERMARKER" \
+        && pass "codex user_message extracted" || fail "codex user text missing: $CXS"
+    echo "$CXS" | grep -q "CODEXAGENTMARKER" \
+        && pass "codex agent_message extracted" || fail "codex agent text missing: $CXS"
+    ! echo "$CXS" | grep -q "DEVELOPERPROMPTMARKER" \
+        && pass "codex developer prompt excluded" || fail "developer prompt leaked: $CXS"
+else
+    fail "generate_summary failed on a codex rollout"
+fi
+
+# claude 形式は従来どおり抽出できる（回帰確認）
+if CLS=$(run_summary "$MOCK_TRANSCRIPT"); then
+    echo "$CLS" | grep -q "fix the bug" \
+        && pass "claude transcript still extracted" || fail "claude text missing: $CLS"
+else
+    fail "generate_summary failed on a claude transcript"
+fi
+
+# codex の secrets も要約前にマスクされる
+CXS_SECRET="$SANDBOX/codex-secret-rollout.jsonl"
+cat > "$CXS_SECRET" << 'ROLLOUT'
+{"timestamp":"2026-08-10T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 here"}}
+ROLLOUT
+if CXSEC=$(run_summary "$CXS_SECRET"); then
+    ! echo "$CXSEC" | grep -q "ghp_abcdef" \
+        && pass "codex conversation is secret-filtered" || fail "codex secret leaked: $CXSEC"
+else
+    fail "generate_summary failed on the codex secret rollout"
+fi
+
+# どちらの形式でもない jsonl は会話が取れないので従来どおり失敗する
+CXS_BROKEN="$SANDBOX/broken-transcript.jsonl"
+cat > "$CXS_BROKEN" << 'BROKEN'
+{"timestamp":"2026-08-10T10:00:00.000Z","type":"session_meta","payload":{"id":"x"}}
+{"timestamp":"2026-08-10T10:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}
+BROKEN
+if run_summary "$CXS_BROKEN" >/dev/null 2>&1; then
+    fail "generate_summary should fail on an unrecognised transcript"
+else
+    pass "generate_summary fails on an unrecognised transcript"
 fi
 
 # Restore working mock claude for later sections

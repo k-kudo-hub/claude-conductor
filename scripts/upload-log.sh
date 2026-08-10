@@ -58,6 +58,18 @@ filter_secrets() {
 
 # generate_summary <transcript_path>: print a conversation summary via the
 # claude CLI. Returns non-zero on any failure so the caller can abort dd.
+#
+# Two transcript formats are supported, and both are extracted by one jq pass
+# instead of branching on the pending file's `agent` field: no format detection
+# is needed because a record matches at most one of the two selectors, so the
+# other array is always empty. This also keeps working when the pending entry
+# lacks an agent (written before agent recording) or carries a stale one.
+#   claude: .type=="user"/"assistant" with .message.content
+#   codex : rollout jsonl - conversation lives in .type=="event_msg" whose
+#           .payload.type is user_message / agent_message, both carrying the
+#           text in .payload.message. response_items are skipped on purpose:
+#           their role=="developer" entries are the system prompt, not the
+#           conversation.
 generate_summary() {
     local transcript="$1"
     command -v claude >/dev/null 2>&1 || return 1
@@ -66,14 +78,21 @@ generate_summary() {
     # Extract human-readable text (user + assistant text blocks) from the JSONL transcript
     local convo
     convo=$(jq -rs '
-        [ .[]
-          | select(.type == "user" or .type == "assistant")
-          | .message.content as $c
-          | (if ($c | type) == "string" then $c
-             else ([ $c[]? | select(.type == "text") | .text ] | join("\n"))
-             end)
-          | select(. != null and . != "")
-        ] | join("\n")
+        ([ .[]
+           | select(.type == "user" or .type == "assistant")
+           | .message.content as $c
+           | (if ($c | type) == "string" then $c
+              else ([ $c[]? | select(.type == "text") | .text ] | join("\n"))
+              end)
+           | select(. != null and . != "")
+         ]
+         + [ .[]
+             | select(.type == "event_msg")
+             | .payload
+             | select(.type == "user_message" or .type == "agent_message")
+             | .message
+             | select(type == "string" and . != "")
+           ]) | join("\n")
     ' "$transcript" 2>/dev/null)
 
     [ -n "$convo" ] || return 1

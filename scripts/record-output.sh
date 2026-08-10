@@ -259,16 +259,71 @@ else
         + (if $agent != "" then {agent: $agent} else {} end)')
 fi
 
-# Append under the daily-log lock, held only for the write itself so the hold
-# time stays sub-millisecond — a slow transcript parse above must never block a
+# Write under the daily-log lock, held only for the write itself so the hold
+# time stays short — a slow transcript parse above must never block a
 # concurrent restore long enough to trip its fail-open rewrite.
+#
+# The write replaces rather than appends: an upload failure cancels dd, so the
+# same tab is recorded again on every retry and the Done pane would otherwise
+# grow one entry per attempt. The key is (tab, claude_session_id), and an entry
+# is replaced only when ALL of the following hold:
+#   1. claude_session_id is non-empty and is NOT a synthesized "screen-<slug>"
+#      id. screen-detect-lib.sh derives that id from the tab name alone, so it
+#      is identical across completely unrelated tasks that happened to reuse a
+#      tab name — replacing on it would silently delete an older, unrelated
+#      task's entry. Screen-detected records are always appended (the previous
+#      behaviour: a duplicate is recoverable, a deleted history entry is not).
+#   2. The existing entry is not yet restored. A restored entry is the history
+#      of a task that went back to the dashboard and must survive.
+#   3. The daily-log lock was actually acquired. Rewriting the whole file
+#      without it could roll back a restored:true flag that restore-task.sh set
+#      concurrently, so an unlocked write degrades to a plain append.
+# Rewrite via lock + mktemp + mv, the same way restore-task.sh edits the file.
+#
+# Known limitations (accepted, documented for the mdev-go port):
+#   - A tab whose pending flips between a real session id and screen-<slug>
+#     between two retries records under two different keys and still leaves two
+#     entries. The window is narrow, and a leftover duplicate is safer than
+#     deleting an entry that may belong to another task.
+#   - Every attempt re-stamps completed_at while restore-task.sh matches entries
+#     by (tab, completed_at). An entry re-recorded inside the done-loop's
+#     5s + 3s `r<number>` confirmation window makes that one restore miss; the
+#     next refresh shows the new timestamp and the retry succeeds. Changing
+#     restore-task.sh's matching key is out of scope here.
 if [ -n "$OUT" ]; then
     DAILY_LOCK="$DAILY_FILE.lock"
+    LOCK_HELD=0
+    TMP=""
     if acquire_lock "$DAILY_LOCK" 2; then
-        printf '%s\n' "$OUT" >> "$DAILY_FILE"
-        release_lock "$DAILY_LOCK"
+        LOCK_HELD=1
     else
         echo "record-output: proceeding without daily-log lock" >&2
-        printf '%s\n' "$OUT" >> "$DAILY_FILE"
     fi
+    trap '[ "$LOCK_HELD" = 1 ] && release_lock "$DAILY_LOCK"; rm -f "$TMP"' EXIT
+
+    # Condition 1: only a real session id is a usable dedupe key.
+    DEDUPE_KEY=""
+    case "$CLAUDE_SESSION_ID" in
+        ""|screen-*) ;;
+        *) DEDUPE_KEY="$CLAUDE_SESSION_ID" ;;
+    esac
+
+    if [ -n "$DEDUPE_KEY" ] && [ "$LOCK_HELD" = 1 ] && [ -f "$DAILY_FILE" ]; then
+        TMP=$(mktemp)
+        # A jq failure (unparsable daily file) leaves the file untouched and
+        # falls through to a plain append: a duplicate entry is recoverable,
+        # a truncated daily log is not.
+        if jq -c --arg tab "$TAB_NAME" --arg sid "$DEDUPE_KEY" \
+            'select(((.tab == $tab) and ((.claude_session_id // "") == $sid) and ((.restored // false) != true)) | not)' \
+            "$DAILY_FILE" > "$TMP" 2>/dev/null; then
+            mv "$TMP" "$DAILY_FILE"
+            TMP=""
+        fi
+    fi
+
+    # Replacement is delete + append, so the re-recorded entry lands at the tail.
+    # upload-log.sh picks a tab's record with `tail -1`, i.e. by file order, so
+    # the newest attempt must be the last line. The Done pane does not depend on
+    # this (done-loop.sh sorts entries by completed_at).
+    printf '%s\n' "$OUT" >> "$DAILY_FILE"
 fi
