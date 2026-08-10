@@ -28,12 +28,90 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# コマンドを最大 <sec> 秒だけ動かし、超過したら kill する。テスト対象がハングしても
+# テスト自体は必ず抜けてくるようにするための番犬（macOS に timeout(1) は無く、
+# bash 3.2 に wait -n も無いのでポーリングで代用する）。
+# 使い方: run_with_watchdog <sec> <関数名/コマンド...>  超過時は 124 を返す。
+run_with_watchdog() {
+    local limit="$1"; shift
+    "$@" &
+    local pid=$! waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [[ $waited -ge $((limit * 10)) ]]; then
+            { kill -9 "$pid"; wait "$pid"; } 2>/dev/null
+            return 124
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    wait "$pid" 2>/dev/null
+    return $?
+}
+
 # Create a mock zellij that records calls but doesn't hang
 MOCK_BIN="$SANDBOX/mock-bin"
 mkdir -p "$MOCK_BIN"
+MOCK_TAB_FILE="$HOME/.claude-pending/mock-tabs.txt"
+MOCK_QTN_COUNT="$HOME/.claude-pending/mock-qtn-count"
+MOCK_GOTO_COUNT="$HOME/.claude-pending/mock-goto-count"
+# 実タブの状態を持たないテストへ戻すためのリセット（各レーステストの先頭で呼ぶ）
+mock_zellij_reset() {
+    rm -f "$MOCK_TAB_FILE" "$MOCK_QTN_COUNT" "$MOCK_GOTO_COUNT"
+    : > "$HOME/.claude-pending/zellij-calls.log"
+}
 cat > "$MOCK_BIN/zellij" << 'MOCK'
 #!/bin/bash
 echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
+MOCK_TAB_FILE="$HOME/.claude-pending/mock-tabs.txt"
+MOCK_QTN_COUNT="$HOME/.claude-pending/mock-qtn-count"
+MOCK_GOTO_COUNT="$HOME/.claude-pending/mock-goto-count"
+
+# 劣化したzellijサーバの再現: MOCK_HANG_CMD で指定したサブコマンドは戻ってこない。
+# exec で自プロセスを置き換えるので、kill ガードが殺すPIDがそのまま眠るプロセスになる
+# （実機のハングも zellij 1プロセスが眠る形なので同じ）。
+if [[ -n "$MOCK_HANG_CMD" && "$2" == "$MOCK_HANG_CMD" ]]; then
+    exec sleep 251
+fi
+
+# new-tab は作成したタブ名を記録する。以降の query-tab-names / go-to-tab-name が
+# 実サーバと同じように「そのタブが在る」ものとして振る舞う。
+if [[ "$1" == "action" && "$2" == "new-tab" ]]; then
+    _prev=""; _name=""
+    for _a in "$@"; do
+        if [[ "$_prev" == "-n" ]]; then _name="$_a"; break; fi
+        _prev="$_a"
+    done
+    [[ -n "$_name" ]] && echo "$_name" >> "$MOCK_TAB_FILE"
+fi
+
+# query-tab-names は登録済みタブ名を1行ずつ返す。
+# MOCK_TAB_REGISTER_AFTER=N: サーバが重くタブ登録が遅れる状況の再現で、
+# N 回目の呼び出しまでは何も返さない（new-tab が rc=0 で戻っても名前は見えない）。
+if [[ "$1" == "action" && "$2" == "query-tab-names" ]]; then
+    _n=$(cat "$MOCK_QTN_COUNT" 2>/dev/null || echo 0)
+    _n=$((_n + 1))
+    echo "$_n" > "$MOCK_QTN_COUNT"
+    if [[ -z "$MOCK_TAB_REGISTER_AFTER" || "$_n" -ge "$MOCK_TAB_REGISTER_AFTER" ]]; then
+        # MOCK_TAB_NAMES は new-tab を経ずに「元から在るタブ」を並べるための入口
+        [[ -n "$MOCK_TAB_NAMES" ]] && printf '%s\n' "$MOCK_TAB_NAMES"
+        cat "$MOCK_TAB_FILE" 2>/dev/null
+    fi
+fi
+
+# go-to-tab-name は zellij 0.44.1 実測どおり、存在しないタブ名でも rc=0 で戻り、
+# ヒットしたときだけ stdout にタブ index を出す（ミス時は stdout 空）。
+# MOCK_FOCUS_EMPTY_UNTIL=K: K 回目までは登録済みタブでも stdout を空にする。
+if [[ "$1" == "action" && "$2" == "go-to-tab-name" ]]; then
+    _k=$(cat "$MOCK_GOTO_COUNT" 2>/dev/null || echo 0)
+    _k=$((_k + 1))
+    echo "$_k" > "$MOCK_GOTO_COUNT"
+    if [[ -n "$MOCK_FOCUS_EMPTY_UNTIL" && "$_k" -le "$MOCK_FOCUS_EMPTY_UNTIL" ]]; then
+        exit 0
+    fi
+    if grep -Fxq -- "$3" "$MOCK_TAB_FILE" 2>/dev/null; then
+        echo 0
+    fi
+fi
 # Emit a fake `list-tabs` output when MOCK_TABS is set (3rd column is the tab name)
 if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
     echo "ID X NAME"
@@ -804,21 +882,23 @@ grep -q 'action new-tab -n resume-me --cwd /tmp/proj -- env TASK_TAB_NAME=resume
 
 # zellij 0.44.1はサーバ劣化時にnew-tabの「暗黙のフォーカス切替」だけを
 # 遅延・喪失させる（明示的なgo-to-tab-nameは効く）。create_taskは暗黙
-# フォーカスに依存せず、new-tabの直後に明示フォーカスを発行する。
-: > "$HOME/.claude-pending/zellij-calls.log"
+# フォーカスに依存せず、タブ登録を確認してから明示フォーカスを発行する。
+mock_zellij_reset
 ( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "focus-me" ) >/dev/null 2>&1
-FOCUS_AFTER=$(grep -A1 'action new-tab -n focus-me' "$HOME/.claude-pending/zellij-calls.log" | tail -1)
-[[ "$FOCUS_AFTER" == "mock-zellij: action go-to-tab-name focus-me" ]] \
-  && pass "create_task focuses the new tab explicitly" \
-  || fail "no go-to-tab-name right after new-tab: '$FOCUS_AFTER'"
+CALLS_SEQ=$(grep -n 'action \(new-tab -n focus-me\|query-tab-names\|go-to-tab-name focus-me\|new-pane\)' \
+    "$HOME/.claude-pending/zellij-calls.log" | cut -d: -f2- | sed 's/^mock-zellij: action //' | awk '{print $1}')
+[[ "$(printf '%s\n' "$CALLS_SEQ" | head -3 | tr '\n' ' ')" == "new-tab query-tab-names go-to-tab-name " ]] \
+  && pass "create_task focuses the new tab after confirming registration" \
+  || fail "wrong call order after new-tab: '$(printf '%s' "$CALLS_SEQ" | tr '\n' ' ')'"
 
 # 復元経路（--resume付き）でも同じく明示フォーカスが入る
-: > "$HOME/.claude-pending/zellij-calls.log"
+mock_zellij_reset
 ( source "$HOME/.claude-conductor/scripts/task-lib.sh" && create_task "/tmp/proj" "dev" "focus-resume" "sess-xyz" ) >/dev/null 2>&1
-FOCUS_AFTER=$(grep -A1 'action new-tab -n focus-resume' "$HOME/.claude-pending/zellij-calls.log" | tail -1)
-[[ "$FOCUS_AFTER" == "mock-zellij: action go-to-tab-name focus-resume" ]] \
-  && pass "create_task focuses the resumed tab explicitly" \
-  || fail "no go-to-tab-name right after resume new-tab: '$FOCUS_AFTER'"
+CALLS_SEQ=$(grep -n 'action \(new-tab -n focus-resume\|query-tab-names\|go-to-tab-name focus-resume\|new-pane\)' \
+    "$HOME/.claude-pending/zellij-calls.log" | cut -d: -f2- | sed 's/^mock-zellij: action //' | awk '{print $1}')
+[[ "$(printf '%s\n' "$CALLS_SEQ" | head -3 | tr '\n' ' ')" == "new-tab query-tab-names go-to-tab-name " ]] \
+  && pass "create_task focuses the resumed tab after confirming registration" \
+  || fail "wrong call order after resume new-tab: '$(printf '%s' "$CALLS_SEQ" | tr '\n' ' ')'"
 
 # new-tab自体が失敗したら非0で返る（restoreがこの戻り値に依存する）。
 # 明示フォーカスの追加でタブ作成の成否判定が上書きされないこと。
@@ -1416,6 +1496,218 @@ grep -q 'dump-screen -p terminal_7' "$HOME/.claude-pending/zellij-calls.log" \
 grep -q 'dump-screen -p terminal_6' "$HOME/.claude-pending/zellij-calls.log" \
   && fail "non-agent pane dumped" || pass "non-agent pane skipped"
 rm -rf "$SDL_DIR2"
+
+# ============================================================
+section "17b8. create_task guards the tab-creation race"
+# ============================================================
+
+TL="$HOME/.claude-conductor/scripts/task-lib.sh"
+CALLS_LOG="$HOME/.claude-pending/zellij-calls.log"
+
+# zellij 0.44.1の `zellij action` はサーバ応答を約1秒しか待たないため、new-tab の
+# rc=0 は「受理」であって「タブが在る」ではない。登録が遅れてもポーリングが待ち、
+# 名前が見えてからフォーカスとペイン構築へ進む。
+mock_zellij_reset
+CT_RC=0
+( export MOCK_TAB_REGISTER_AFTER=3
+  source "$TL" && create_task "/tmp/proj" "dev" "slow-tab" ) >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -eq 0 ]] && pass "create_task succeeds when tab registration is delayed" \
+  || fail "create_task failed on delayed registration: $CT_RC"
+QTN_CALLS=$(grep -c 'action query-tab-names' "$CALLS_LOG" | tr -d ' ')
+[[ "$QTN_CALLS" -ge 3 ]] && pass "polls query-tab-names until the tab appears ($QTN_CALLS calls)" \
+  || fail "did not poll query-tab-names: $QTN_CALLS calls"
+GOTO_LINE=$(grep -n 'action go-to-tab-name slow-tab' "$CALLS_LOG" | head -1 | cut -d: -f1)
+QTN3_LINE=$(grep -n 'action query-tab-names' "$CALLS_LOG" | sed -n '3p' | cut -d: -f1)
+[[ -n "$GOTO_LINE" && -n "$QTN3_LINE" && "$GOTO_LINE" -gt "$QTN3_LINE" ]] \
+  && pass "focus is issued only after the tab is listed" \
+  || fail "focus issued before registration was confirmed (goto=$GOTO_LINE qtn3=$QTN3_LINE)"
+grep -q 'action new-pane --direction down --cwd /tmp/proj -- bash .*task-control.sh slow-tab' "$CALLS_LOG" \
+  && pass "task-control pane is built once the tab is confirmed" || fail "task-control pane missing"
+
+# go-to-tab-name は存在しないタブ名でも rc=0 で戻る無言 no-op で、成否は stdout の
+# 有無でしか判定できない（zellij 0.44.1 実測: ヒット時のみタブ index を出力）。
+# stdout が空のうちはフォーカス未確立としてリトライする。
+mock_zellij_reset
+CT_RC=0
+( export MOCK_FOCUS_EMPTY_UNTIL=2
+  source "$TL" && create_task "/tmp/proj" "dev" "retry-focus" ) >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -eq 0 ]] && pass "create_task retries focus until stdout confirms it" \
+  || fail "create_task failed despite a later successful focus: $CT_RC"
+GOTO_CALLS=$(grep -c 'action go-to-tab-name retry-focus' "$CALLS_LOG" | tr -d ' ')
+[[ "$GOTO_CALLS" -ge 3 ]] && pass "go-to-tab-name retried on empty stdout ($GOTO_CALLS calls)" \
+  || fail "no retry on empty go-to-tab-name stdout: $GOTO_CALLS calls"
+grep -q 'action new-pane --direction down --cwd /tmp/proj -- bash .*task-control.sh retry-focus' "$CALLS_LOG" \
+  && pass "panes built after focus is confirmed" || fail "panes not built after confirmed focus"
+
+# タブが登録されないままデッドラインを超えたら、ペインは1枚も作らずに非0で返す。
+# （フォーカスが Main のままなら new-pane は Main を壊す。Main保護が最優先）
+mock_zellij_reset
+CT_RC=0
+( export MOCK_TAB_REGISTER_AFTER=99999 CONDUCTOR_TAB_READY_MS=300
+  source "$TL" && create_task "/tmp/proj" "dev" "never-tab" ) >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -ne 0 ]] && pass "create_task returns non-zero when the tab never registers" \
+  || fail "create_task returned 0 though the tab never registered"
+grep -q 'action new-pane' "$CALLS_LOG" \
+  && fail "built panes without a registered tab (would hit Main)" || pass "no pane built without a registered tab"
+grep -q 'action resize' "$CALLS_LOG" \
+  && fail "resized without a registered tab (would resize Main)" || pass "no resize without a registered tab"
+
+# タブは登録されたがフォーカスが確認できない（go-to-tab-name の stdout が空のまま）
+# 場合も同様にペイン構築へ進まない。
+mock_zellij_reset
+CT_RC=0
+( export MOCK_FOCUS_EMPTY_UNTIL=99999 CONDUCTOR_TAB_READY_MS=300
+  source "$TL" && create_task "/tmp/proj" "dev" "unfocusable" ) >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -ne 0 ]] && pass "create_task returns non-zero when focus cannot be confirmed" \
+  || fail "create_task returned 0 with unconfirmed focus"
+grep -q 'action new-pane' "$CALLS_LOG" \
+  && fail "built panes with unconfirmed focus (would hit Main)" || pass "no pane built with unconfirmed focus"
+
+# 正常系のポーリングは1往復で終わる（健全なサーバでの追加往復ゼロ）
+mock_zellij_reset
+( source "$TL" && create_task "/tmp/proj" "dev" "fast-tab" ) >/dev/null 2>&1
+QTN_CALLS=$(grep -c 'action query-tab-names' "$CALLS_LOG" | tr -d ' ')
+GOTO_CALLS=$(grep -c 'action go-to-tab-name fast-tab' "$CALLS_LOG" | tr -d ' ')
+[[ "$QTN_CALLS" -eq 1 && "$GOTO_CALLS" -eq 1 ]] \
+  && pass "healthy server costs exactly one query + one focus" \
+  || fail "extra round trips on a healthy server: qtn=$QTN_CALLS goto=$GOTO_CALLS"
+
+# ============================================================
+section "17b9. zellij kill guard (hung server)"
+# ============================================================
+
+# 劣化サーバでは `zellij action` 自体が戻ってこない。macOS に timeout(1) は無いので
+# bash 3.2 互換の kill ガードで打ち切り、ハングプロセスを溜めない。
+mock_zellij_reset
+create_task_hang_probe() {
+    export MOCK_HANG_CMD=new-tab CONDUCTOR_ZELLIJ_TIMEOUT=1
+    source "$TL"
+    # 戻り値は 0 / 42 に畳む（番犬の 124 = ハングしたまま、と区別するため）
+    create_task "/tmp/proj" "dev" "hang-tab" && return 0
+    return 42
+}
+CT_RC=0
+run_with_watchdog 20 create_task_hang_probe >/dev/null 2>&1 || CT_RC=$?
+[[ $CT_RC -eq 42 ]] && pass "hung new-tab is killed and reported as failure" \
+  || fail "create_task did not survive a hung new-tab (rc=$CT_RC)"
+grep -q 'action new-pane' "$CALLS_LOG" \
+  && fail "built panes after a hung new-tab" || pass "no pane built after a hung new-tab"
+
+# screen_detect_tick の list-panes がハングしても、その tick は空扱いで抜けてくる
+# （既存の `2>/dev/null || true` と同じ「何も検出しなかった」挙動に揃える）
+SDL_SESS3="sdl-hang"
+SDL_DIR3="$HOME/.claude-pending/$SDL_SESS3"
+rm -rf "$SDL_DIR3"; mkdir -p "$SDL_DIR3"
+mock_zellij_reset
+tick_hang_probe() {
+    export MOCK_PANES_JSON="$SDL_PANES" MOCK_SCREEN_DIR="$SDL_FIX/tick" \
+           MOCK_HANG_CMD=list-panes CONDUCTOR_ZELLIJ_TIMEOUT=1
+    source "$SDL"
+    screen_detect_tick "$SDL_SESS3"
+}
+TICK_RC=0
+run_with_watchdog 20 tick_hang_probe >/dev/null 2>&1 || TICK_RC=$?
+[[ $TICK_RC -eq 0 ]] && pass "screen tick returns when list-panes hangs" \
+  || fail "screen tick hung on list-panes (rc=$TICK_RC)"
+[[ -z "$(ls -A "$SDL_DIR3" 2>/dev/null)" ]] && pass "hung tick writes no pending (treated as empty)" \
+  || fail "hung tick wrote pending files"
+grep -q 'action dump-screen' "$CALLS_LOG" \
+  && fail "dumped screens despite a hung list-panes" || pass "no dump-screen after a hung list-panes"
+pkill -f '^sleep 251$' 2>/dev/null || true
+rm -rf "$SDL_DIR3"
+
+# ============================================================
+section "17b10. guard timeout accuracy, setup budget, guarded call sites"
+# ============================================================
+
+# ミリ秒計測（perl があれば高精度、無ければ秒精度にフォールバック）
+now_ms() {
+    if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf("%d\n", time * 1000)'
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
+# 既定の perl alarm 方式: 打ち切り時刻が指定秒数からほとんどずれない
+mock_zellij_reset
+G_T0=$(now_ms)
+G_RC=0
+( export MOCK_HANG_CMD=list-tabs
+  source "$TL" && _zellij_guarded 2 action list-tabs ) >/dev/null 2>&1 || G_RC=$?
+G_MS=$(( $(now_ms) - G_T0 ))
+[[ $G_RC -eq 124 ]] && pass "guard returns 124 on timeout" || fail "guard rc wrong: $G_RC"
+[[ $G_MS -ge 1800 && $G_MS -le 2600 ]] \
+  && pass "timeout fires close to the limit (${G_MS}ms for 2s)" \
+  || fail "timeout drifted: ${G_MS}ms for a 2s limit"
+
+# perl が無い環境向けフォールバック（ポーリング）。時刻精度の保証は上の本経路が
+# 持つので、ここでは「期限より早く殺さない」「実時間で必ず打ち切る」の両端を見る。
+# 早切りは実際に踏んだバグで、SECONDS（1秒単位）を -ge で比較すると start の位相
+# 次第で最大1秒早くコマンドを殺してしまう。
+mock_zellij_reset
+G_T0=$(now_ms)
+G_RC=0
+( export MOCK_HANG_CMD=list-tabs CONDUCTOR_GUARD_NO_PERL=1
+  source "$TL" && _zellij_guarded 3 action list-tabs ) >/dev/null 2>&1 || G_RC=$?
+G_MS=$(( $(now_ms) - G_T0 ))
+[[ $G_RC -eq 124 ]] && pass "fallback guard returns 124 on timeout" || fail "fallback rc wrong: $G_RC"
+[[ $G_MS -ge 2900 ]] && pass "fallback never kills before the limit (${G_MS}ms for 3s)" \
+  || fail "fallback killed early: ${G_MS}ms for a 3s limit"
+[[ $G_MS -le 4500 ]] \
+  && pass "fallback timeout bounded by real time (${G_MS}ms for 3s)" \
+  || fail "fallback timeout drifted: ${G_MS}ms for a 3s limit"
+
+# 正常系では両方式とも zellij の終了ステータスをそのまま返す
+( source "$TL" && _zellij_guarded 5 action list-tabs ) >/dev/null 2>&1 \
+  && pass "guard passes through success" || fail "guard broke a successful call"
+( export CONDUCTOR_GUARD_NO_PERL=1; source "$TL" && _zellij_guarded 5 action list-tabs ) >/dev/null 2>&1 \
+  && pass "fallback guard passes through success" || fail "fallback guard broke a successful call"
+
+# 全体予算: ハングするコマンドが並んでも create_task は予算内で切り上げ、
+# タブとペインは機能しているので rc=0 で返る（1コマンドずつ 10 秒待つと数分かかる）
+mock_zellij_reset
+B_T0=$(now_ms)
+CT_RC=0
+( export MOCK_HANG_CMD=resize CONDUCTOR_ZELLIJ_TIMEOUT=1 CONDUCTOR_TASK_SETUP_BUDGET=3
+  source "$TL" && create_task "/tmp/proj" "dev" "budget-tab" ) >/dev/null 2>&1 || CT_RC=$?
+B_MS=$(( $(now_ms) - B_T0 ))
+[[ $CT_RC -eq 0 ]] && pass "budget exhaustion still reports success (tab is usable)" \
+  || fail "create_task failed on budget exhaustion: $CT_RC"
+B_RESIZES=$(grep -c 'action resize' "$CALLS_LOG" | tr -d ' ')
+[[ "$B_RESIZES" -lt 30 ]] && pass "resize loop stops when the budget runs out ($B_RESIZES/30)" \
+  || fail "ran the whole resize loop despite the budget: $B_RESIZES"
+[[ $B_MS -le 8000 ]] && pass "create_task stays within its setup budget (${B_MS}ms)" \
+  || fail "setup budget not enforced: ${B_MS}ms"
+grep -q 'action new-pane --direction down --cwd /tmp/proj -- bash .*task-control.sh budget-tab' "$CALLS_LOG" \
+  && pass "task-control pane is still built under a tight budget" || fail "task-control pane skipped"
+
+# ダッシュボードの render は毎秒回る。list-tabs が固まっても抜けてくること
+mock_zellij_reset
+dash_hang_probe() {
+    export MOCK_HANG_CMD=list-tabs CONDUCTOR_ZELLIJ_TIMEOUT=1 CONDUCTOR_DASHBOARD_ONCE=1 \
+           ZELLIJ_SESSION_NAME=dash-hang
+    bash "$HOME/.claude-conductor/scripts/dashboard-loop.sh"
+}
+D_RC=0
+run_with_watchdog 20 dash_hang_probe >/dev/null 2>&1 || D_RC=$?
+[[ $D_RC -ne 124 ]] && pass "dashboard render survives a hung list-tabs" \
+  || fail "dashboard render hung on list-tabs"
+pkill -f '^sleep 251$' 2>/dev/null || true
+
+# ダッシュボード経路の zellij 呼び出しは全てガード経由であること（素の呼び出しが
+# 1本でも残ると、そこだけ劣化サーバで無限に固まる）
+raw_zellij_calls() {
+    grep -n 'zellij action' "$1" \
+      | sed -e 's/^[0-9]*://' -e 's/^[[:space:]]*//' \
+      | grep -v '^#' \
+      | grep -v '_zellij_guarded' || true
+}
+for GF in task-lib.sh screen-detect-lib.sh dashboard-loop.sh; do
+    RAW=$(raw_zellij_calls "$HOME/.claude-conductor/scripts/$GF")
+    [[ -z "$RAW" ]] && pass "$GF has no unguarded zellij action call" \
+      || fail "$GF still calls zellij directly: $RAW"
+done
 
 # ============================================================
 section "17c. lock-lib.sh (mkdir-based advisory lock)"
@@ -2036,6 +2328,27 @@ ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/res
 GONE_FLAG=$(jq -r 'select(.tab=="gone-task") | .restored // "absent"' "$RESTORE_DAILY_FILE")
 [[ "$GONE_FLAG" == "absent" ]] && pass "gone-dir entry left in Done (not marked)" || fail "gone-dir entry wrongly marked: $GONE_FLAG"
 
+# create_task の rc=3（タブは出来たがフォーカス未確認でペイン未構築）は復元成功扱い。
+# Done に残すと再試行のたびに同名タブが増えるだけで、タブ自体は機能している。
+HB_AT="${RESTORE_TODAY}T05:00:00+0900"
+cat >> "$RESTORE_DAILY_FILE" << JSONL
+{"tab":"halfbuilt","session":"$RESTORE_SESSION","completed_at":"$HB_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ_DIR","task_type":"dev"}
+JSONL
+mock_zellij_reset
+HB_RC=0
+MOCK_FOCUS_EMPTY_UNTIL=99999 CONDUCTOR_TAB_READY_MS=300 \
+  ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" \
+  "halfbuilt" "$RESTORE_SESSION" "$HB_AT" 2>/dev/null || HB_RC=$?
+[[ $HB_RC -eq 0 ]] && pass "restore-task exits 0 when the tab is created but not focus-confirmed" \
+  || fail "half-built restore exit wrong: $HB_RC"
+grep -q "action new-tab -n halfbuilt" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "half-built restore did create the tab" || fail "half-built restore created no tab"
+grep -q 'action new-pane' "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "half-built restore built panes without confirmed focus" || pass "half-built restore built no panes"
+HB_FLAG=$(jq -r 'select(.tab=="halfbuilt") | .restored' "$RESTORE_DAILY_FILE")
+[[ "$HB_FLAG" == "true" ]] && pass "half-built restore marks the entry restored (no duplicate on retry)" \
+  || fail "half-built entry left in Done: $HB_FLAG"
+
 # ============================================================
 section "26f. done-loop.sh (r+number triggers restore)"
 # ============================================================
@@ -2184,31 +2497,10 @@ rm -f "$PENDING_DIR/thread-cx2.json" "$PENDING_DIR/thread-cx3.json"
 section "26j. restore-session.sh (rebuild tasks from registry)"
 # ============================================================
 
-# 別プロセスとして走るrestore-session.shに見せるため、query-tab-names /
-# list-sessions も扱う上位互換モックへ差し替える（従来挙動は維持）
-cat > "$MOCK_BIN/zellij" << 'MOCK'
-#!/bin/bash
-echo "mock-zellij: $*" >> "$HOME/.claude-pending/zellij-calls.log"
-if [[ "$1" == "action" && "$2" == "list-tabs" && -n "$MOCK_TABS" ]]; then
-    echo "ID X NAME"
-    for t in $MOCK_TABS; do
-        echo "1 x $t"
-    done
-fi
-if [[ "$1" == "action" && "$2" == "query-tab-names" && -n "$MOCK_TAB_NAMES" ]]; then
-    printf '%s\n' "$MOCK_TAB_NAMES"
-fi
-if [[ "$1" == "list-sessions" && -n "$MOCK_SESSIONS_OUTPUT" ]]; then
-    printf '%s\n' "$MOCK_SESSIONS_OUTPUT"
-fi
-if [[ "$1" == "action" && "$2" == "list-panes" && -n "$MOCK_PANES_JSON" ]]; then
-    printf '%s\n' "$MOCK_PANES_JSON"
-fi
-if [[ "$1" == "action" && "$2" == "dump-screen" && -n "$MOCK_SCREEN_DIR" ]]; then
-    cat "$MOCK_SCREEN_DIR/$4.txt" 2>/dev/null
-fi
-MOCK
-chmod +x "$MOCK_BIN/zellij"
+# restore-session.sh は別プロセスとして走るのでモックはそのまま使う
+# （query-tab-names は MOCK_TAB_NAMES + new-tab で作られたタブを返す）。
+# これまでのセクションで作られたタブ名を持ち越さないようリセットする。
+mock_zellij_reset
 
 RS="$HOME/.claude-conductor/scripts/restore-session.sh"
 [[ -f "$RS" ]] && pass "restore-session.sh installed" || fail "restore-session.sh missing"
@@ -2287,6 +2579,21 @@ echo '{broken json' > "$CONDUCTOR_HOME/tasks/rs-sess/corrupt.json"
 ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
 grep -q "new-tab -n gamma-dev" "$RS_CALLS" \
   && pass "corrupt registry entry does not abort restore" || fail "restore aborted on corrupt entry: $(cat "$RS_CALLS")"
+
+# create_task が rc=3（タブは出来たがフォーカス未確認）でも「復元済み（不完全）」
+# として数える。硬い失敗と同じ扱いにすると、次回起動では同名タブが既存として
+# スキップされるので永遠に直らず、最後の go-to-tab-name Main も出ないため
+# フォーカスが半端なタブに残ってしまう。
+rm -rf "$CONDUCTOR_HOME/tasks"
+registry_upsert "rs-sess" "rs-sid-7" "halfbuilt-dev" "$RS_DIR1" "" "" ""
+mock_zellij_reset
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" MOCK_FOCUS_EMPTY_UNTIL=99999 \
+  CONDUCTOR_TAB_READY_MS=300 bash "$RS" 2>/dev/null
+grep -q "new-tab -n halfbuilt-dev" "$RS_CALLS" \
+  && pass "half-built restore creates the tab" || fail "no tab created: $(cat "$RS_CALLS")"
+grep -q "go-to-tab-name Main" "$RS_CALLS" \
+  && pass "focus returns to Main even when a tab stays half-built" \
+  || fail "did not return to Main after a half-built restore"
 
 # ============================================================
 section "26k. dashboard-loop.sh triggers restore on startup"

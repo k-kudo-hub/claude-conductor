@@ -203,7 +203,10 @@ screen_update_pending() {
             # An answered approval still comes through as blocked -> working,
             # and a prompt sent after a finished turn as idle -> working.
             if [[ "$prev" == "blocked" || "$prev" == "idle" ]]; then
-                zellij action go-to-tab-name Main 2>/dev/null || true
+                # 毎tick走る経路なので、ここもガード必須（素の呼び出しだと
+                # 劣化サーバでダッシュボードごと止まる）
+                _zellij_guarded "$(_zj_call_timeout)" action go-to-tab-name Main \
+                    >/dev/null 2>&1 || true
             fi
             ;;
         idle)
@@ -251,8 +254,13 @@ screen_update_pending() {
 # a first turn that is already waiting on an approval.
 screen_detect_tick() {
     local session="$1"
-    local panes tab pane_id agent text result state message
-    panes=$(zellij action list-panes -t -c -j 2>/dev/null | jq -r '
+    local panes tab pane_id agent text result state message zj_timeout
+    # 劣化したzellijサーバでは `zellij action` が戻ってこない。このtickは毎秒回るので
+    # 素通しにするとハングしたプロセスが積み上がる（実測200個超）。kill ガードで
+    # 打ち切り、その場合の出力は空 = このtickは何も検出しなかった扱いにする
+    # （従来の `2>/dev/null || true` と同じ挙動）。
+    zj_timeout=$(_zj_call_timeout)
+    panes=$(_zellij_guarded "$zj_timeout" action list-panes -t -c -j 2>/dev/null | jq -r '
         .[]
         | select(.is_plugin == false)
         | select(.terminal_command != null)
@@ -264,7 +272,9 @@ screen_detect_tick() {
     while IFS=$'\t' read -r tab pane_id agent; do
         [[ -n "$tab" && -n "$pane_id" ]] || continue
         [[ "$(agent_detection "$agent")" == "screen" ]] || continue
-        text=$(zellij action dump-screen -p "terminal_$pane_id" 2>/dev/null || true)
+        # dump-screen はペイン数ぶん毎tick叩くので、ハング時の蓄積は list-panes より
+        # 速い。同じガードで打ち切り、空なら（従来どおり）このペインを飛ばす。
+        text=$(_zellij_guarded "$zj_timeout" action dump-screen -p "terminal_$pane_id" 2>/dev/null || true)
         [[ -n "$text" ]] || continue
         result=$(screen_classify "$agent" "$text")
         state=$(printf '%s\n' "$result" | head -1 | cut -f1)
