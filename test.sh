@@ -271,6 +271,127 @@ grep -q 'codex-notify.sh' "$HOME/.codex/config.toml" \
 rm -f "$MOCK_BIN/codex"
 
 # ============================================================
+section "2c. FLAVOR file selects the go flavor"
+# ============================================================
+
+# $CONDUCTOR_HOME/FLAVOR が "go" のとき、install.sh は layouts を Go 版の
+# `bin/mdev pane <name>` へ向け、hooks も `mdev hooks switch` で Go 版にする。
+# これが無いと install.sh / mdev update の再実行が Go 版設定を黙って巻き戻す。
+# ロジックを再現せず install.sh をそのまま走らせて結果だけを見る。
+# 共有 HOME を汚さないよう隔離 HOME を使う。
+FLAVOR_HOME="$SANDBOX/flavor-home"
+FLAVOR_CH="$FLAVOR_HOME/.claude-conductor"
+FLAVOR_KDL="$FLAVOR_CH/layouts/multi.kdl"
+FLAVOR_SETTINGS="$FLAVOR_HOME/.claude/settings.json"
+FLAVOR_MDEV_LOG="$FLAVOR_HOME/mdev-calls.log"
+
+flavor_reset() {
+    rm -rf "$FLAVOR_HOME"
+    mkdir -p "$FLAVOR_HOME/.claude" "$FLAVOR_HOME/.codex"
+    # init 行を先に置けば install.sh は .zshrc の対話プロンプトに入らない
+    echo 'source "$HOME/.claude-conductor/init.zsh"' > "$FLAVOR_HOME/.zshrc"
+}
+
+# 引数を記録するだけの bin/mdev。hooks switch が呼ばれたことの検証に使う。
+flavor_stub_mdev() {
+    mkdir -p "$FLAVOR_CH/bin"
+    cat > "$FLAVOR_CH/bin/mdev" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/mdev-calls.log"
+STUB
+    chmod +x "$FLAVOR_CH/bin/mdev"
+}
+
+# 隔離 HOME で install.sh を実行する（CONDUCTOR_HOME は $HOME から決まる）
+flavor_install() {
+    (
+        export HOME="$FLAVOR_HOME"
+        export CODEX_HOME="$FLAVOR_HOME/.codex"
+        echo n | bash "$REPO_DIR/install.sh" 2>&1
+    )
+}
+
+# (a) FLAVOR 無し: 従来どおり Shell 版のレイアウトのまま
+flavor_reset
+flavor_install >/dev/null 2>&1 || fail "install.sh (no FLAVOR) exited non-zero"
+grep -q 'scripts/dashboard-loop\.sh' "$FLAVOR_KDL" \
+  && pass "no FLAVOR keeps the shell layout" || fail "no FLAVOR: dashboard-loop.sh missing from layout"
+grep -q 'bin/mdev pane' "$FLAVOR_KDL" \
+  && fail "no FLAVOR yet the layout points at bin/mdev" || pass "no FLAVOR: layout has no bin/mdev"
+
+# (b) FLAVOR=go: 5 ペインすべてが bin/mdev pane 形式になる（前後の空白は許容）
+flavor_reset
+mkdir -p "$FLAVOR_CH"
+printf '  go  \n' > "$FLAVOR_CH/FLAVOR"
+flavor_stub_mdev
+flavor_install >/dev/null 2>&1 || fail "install.sh (FLAVOR=go) exited non-zero"
+
+FLAVOR_PANES=$(grep -c 'bin/mdev pane' "$FLAVOR_KDL" 2>/dev/null | tr -d ' ' || true)
+[[ "$FLAVOR_PANES" == "5" ]] \
+  && pass "FLAVOR=go rewrites all 5 panes to bin/mdev pane" \
+  || fail "FLAVOR=go rewrote $FLAVOR_PANES panes (want 5)"
+for FLAVOR_PANE in dashboard waiting done news task-create; do
+    grep -qF "/bin/mdev pane $FLAVOR_PANE\"" "$FLAVOR_KDL" \
+      && pass "pane $FLAVOR_PANE points at bin/mdev" \
+      || fail "pane $FLAVOR_PANE not switched to bin/mdev"
+done
+grep -q -- '-loop\.sh' "$FLAVOR_KDL" \
+  && fail "shell loop scripts remain in the go layout" || pass "no *-loop.sh left in the go layout"
+FLAVOR_PREFIXED=$(grep -cF '"${CONDUCTOR_HOME:-$HOME/.claude-conductor}/bin/mdev pane ' "$FLAVOR_KDL" 2>/dev/null | tr -d ' ' || true)
+[[ "$FLAVOR_PREFIXED" == "5" ]] \
+  && pass "CONDUCTOR_HOME prefix preserved on all 5 panes" \
+  || fail "CONDUCTOR_HOME prefix kept on only $FLAVOR_PREFIXED panes"
+FLAVOR_BRACE_OPEN=$(tr -cd '{' < "$FLAVOR_KDL" | wc -c | tr -d ' ')
+FLAVOR_BRACE_CLOSE=$(tr -cd '}' < "$FLAVOR_KDL" | wc -c | tr -d ' ')
+[[ "$FLAVOR_BRACE_OPEN" == "$FLAVOR_BRACE_CLOSE" ]] \
+  && pass "go layout braces balanced" \
+  || fail "go layout braces unbalanced: $FLAVOR_BRACE_OPEN open / $FLAVOR_BRACE_CLOSE close"
+[[ ! -f "$FLAVOR_CH/layouts/multi.kdl.tmp" ]] \
+  && pass "no multi.kdl.tmp left behind" || fail "multi.kdl.tmp left behind"
+
+# (e) hooks switch: install.sh は bin/mdev に切り替えを委ねる（重複実装しない）
+grep -q '^hooks switch$' "$FLAVOR_MDEV_LOG" \
+  && pass "install.sh calls 'mdev hooks switch'" \
+  || fail "mdev hooks switch not called: $(cat "$FLAVOR_MDEV_LOG" 2>/dev/null)"
+
+# bin/ は install.sh の管理外。上書きも削除もされない。
+[[ -x "$FLAVOR_CH/bin/mdev" ]] && pass "install.sh leaves bin/mdev untouched" || fail "bin/mdev lost on install"
+[[ -f "$FLAVOR_CH/FLAVOR" ]] && pass "FLAVOR file survives install" || fail "FLAVOR file lost on install"
+
+# (d) 再実行しても同じ結果（冪等）
+cp "$FLAVOR_KDL" "$SANDBOX/flavor-multi.first"
+: > "$FLAVOR_MDEV_LOG"
+flavor_install >/dev/null 2>&1 || fail "install.sh (FLAVOR=go, reinstall) exited non-zero"
+cmp -s "$SANDBOX/flavor-multi.first" "$FLAVOR_KDL" \
+  && pass "reinstall reproduces the same go layout (idempotent)" \
+  || fail "reinstall changed the go layout: $(diff "$SANDBOX/flavor-multi.first" "$FLAVOR_KDL" | head -5)"
+grep -q '^hooks switch$' "$FLAVOR_MDEV_LOG" \
+  && pass "reinstall calls 'mdev hooks switch' again" || fail "reinstall skipped mdev hooks switch"
+
+# (c) FLAVOR=go だが bin/mdev が無い: 警告のみで install は成功、hooks は Shell 版
+flavor_reset
+mkdir -p "$FLAVOR_CH"
+printf 'go\n' > "$FLAVOR_CH/FLAVOR"
+if FLAVOR_OUT=$(flavor_install); then FLAVOR_RC=0; else FLAVOR_RC=$?; fi
+[[ "$FLAVOR_RC" -eq 0 ]] \
+  && pass "install succeeds when FLAVOR=go but bin/mdev is missing" \
+  || fail "install exited $FLAVOR_RC without bin/mdev"
+echo "$FLAVOR_OUT" | grep -q 'hooks stay on the shell flavor' \
+  && pass "warns that hooks stay on the shell flavor" \
+  || fail "no warning about the missing bin/mdev"
+FLAVOR_STOP=$(jq -r '.hooks.Stop[0].hooks[1].command' "$FLAVOR_SETTINGS" 2>/dev/null || echo "")
+[[ "$FLAVOR_STOP" == *'scripts/pending-notify.sh'* ]] \
+  && pass "hooks stay on the shell flavor without bin/mdev" \
+  || fail "unexpected Stop hook: $FLAVOR_STOP"
+# レイアウトの Go 化はバイナリの有無に依らない
+FLAVOR_PANES=$(grep -c 'bin/mdev pane' "$FLAVOR_KDL" 2>/dev/null | tr -d ' ' || true)
+[[ "$FLAVOR_PANES" == "5" ]] \
+  && pass "layout still switched to bin/mdev without the binary" \
+  || fail "layout panes switched: $FLAVOR_PANES (want 5)"
+
+rm -rf "$FLAVOR_HOME" "$SANDBOX/flavor-multi.first"
+
+# ============================================================
 section "3. pending-notify.sh (Notification event)"
 # ============================================================
 
