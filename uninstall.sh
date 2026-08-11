@@ -5,6 +5,7 @@ CONDUCTOR_HOME="$HOME/.claude-conductor"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -40,9 +41,14 @@ if [[ -f "$CODEX_CONFIG" ]] && grep -q "codex-notify.sh" "$CODEX_CONFIG"; then
 fi
 
 # --- Remove files ---
+# install.sh は $CONDUCTOR_HOME/bin に触れないが、uninstall は $CONDUCTOR_HOME を
+# 丸ごと消すので Go 版バイナリ bin/mdev と FLAVOR も一緒に消える。
 if [[ -d "$CONDUCTOR_HOME" ]]; then
+    if [[ -e "$CONDUCTOR_HOME/bin/mdev" ]]; then
+        echo -e "  ${YELLOW}!${NC} bin/mdev (Go flavor) is inside $CONDUCTOR_HOME and will be removed too"
+    fi
     rm -rf "$CONDUCTOR_HOME"
-    echo -e "  ${GREEN}✓${NC} Removed $CONDUCTOR_HOME"
+    echo -e "  ${GREEN}✓${NC} Removed $CONDUCTOR_HOME (including bin/ and FLAVOR)"
 fi
 
 # --- Remove pending data ---

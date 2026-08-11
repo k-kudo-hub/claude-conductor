@@ -43,6 +43,17 @@ fi
 
 echo ""
 
+# --- Flavor ---
+# $CONDUCTOR_HOME/FLAVOR に "go" と書かれていれば Go 版 (mdev-go) を採用する。
+# ファイルが無い / 中身が "go" 以外なら従来どおり Shell 版 (scripts/*-loop.sh)。
+# install.sh も `mdev update` も layouts と hooks を無条件に上書きするため、
+# このフラグが無いと Go 版へ寄せた設定が再実行のたびに黙って巻き戻る。
+CONDUCTOR_FLAVOR=""
+if [[ -f "$CONDUCTOR_HOME/FLAVOR" ]]; then
+    CONDUCTOR_FLAVOR=$(head -n 1 "$CONDUCTOR_HOME/FLAVOR" \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+fi
+
 # --- Install files ---
 echo -e "${BOLD}Installing to ${CONDUCTOR_HOME}...${NC}"
 
@@ -50,12 +61,27 @@ mkdir -p "$CONDUCTOR_HOME/scripts"
 mkdir -p "$CONDUCTOR_HOME/layouts"
 mkdir -p "$CONDUCTOR_HOME/news"
 
+# 注: $CONDUCTOR_HOME/bin には一切触れない。Go 版のバイナリ bin/mdev は
+# この repo の管理外（mdev-go 側で配置する）であり、install.sh を何度
+# 実行しても消したり上書きしたりしない。
 cp "$REPO_DIR"/scripts/*.sh "$CONDUCTOR_HOME/scripts/"
 chmod +x "$CONDUCTOR_HOME/scripts/"*.sh
 
 cp "$REPO_DIR"/layouts/*.kdl "$CONDUCTOR_HOME/layouts/"
 cp "$REPO_DIR"/init.zsh "$CONDUCTOR_HOME/init.zsh"
 cp "$REPO_DIR"/hooks.json "$CONDUCTOR_HOME/hooks.json"
+
+# FLAVOR=go: レイアウトの 5 ペインを Go 版の `bin/mdev pane <name>` へ向け直す。
+# ${CONDUCTOR_HOME:-$HOME/.claude-conductor} のプレフィックスは維持する。
+if [[ "$CONDUCTOR_FLAVOR" == "go" ]]; then
+    sed -e 's|/scripts/dashboard-loop\.sh|/bin/mdev pane dashboard|' \
+        -e 's|/scripts/waiting-loop\.sh|/bin/mdev pane waiting|' \
+        -e 's|/scripts/done-loop\.sh|/bin/mdev pane done|' \
+        -e 's|/scripts/news-loop\.sh|/bin/mdev pane news|' \
+        -e 's|/scripts/task-create-loop\.sh|/bin/mdev pane task-create|' \
+        "$CONDUCTOR_HOME/layouts/multi.kdl" > "$CONDUCTOR_HOME/layouts/multi.kdl.tmp" \
+        && mv "$CONDUCTOR_HOME/layouts/multi.kdl.tmp" "$CONDUCTOR_HOME/layouts/multi.kdl"
+fi
 
 # バージョンと更新元URLを記録する。
 # tarball からの更新など .git が無い文脈では update.sh が
@@ -107,6 +133,9 @@ echo -e "  ${GREEN}✓${NC} Scripts"
 echo -e "  ${GREEN}✓${NC} Layouts"
 echo -e "  ${GREEN}✓${NC} Config"
 echo -e "  ${GREEN}✓${NC} Shell functions"
+if [[ "$CONDUCTOR_FLAVOR" == "go" ]]; then
+    echo -e "  ${GREEN}✓${NC} Flavor: go (layouts point at bin/mdev pane)"
+fi
 echo ""
 
 # --- Configure Claude Code hooks ---
@@ -126,6 +155,25 @@ else
     mkdir -p "$(dirname "$SETTINGS_FILE")"
     jq -n --argjson hooks "$(cat "$CONDUCTOR_HOME/hooks.json")" '{"hooks": $hooks}' > "$SETTINGS_FILE"
     echo -e "  ${GREEN}✓${NC} Created $SETTINGS_FILE"
+fi
+
+# FLAVOR=go: 上のマージは hooks をイベント名単位で丸ごと置き換えるので、
+# Go 版へ切り替えてあった hooks が Shell 版へ戻る。切り替えロジックは
+# mdev 側（mdev-go）に検証済みのものが在るため、ここで再実装せず
+# `mdev hooks switch` を呼ぶ。このコマンドは冪等で、既に Go 版なら何もしない。
+if [[ "$CONDUCTOR_FLAVOR" == "go" ]]; then
+    if [[ -x "$CONDUCTOR_HOME/bin/mdev" ]]; then
+        if "$CONDUCTOR_HOME/bin/mdev" hooks switch >/dev/null 2>&1; then
+            echo -e "  ${GREEN}✓${NC} Hooks switched to the go flavor (mdev hooks switch)"
+        else
+            echo -e "  ${YELLOW}!${NC} mdev hooks switch failed; hooks stay on the shell flavor"
+        fi
+    else
+        # Go 版バイナリが未設置でも install 自体は成功させる。hooks は Shell 版の
+        # まま残るので、そのままでも Conductor は動く。
+        echo -e "  ${YELLOW}!${NC} FLAVOR=go but $CONDUCTOR_HOME/bin/mdev is missing or not executable;"
+        echo -e "    hooks stay on the shell flavor. Install the Go binary and re-run."
+    fi
 fi
 echo ""
 
