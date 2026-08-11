@@ -69,6 +69,14 @@ NR > 1 && count < 5 {
         gsub(/\r/, "", title)
         gsub(/\n/, " ", desc)
         gsub(/\r/, "", desc)
+        # Trim description to 120 chars BEFORE escaping.
+        # Escaping first can put the cut inside an escape sequence: if the
+        # 120th escaped char is the backslash of \", the cut leaves a lone
+        # backslash at the end and the whole document becomes invalid JSON.
+        # jq then rejects it silently and no news file is written at all.
+        # The appended "..." needs no escaping. This matches the Go version
+        # (mdev-go internal/domain/news_rss.go: truncate, then encode).
+        if (length(desc) > 120) desc = substr(desc, 1, 120) "..."
         # Escape backslashes and double quotes in all fields
         gsub(/\\/, "\\\\", title)
         gsub(/"/, "\\\"", title)
@@ -76,8 +84,6 @@ NR > 1 && count < 5 {
         gsub(/"/, "\\\"", link)
         gsub(/\\/, "\\\\", desc)
         gsub(/"/, "\\\"", desc)
-        # Trim description to 120 chars
-        if (length(desc) > 120) desc = substr(desc, 1, 120) "..."
 
         if (count > 0) print ","
         printf "{\"title\":\"%s\",\"url\":\"%s\",\"description\":\"%s\"}", title, link, desc

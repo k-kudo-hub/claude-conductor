@@ -3227,6 +3227,84 @@ else
 fi
 
 # ============================================================
+section "28b. fetch-news.sh (truncates the description before escaping)"
+# ============================================================
+
+# エスケープしてから 120 文字で切ると、ちょうど 120 文字目が \" の \ に当たった
+# ときに \ が単独で末尾に残り、JSON が壊れる。壊れた JSON は jq 検証で黙って
+# 捨てられ、当日の news ファイルが 1 件も書かれない（2026-08-11 のフィードで
+# 実際に発症し、News ペインが 0 件になった）。切ってから符号化する順序に直す。
+# 実スクリプトを固定フィードで走らせて結果を見る。
+NEWS_TRUNC_FEED="$SANDBOX/news-trunc-feed.xml"
+export NEWS_TRUNC_FEED
+
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat "$NEWS_TRUNC_FEED"
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# $1 の文字を $2 個並べる（bash 3.2 に文字列の乗算は無い）
+repeat_char() {
+    printf '%*s' "$2" '' | tr ' ' "$1"
+}
+
+# $1 を description に持つ 1 件だけのフィードを置く
+news_trunc_feed() {
+    cat > "$NEWS_TRUNC_FEED" << FEED
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>TC</title>
+<item><title><![CDATA[Truncate Case]]></title><link>https://example.com/t</link><description><![CDATA[$1]]></description></item>
+</channel>
+</rss>
+FEED
+    rm -f "$NEWS_FILE"
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+}
+
+# (1) エスケープ後ちょうど 120 文字目が `\` になる入力。
+# 安全文字 119 個の直後に `"` を置くと、エスケープ後は 120 文字目が `\`、
+# 121 文字目が `"` になる。壊れる版はここで切って `\` を末尾に残す。
+NEWS_TRUNC_HEAD=$(repeat_char A 119)
+news_trunc_feed "${NEWS_TRUNC_HEAD}\"personal superintelligence\" and more text past the limit"
+
+[[ -f "$NEWS_FILE" ]] \
+  && pass "news file written when the cut lands on an escape sequence" \
+  || fail "no news file: the escaped description broke the JSON"
+jq '.' "$NEWS_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid when the cut lands on an escape sequence" \
+  || fail "news JSON invalid: $(cat "$NEWS_FILE" 2>/dev/null | tail -c 120)"
+NEWS_TRUNC_COUNT=$(jq -r '.items | length' "$NEWS_FILE" 2>/dev/null || echo 0)
+[[ "$NEWS_TRUNC_COUNT" == "1" ]] && pass "the item survives the cut" || fail "item count: $NEWS_TRUNC_COUNT"
+NEWS_TRUNC_DESC=$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null || echo "")
+[[ "$NEWS_TRUNC_DESC" == "${NEWS_TRUNC_HEAD}\"..." ]] \
+  && pass "the quote is kept whole at the cut" \
+  || fail "description wrong at the cut: $NEWS_TRUNC_DESC"
+
+# (2) 119 文字（上限未満）: そのまま、"..." は付かない
+NEWS_TRUNC_119=$(repeat_char B 119)
+news_trunc_feed "$NEWS_TRUNC_119"
+[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$NEWS_TRUNC_119" ]] \
+  && pass "119 chars are left untouched" \
+  || fail "119 chars altered: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+
+# (3) 120 文字ちょうど: 上限と同じなので切らない
+NEWS_TRUNC_120=$(repeat_char C 120)
+news_trunc_feed "$NEWS_TRUNC_120"
+[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$NEWS_TRUNC_120" ]] \
+  && pass "120 chars are left untouched" \
+  || fail "120 chars altered: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+
+# (4) 121 文字: 先頭 120 文字 + "..."
+NEWS_TRUNC_121=$(repeat_char D 121)
+news_trunc_feed "$NEWS_TRUNC_121"
+[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$(repeat_char D 120)..." ]] \
+  && pass "121 chars are cut to 120 plus an ellipsis" \
+  || fail "121 chars cut wrong: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+
+# ============================================================
 section "29. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 
