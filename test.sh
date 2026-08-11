@@ -274,10 +274,10 @@ rm -f "$MOCK_BIN/codex"
 section "2c. FLAVOR file selects the go flavor"
 # ============================================================
 
-# $CONDUCTOR_HOME/FLAVOR が "go" のとき、install.sh は layouts を Go 版の
-# `bin/mdev pane <name>` へ向け、hooks も `mdev hooks switch` で Go 版にする。
-# これが無いと install.sh / mdev update の再実行が Go 版設定を黙って巻き戻す。
-# ロジックを再現せず install.sh をそのまま走らせて結果だけを見る。
+# $CONDUCTOR_HOME/FLAVOR が "go" かつ bin/mdev が実行可能なとき、install.sh は
+# layouts を Go 版の `bin/mdev pane <name>` へ向け、hooks も `mdev hooks switch`
+# で Go 版にする。これが無いと install.sh / mdev update の再実行が Go 版設定を
+# 黙って巻き戻す。ロジックを再現せず install.sh をそのまま走らせて結果を見る。
 # 共有 HOME を汚さないよう隔離 HOME を使う。
 FLAVOR_HOME="$SANDBOX/flavor-home"
 FLAVOR_CH="$FLAVOR_HOME/.claude-conductor"
@@ -302,6 +302,35 @@ STUB
     chmod +x "$FLAVOR_CH/bin/mdev"
 }
 
+# hooks switch の振る舞いを写した bin/mdev。mdev-go の
+# internal/domain/hooksettings.go と同じ 3 規則でコマンド末尾だけを差し替え、
+# 実際に変更があったときだけバックアップを作る（変更が無ければ何もしない）。
+# バックアップが install のたびに増えないことを確かめるために要る。
+flavor_stub_mdev_switch() {
+    mkdir -p "$FLAVOR_CH/bin"
+    cat > "$FLAVOR_CH/bin/mdev" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/mdev-calls.log"
+if [[ "$1" == "hooks" && "$2" == "switch" ]]; then
+    S="$HOME/.claude/settings.json"
+    [[ -f "$S" ]] || exit 0
+    sed -e 's|/scripts/pending-notify\.sh|/bin/mdev hook notify|g' \
+        -e 's|/scripts/pending-post-tool\.sh|/bin/mdev hook post-tool|g' \
+        -e 's|/scripts/pending-resolve\.sh|/bin/mdev hook resolve|g' \
+        "$S" > "$S.switched" || exit 1
+    if cmp -s "$S" "$S.switched"; then
+        rm -f "$S.switched"
+        exit 0
+    fi
+    N=$(ls "$HOME/.claude" 2>/dev/null | grep -c 'settings.json.mdev-backup' || true)
+    cp "$S" "$S.mdev-backup.$N"
+    mv "$S.switched" "$S"
+fi
+exit 0
+STUB
+    chmod +x "$FLAVOR_CH/bin/mdev"
+}
+
 # 隔離 HOME で install.sh を実行する（CONDUCTOR_HOME は $HOME から決まる）
 flavor_install() {
     (
@@ -311,15 +340,41 @@ flavor_install() {
     )
 }
 
+# settings.json の `.hooks` 配下のコマンドを全部並べる。
+# 添字を直に書くと hooks.json の並びが変わったとき別のものを見てしまう。
+flavor_hook_commands() {
+    jq -r '[.hooks // {} | to_entries[] | .value[] | .hooks[] | .command] | .[]' \
+        "$FLAVOR_SETTINGS" 2>/dev/null || true
+}
+
+flavor_backup_count() {
+    ls "$FLAVOR_HOME/.claude" 2>/dev/null | grep -c 'settings.json.mdev-backup' || true
+}
+
 # (a) FLAVOR 無し: 従来どおり Shell 版のレイアウトのまま
 flavor_reset
 flavor_install >/dev/null 2>&1 || fail "install.sh (no FLAVOR) exited non-zero"
-grep -q 'scripts/dashboard-loop\.sh' "$FLAVOR_KDL" \
-  && pass "no FLAVOR keeps the shell layout" || fail "no FLAVOR: dashboard-loop.sh missing from layout"
+cmp -s "$REPO_DIR/layouts/multi.kdl" "$FLAVOR_KDL" \
+  && pass "no FLAVOR installs the repo multi.kdl byte for byte" \
+  || fail "no FLAVOR altered multi.kdl: $(diff "$REPO_DIR/layouts/multi.kdl" "$FLAVOR_KDL" | head -5)"
 grep -q 'bin/mdev pane' "$FLAVOR_KDL" \
   && fail "no FLAVOR yet the layout points at bin/mdev" || pass "no FLAVOR: layout has no bin/mdev"
 
-# (b) FLAVOR=go: 5 ペインすべてが bin/mdev pane 形式になる（前後の空白は許容）
+# (a2) 知らない値: 警告を出したうえで Shell 版として扱う（黙って倒さない）
+flavor_reset
+mkdir -p "$FLAVOR_CH"
+printf 'rust\n' > "$FLAVOR_CH/FLAVOR"
+flavor_stub_mdev
+if FLAVOR_OUT=$(flavor_install); then FLAVOR_RC=0; else FLAVOR_RC=$?; fi
+[[ "$FLAVOR_RC" -eq 0 ]] && pass "unknown flavor still installs" || fail "unknown flavor install exited $FLAVOR_RC"
+echo "$FLAVOR_OUT" | grep -q "unknown flavor 'rust'" \
+  && pass "unknown flavor is reported" || fail "unknown flavor went unreported"
+cmp -s "$REPO_DIR/layouts/multi.kdl" "$FLAVOR_KDL" \
+  && pass "unknown flavor keeps the shell layout" || fail "unknown flavor changed the layout"
+[[ ! -f "$FLAVOR_MDEV_LOG" ]] \
+  && pass "unknown flavor does not call mdev" || fail "mdev called for an unknown flavor"
+
+# (b) FLAVOR=go + bin/mdev あり: 5 ペインすべてが bin/mdev pane 形式（前後空白は許容）
 flavor_reset
 mkdir -p "$FLAVOR_CH"
 printf '  go  \n' > "$FLAVOR_CH/FLAVOR"
@@ -368,7 +423,8 @@ cmp -s "$SANDBOX/flavor-multi.first" "$FLAVOR_KDL" \
 grep -q '^hooks switch$' "$FLAVOR_MDEV_LOG" \
   && pass "reinstall calls 'mdev hooks switch' again" || fail "reinstall skipped mdev hooks switch"
 
-# (c) FLAVOR=go だが bin/mdev が無い: 警告のみで install は成功、hooks は Shell 版
+# (c) FLAVOR=go だが bin/mdev が無い: layouts も hooks も Shell 版のまま。
+# レイアウトだけ Go 化すると 5 ペインすべてが即死するので、混ぜない。
 flavor_reset
 mkdir -p "$FLAVOR_CH"
 printf 'go\n' > "$FLAVOR_CH/FLAVOR"
@@ -376,18 +432,85 @@ if FLAVOR_OUT=$(flavor_install); then FLAVOR_RC=0; else FLAVOR_RC=$?; fi
 [[ "$FLAVOR_RC" -eq 0 ]] \
   && pass "install succeeds when FLAVOR=go but bin/mdev is missing" \
   || fail "install exited $FLAVOR_RC without bin/mdev"
-echo "$FLAVOR_OUT" | grep -q 'hooks stay on the shell flavor' \
-  && pass "warns that hooks stay on the shell flavor" \
+echo "$FLAVOR_OUT" | grep -q 'Layouts and hooks stay on the shell flavor' \
+  && pass "warns that layouts and hooks stay on the shell flavor" \
   || fail "no warning about the missing bin/mdev"
-FLAVOR_STOP=$(jq -r '.hooks.Stop[0].hooks[1].command' "$FLAVOR_SETTINGS" 2>/dev/null || echo "")
-[[ "$FLAVOR_STOP" == *'scripts/pending-notify.sh'* ]] \
+cmp -s "$REPO_DIR/layouts/multi.kdl" "$FLAVOR_KDL" \
+  && pass "missing bin/mdev keeps the shell layout" \
+  || fail "layout switched to bin/mdev without the binary"
+flavor_hook_commands | grep -q 'scripts/pending-notify\.sh' \
   && pass "hooks stay on the shell flavor without bin/mdev" \
-  || fail "unexpected Stop hook: $FLAVOR_STOP"
-# レイアウトの Go 化はバイナリの有無に依らない
-FLAVOR_PANES=$(grep -c 'bin/mdev pane' "$FLAVOR_KDL" 2>/dev/null | tr -d ' ' || true)
-[[ "$FLAVOR_PANES" == "5" ]] \
-  && pass "layout still switched to bin/mdev without the binary" \
-  || fail "layout panes switched: $FLAVOR_PANES (want 5)"
+  || fail "shell hooks missing: $(flavor_hook_commands | tr '\n' ' ')"
+
+# (f) settings.json が無い新規インストールでも Go 版 hooks が作られる。
+# `mdev hooks switch` は既存コマンドの末尾を書き換えるだけで hooks を新規に
+# 作りはしないため、Go 版でも conductor 側のマージ自体は残す必要がある。
+flavor_reset
+rm -f "$FLAVOR_SETTINGS"
+mkdir -p "$FLAVOR_CH"
+printf 'go\n' > "$FLAVOR_CH/FLAVOR"
+flavor_stub_mdev_switch
+flavor_install >/dev/null 2>&1 || fail "install.sh (fresh, FLAVOR=go) exited non-zero"
+
+[[ -f "$FLAVOR_SETTINGS" ]] && pass "fresh install creates settings.json" || fail "settings.json not created"
+FLAVOR_CMDS=$(flavor_hook_commands)
+FLAVOR_MISSING=""
+for FLAVOR_HOOK in "/bin/mdev hook notify" "/bin/mdev hook post-tool" "/bin/mdev hook resolve"; do
+    echo "$FLAVOR_CMDS" | grep -qF "$FLAVOR_HOOK" || FLAVOR_MISSING="$FLAVOR_MISSING $FLAVOR_HOOK"
+done
+[[ -z "$FLAVOR_MISSING" ]] \
+  && pass "fresh go install ends up with the go hooks" \
+  || fail "go hooks missing:$FLAVOR_MISSING"
+echo "$FLAVOR_CMDS" | grep -q 'scripts/pending-' \
+  && fail "shell pending hooks remain after the switch" || pass "no shell pending hooks remain"
+
+# 再実行で settings.json のバックアップが増えない（Shell 版へ戻して毎回
+# 切り替え直すと install / update のたびにバックアップが積み上がる）
+FLAVOR_BK1=$(flavor_backup_count)
+[[ "$FLAVOR_BK1" == "1" ]] \
+  && pass "first go install backs settings.json up once" \
+  || fail "unexpected backup count after the first install: $FLAVOR_BK1"
+FLAVOR_HOOKS_BEFORE=$(jq -S '.hooks' "$FLAVOR_SETTINGS")
+flavor_install >/dev/null 2>&1 || fail "install.sh (fresh reinstall, FLAVOR=go) exited non-zero"
+[[ "$(flavor_backup_count)" == "$FLAVOR_BK1" ]] \
+  && pass "reinstall adds no new settings.json backup" \
+  || fail "backups piled up: $FLAVOR_BK1 -> $(flavor_backup_count)"
+[[ "$(jq -S '.hooks' "$FLAVOR_SETTINGS")" == "$FLAVOR_HOOKS_BEFORE" ]] \
+  && pass "reinstall leaves the go hooks untouched" \
+  || fail "reinstall rewrote the hooks"
+
+# 他ツールの hooks と hooks 以外の設定はマージで壊さない
+jq '.permissions = {"allow": ["Bash"]} | .hooks.PreToolUse = [{"matcher": "", "hooks": [{"type": "command", "command": "echo pre"}]}]' \
+    "$FLAVOR_SETTINGS" > "$FLAVOR_SETTINGS.seed" && mv "$FLAVOR_SETTINGS.seed" "$FLAVOR_SETTINGS"
+flavor_install >/dev/null 2>&1 || fail "install.sh (seeded reinstall, FLAVOR=go) exited non-zero"
+[[ "$(jq -r '.permissions.allow[0]' "$FLAVOR_SETTINGS")" == "Bash" ]] \
+  && pass "go merge preserves non-hook settings" || fail "permissions lost by the go merge"
+flavor_hook_commands | grep -qF 'echo pre' \
+  && pass "go merge preserves foreign hooks" || fail "foreign PreToolUse hook lost"
+[[ "$(flavor_backup_count)" == "$FLAVOR_BK1" ]] \
+  && pass "seeded reinstall adds no new backup" || fail "backups piled up on the seeded reinstall"
+
+# uninstall は $CONDUCTOR_HOME ごと消すので Go 版のバイナリとフラグも道連れになる。
+# その旨は Go 版が実在するときだけ表示する（Shell 版だけの環境では出さない）。
+# config.toml が conductor の notify 行だけの環境（codex 導入済みの実機で
+# よく起きる）でも最後まで走り切ることを、ここで併せて確かめる。
+printf 'notify = ["bash", "%s/scripts/codex-notify.sh"] # claude-conductor\n' "$FLAVOR_CH" \
+    > "$FLAVOR_HOME/.codex/config.toml"
+FLAVOR_UNINST_OUT=$(HOME="$FLAVOR_HOME" CODEX_HOME="$FLAVOR_HOME/.codex" bash "$REPO_DIR/uninstall.sh" 2>&1 || true)
+[[ ! -d "$FLAVOR_CH" ]] \
+  && pass "uninstall removes the conductor home even with a conductor-only codex config" \
+  || fail "uninstall left $FLAVOR_CH behind"
+echo "$FLAVOR_UNINST_OUT" | grep -qF 'bin/mdev (Go flavor)' \
+  && pass "uninstall announces the go flavor binary" || fail "uninstall silent about bin/mdev"
+echo "$FLAVOR_UNINST_OUT" | grep -qF '(including bin/ and FLAVOR)' \
+  && pass "uninstall notes bin/ and FLAVOR go too" || fail "uninstall omits the bin/FLAVOR note"
+
+flavor_reset
+mkdir -p "$FLAVOR_CH/scripts"
+FLAVOR_UNINST_OUT=$(HOME="$FLAVOR_HOME" bash "$REPO_DIR/uninstall.sh" 2>&1 || true)
+echo "$FLAVOR_UNINST_OUT" | grep -qF '(including bin/ and FLAVOR)' \
+  && fail "uninstall mentions bin/FLAVOR on a shell-only install" \
+  || pass "uninstall stays quiet about bin/FLAVOR on a shell-only install"
 
 rm -rf "$FLAVOR_HOME" "$SANDBOX/flavor-multi.first"
 
