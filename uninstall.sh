@@ -35,7 +35,11 @@ fi
 # --- Remove Codex notify (only the conductor line) ---
 CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
 if [[ -f "$CODEX_CONFIG" ]] && grep -q "codex-notify.sh" "$CODEX_CONFIG"; then
-    grep -v "codex-notify.sh" "$CODEX_CONFIG" > "${CODEX_CONFIG}.tmp"
+    # config.toml が conductor の notify 行だけなら grep -v の出力は空になり
+    # rc=1 が返る。set -e のままだとそこで uninstall が止まり、$CONDUCTOR_HOME を
+    # 消さずに終わってしまう。「一致なし」の 1 だけを許し、本当のエラー(2 以上)は
+    # 従来どおり落とす。
+    grep -v "codex-notify.sh" "$CODEX_CONFIG" > "${CODEX_CONFIG}.tmp" || [[ $? -eq 1 ]]
     mv "${CODEX_CONFIG}.tmp" "$CODEX_CONFIG"
     echo -e "  ${GREEN}✓${NC} Removed Codex notify from $CODEX_CONFIG"
 fi
@@ -44,11 +48,15 @@ fi
 # install.sh は $CONDUCTOR_HOME/bin に触れないが、uninstall は $CONDUCTOR_HOME を
 # 丸ごと消すので Go 版バイナリ bin/mdev と FLAVOR も一緒に消える。
 if [[ -d "$CONDUCTOR_HOME" ]]; then
+    GO_FLAVOR_NOTE=""
+    if [[ -e "$CONDUCTOR_HOME/bin/mdev" || -e "$CONDUCTOR_HOME/FLAVOR" ]]; then
+        GO_FLAVOR_NOTE=" (including bin/ and FLAVOR)"
+    fi
     if [[ -e "$CONDUCTOR_HOME/bin/mdev" ]]; then
         echo -e "  ${YELLOW}!${NC} bin/mdev (Go flavor) is inside $CONDUCTOR_HOME and will be removed too"
     fi
     rm -rf "$CONDUCTOR_HOME"
-    echo -e "  ${GREEN}✓${NC} Removed $CONDUCTOR_HOME (including bin/ and FLAVOR)"
+    echo -e "  ${GREEN}✓${NC} Removed ${CONDUCTOR_HOME}${GO_FLAVOR_NOTE}"
 fi
 
 # --- Remove pending data ---
