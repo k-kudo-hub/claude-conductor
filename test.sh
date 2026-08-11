@@ -3227,13 +3227,15 @@ else
 fi
 
 # ============================================================
-section "28b. fetch-news.sh (truncates the description before escaping)"
+section "28b. fetch-news.sh (description trimming)"
 # ============================================================
 
-# エスケープしてから 120 文字で切ると、ちょうど 120 文字目が \" の \ に当たった
-# ときに \ が単独で末尾に残り、JSON が壊れる。壊れた JSON は jq 検証で黙って
-# 捨てられ、当日の news ファイルが 1 件も書かれない（2026-08-11 のフィードで
-# 実際に発症し、News ペインが 0 件になった）。切ってから符号化する順序に直す。
+# description の切り詰めは awk で手書きせず jq に任せる。awk で「エスケープ →
+# 切り詰め」の順にすると 120 文字目が \" の \ に当たったときに \ が単独で残って
+# JSON が壊れ、逆に「切り詰め → エスケープ」にしても substr がバイト単位のため
+# マルチバイト文字を割ると BSD awk が towc エラーで異常終了する。どちらも
+# 当日の news ファイルが 1 件も書かれない結果になる。jq なら符号化は構成上
+# 正しく、`.[:120]` はコードポイント単位で切るのでどちらの故障も起きない。
 # 実スクリプトを固定フィードで走らせて結果を見る。
 NEWS_TRUNC_FEED="$SANDBOX/news-trunc-feed.xml"
 export NEWS_TRUNC_FEED
@@ -3249,8 +3251,15 @@ repeat_char() {
     printf '%*s' "$2" '' | tr ' ' "$1"
 }
 
-# $1 を description に持つ 1 件だけのフィードを置く
-news_trunc_feed() {
+# 日本語など複数バイト文字は tr では並べられないので awk で繰り返す
+repeat_str() {
+    awk -v s="$1" -v n="$2" 'BEGIN { out = ""; for (i = 0; i < n; i++) out = out s; print out }'
+}
+
+# $1 を description に持つ 1 件だけのフィードを置いて fetch-news.sh を走らせる。
+# 実行のたびに当日ファイルのパスを引き直す（日付を先に固定すると、日付を
+# またいだ瞬間にスクリプトの書き先とテストの検証先がずれて偽 fail になる）。
+news_trunc_run() {
     cat > "$NEWS_TRUNC_FEED" << FEED
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -3260,49 +3269,88 @@ news_trunc_feed() {
 </channel>
 </rss>
 FEED
-    rm -f "$NEWS_FILE"
-    bash "$HOME/.claude-conductor/scripts/fetch-news.sh"
+    NEWS_TRUNC_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    rm -f "$NEWS_TRUNC_FILE"
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" 2>"$SANDBOX/news-trunc-stderr"
+    NEWS_TRUNC_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
 }
 
-# (1) エスケープ後ちょうど 120 文字目が `\` になる入力。
-# 安全文字 119 個の直後に `"` を置くと、エスケープ後は 120 文字目が `\`、
-# 121 文字目が `"` になる。壊れる版はここで切って `\` を末尾に残す。
+news_trunc_desc() {
+    jq -r '.items[0].description' "$NEWS_TRUNC_FILE" 2>/dev/null || true
+}
+
+# (1) マルチバイト境界: 120 文字目が 'あ' に当たる。バイト単位で切ると
+# 文字の途中で割れ、BSD awk が towc エラーで落ちて当日ファイルが全滅する。
 NEWS_TRUNC_HEAD=$(repeat_char A 119)
-news_trunc_feed "${NEWS_TRUNC_HEAD}\"personal superintelligence\" and more text past the limit"
+news_trunc_run "${NEWS_TRUNC_HEAD}あ and more text past the limit"
 
-[[ -f "$NEWS_FILE" ]] \
-  && pass "news file written when the cut lands on an escape sequence" \
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written when the cut lands on a multibyte char" \
+  || fail "no news file: the multibyte cut killed the run"
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid when the cut lands on a multibyte char" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+[[ ! -s "$SANDBOX/news-trunc-stderr" ]] \
+  && pass "awk does not abort on the multibyte cut" \
+  || fail "stderr from fetch-news.sh: $(cat "$SANDBOX/news-trunc-stderr")"
+[[ "$(news_trunc_desc)" == "${NEWS_TRUNC_HEAD}あ..." ]] \
+  && pass "the multibyte char is kept whole at the cut" \
+  || fail "description wrong at the multibyte cut: $(news_trunc_desc)"
+
+# (2) エスケープ境界: 安全文字 119 個の直後に `"`。エスケープしてから切ると
+# `\"` の `\` だけが末尾に残って JSON が壊れる。
+news_trunc_run "${NEWS_TRUNC_HEAD}\"personal superintelligence\" and more text past the limit"
+
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written when the cut lands on a quote" \
   || fail "no news file: the escaped description broke the JSON"
-jq '.' "$NEWS_FILE" > /dev/null 2>&1 \
-  && pass "news JSON is valid when the cut lands on an escape sequence" \
-  || fail "news JSON invalid: $(cat "$NEWS_FILE" 2>/dev/null | tail -c 120)"
-NEWS_TRUNC_COUNT=$(jq -r '.items | length' "$NEWS_FILE" 2>/dev/null || echo 0)
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid when the cut lands on a quote" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+NEWS_TRUNC_COUNT=$(jq -r '.items | length' "$NEWS_TRUNC_FILE" 2>/dev/null || echo 0)
 [[ "$NEWS_TRUNC_COUNT" == "1" ]] && pass "the item survives the cut" || fail "item count: $NEWS_TRUNC_COUNT"
-NEWS_TRUNC_DESC=$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null || echo "")
-[[ "$NEWS_TRUNC_DESC" == "${NEWS_TRUNC_HEAD}\"..." ]] \
+[[ "$(news_trunc_desc)" == "${NEWS_TRUNC_HEAD}\"..." ]] \
   && pass "the quote is kept whole at the cut" \
-  || fail "description wrong at the cut: $NEWS_TRUNC_DESC"
+  || fail "description wrong at the cut: $(news_trunc_desc)"
 
-# (2) 119 文字（上限未満）: そのまま、"..." は付かない
+# (3) 119 文字（上限未満）: そのまま、"..." は付かない
 NEWS_TRUNC_119=$(repeat_char B 119)
-news_trunc_feed "$NEWS_TRUNC_119"
-[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$NEWS_TRUNC_119" ]] \
-  && pass "119 chars are left untouched" \
-  || fail "119 chars altered: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+news_trunc_run "$NEWS_TRUNC_119"
+[[ "$(news_trunc_desc)" == "$NEWS_TRUNC_119" ]] \
+  && pass "119 chars are left untouched" || fail "119 chars altered: $(news_trunc_desc)"
 
-# (3) 120 文字ちょうど: 上限と同じなので切らない
+# (4) 120 文字ちょうど: 上限と同じなので切らない
 NEWS_TRUNC_120=$(repeat_char C 120)
-news_trunc_feed "$NEWS_TRUNC_120"
-[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$NEWS_TRUNC_120" ]] \
-  && pass "120 chars are left untouched" \
-  || fail "120 chars altered: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+news_trunc_run "$NEWS_TRUNC_120"
+[[ "$(news_trunc_desc)" == "$NEWS_TRUNC_120" ]] \
+  && pass "120 chars are left untouched" || fail "120 chars altered: $(news_trunc_desc)"
 
-# (4) 121 文字: 先頭 120 文字 + "..."
+# (5) 121 文字: 先頭 120 文字 + "..."
 NEWS_TRUNC_121=$(repeat_char D 121)
-news_trunc_feed "$NEWS_TRUNC_121"
-[[ "$(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)" == "$(repeat_char D 120)..." ]] \
-  && pass "121 chars are cut to 120 plus an ellipsis" \
-  || fail "121 chars cut wrong: $(jq -r '.items[0].description' "$NEWS_FILE" 2>/dev/null)"
+news_trunc_run "$NEWS_TRUNC_121"
+[[ "$(news_trunc_desc)" == "$(repeat_char D 120)..." ]] \
+  && pass "121 chars are cut to 120 plus an ellipsis" || fail "121 chars cut wrong: $(news_trunc_desc)"
+
+# (6) 日本語だけの description: バイトではなく文字で数える（Go 版と同じ単位）。
+# 130 文字 = 390 バイトなので、バイト単位なら 40 文字で切れてしまう。
+NEWS_TRUNC_JP=$(repeat_str "あ" 130)
+news_trunc_run "$NEWS_TRUNC_JP"
+[[ "$(news_trunc_desc)" == "$(repeat_str "あ" 120)..." ]] \
+  && pass "Japanese description is cut by characters, not bytes" \
+  || fail "Japanese cut wrong: $(news_trunc_desc)"
+# バイト数で確かめる（awk の length はロケール次第で文字にもバイトにもなる）。
+# 'あ' は UTF-8 で 3 バイトなので 120 文字 + "..." は 363 バイト。
+# バイトで切っていた頃は 120 バイト = 40 文字 + "..." で 123 バイトだった。
+NEWS_TRUNC_JP_BYTES=$(printf '%s' "$(news_trunc_desc)" | wc -c | tr -d ' ')
+[[ "$NEWS_TRUNC_JP_BYTES" == "363" ]] \
+  && pass "Japanese description keeps 120 chars plus the ellipsis" \
+  || fail "Japanese description bytes: $NEWS_TRUNC_JP_BYTES (want 363)"
+
+# (7) タブを含む description でも列がずれない（awk は TSV を出し jq が組む）
+news_trunc_run "before	after"
+[[ "$(news_trunc_desc)" == "before after" ]] \
+  && pass "tabs in the description do not shift the columns" \
+  || fail "tab handling wrong: $(news_trunc_desc)"
 
 # ============================================================
 section "29. fetch-news.sh (handles API failure gracefully)"
