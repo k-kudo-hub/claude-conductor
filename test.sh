@@ -3227,6 +3227,178 @@ else
 fi
 
 # ============================================================
+section "28b. fetch-news.sh (description trimming)"
+# ============================================================
+
+# description の切り詰めは awk で手書きせず jq に任せる。awk で「エスケープ →
+# 切り詰め」の順にすると 120 文字目が \" の \ に当たったときに \ が単独で残って
+# JSON が壊れ、逆に「切り詰め → エスケープ」にしても substr がバイト単位のため
+# マルチバイト文字を割ると BSD awk が towc エラーで異常終了する。どちらも
+# 当日の news ファイルが 1 件も書かれない結果になる。jq なら符号化は構成上
+# 正しく、`.[:120]` はコードポイント単位で切るのでどちらの故障も起きない。
+# 実スクリプトを固定フィードで走らせて結果を見る。
+NEWS_TRUNC_FEED="$SANDBOX/news-trunc-feed.xml"
+export NEWS_TRUNC_FEED
+
+cat > "$MOCK_BIN/curl" << 'MOCKCURL'
+#!/bin/bash
+cat "$NEWS_TRUNC_FEED"
+MOCKCURL
+chmod +x "$MOCK_BIN/curl"
+
+# $1 の文字を $2 個並べる（bash 3.2 に文字列の乗算は無い）
+repeat_char() {
+    printf '%*s' "$2" '' | tr ' ' "$1"
+}
+
+# 日本語など複数バイト文字は tr では並べられないので awk で繰り返す
+repeat_str() {
+    awk -v s="$1" -v n="$2" 'BEGIN { out = ""; for (i = 0; i < n; i++) out = out s; print out }'
+}
+
+# $NEWS_TRUNC_FEED に置いたフィードで fetch-news.sh を走らせる。
+# 当日ファイルのパスは実行の前後で引き直し、両方を探す。日付を先に固定すると
+# 日付をまたいだ瞬間に書き先と検証先がずれて偽 fail になる。実行中にまたぐ
+# 可能性もあるので、実行後の日付だけを見るのでも足りない。
+news_feed_run() {
+    NEWS_TRUNC_BEFORE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    rm -f "$NEWS_TRUNC_BEFORE"
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" 2>/dev/null
+    NEWS_TRUNC_AFTER="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    if [[ -f "$NEWS_TRUNC_AFTER" ]]; then
+        NEWS_TRUNC_FILE="$NEWS_TRUNC_AFTER"
+    else
+        NEWS_TRUNC_FILE="$NEWS_TRUNC_BEFORE"
+    fi
+}
+
+# $1 を <item> の中身にした 1 件だけのフィードで走らせる
+news_item_run() {
+    cat > "$NEWS_TRUNC_FEED" << FEED
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>TC</title>
+<item>$1</item>
+</channel>
+</rss>
+FEED
+    news_feed_run
+}
+
+# $1 を description に持つ 1 件だけのフィードで走らせる
+news_trunc_run() {
+    news_item_run "<title><![CDATA[Truncate Case]]></title><link>https://example.com/t</link><description><![CDATA[$1]]></description>"
+}
+
+news_trunc_desc() {
+    jq -r '.items[0].description' "$NEWS_TRUNC_FILE" 2>/dev/null || true
+}
+
+# (1) マルチバイト境界: 120 文字目が 'あ' に当たる。バイト単位で切ると
+# 文字の途中で割れ、BSD awk が towc エラーで落ちて当日ファイルが全滅する。
+NEWS_TRUNC_HEAD=$(repeat_char A 119)
+news_trunc_run "${NEWS_TRUNC_HEAD}あ and more text past the limit"
+
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written when the cut lands on a multibyte char" \
+  || fail "no news file: the multibyte cut killed the run"
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid when the cut lands on a multibyte char" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+[[ "$(news_trunc_desc)" == "${NEWS_TRUNC_HEAD}あ..." ]] \
+  && pass "the multibyte char is kept whole at the cut" \
+  || fail "description wrong at the multibyte cut: $(news_trunc_desc)"
+
+# (2) エスケープ境界: 安全文字 119 個の直後に `"`。エスケープしてから切ると
+# `\"` の `\` だけが末尾に残って JSON が壊れる。
+news_trunc_run "${NEWS_TRUNC_HEAD}\"personal superintelligence\" and more text past the limit"
+
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written when the cut lands on a quote" \
+  || fail "no news file: the escaped description broke the JSON"
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid when the cut lands on a quote" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+NEWS_TRUNC_COUNT=$(jq -r '.items | length' "$NEWS_TRUNC_FILE" 2>/dev/null || echo 0)
+[[ "$NEWS_TRUNC_COUNT" == "1" ]] && pass "the item survives the cut" || fail "item count: $NEWS_TRUNC_COUNT"
+[[ "$(news_trunc_desc)" == "${NEWS_TRUNC_HEAD}\"..." ]] \
+  && pass "the quote is kept whole at the cut" \
+  || fail "description wrong at the cut: $(news_trunc_desc)"
+
+# (3) 119 文字（上限未満）: そのまま、"..." は付かない
+NEWS_TRUNC_119=$(repeat_char B 119)
+news_trunc_run "$NEWS_TRUNC_119"
+[[ "$(news_trunc_desc)" == "$NEWS_TRUNC_119" ]] \
+  && pass "119 chars are left untouched" || fail "119 chars altered: $(news_trunc_desc)"
+
+# (4) 120 文字ちょうど: 上限と同じなので切らない
+NEWS_TRUNC_120=$(repeat_char C 120)
+news_trunc_run "$NEWS_TRUNC_120"
+[[ "$(news_trunc_desc)" == "$NEWS_TRUNC_120" ]] \
+  && pass "120 chars are left untouched" || fail "120 chars altered: $(news_trunc_desc)"
+
+# (5) 121 文字: 先頭 120 文字 + "..."
+NEWS_TRUNC_121=$(repeat_char D 121)
+news_trunc_run "$NEWS_TRUNC_121"
+[[ "$(news_trunc_desc)" == "$(repeat_char D 120)..." ]] \
+  && pass "121 chars are cut to 120 plus an ellipsis" || fail "121 chars cut wrong: $(news_trunc_desc)"
+
+# (6) 日本語だけの description: バイトではなく文字で数える（Go 版と同じ単位）。
+# 130 文字 = 390 バイトなので、バイト単位なら 40 文字で切れてしまう。
+NEWS_TRUNC_JP=$(repeat_str "あ" 130)
+news_trunc_run "$NEWS_TRUNC_JP"
+[[ "$(news_trunc_desc)" == "$(repeat_str "あ" 120)..." ]] \
+  && pass "Japanese description is cut by characters, not bytes" \
+  || fail "Japanese cut wrong: $(news_trunc_desc)"
+# バイト数で確かめる（awk の length はロケール次第で文字にもバイトにもなる）。
+# 'あ' は UTF-8 で 3 バイトなので 120 文字 + "..." は 363 バイト。
+# バイトで切っていた頃は 120 バイト = 40 文字 + "..." で 123 バイトだった。
+NEWS_TRUNC_JP_BYTES=$(printf '%s' "$(news_trunc_desc)" | wc -c | tr -d ' ')
+[[ "$NEWS_TRUNC_JP_BYTES" == "363" ]] \
+  && pass "Japanese description keeps 120 chars plus the ellipsis" \
+  || fail "Japanese description bytes: $NEWS_TRUNC_JP_BYTES (want 363)"
+
+# (7) タブを含む description でも列がずれない（awk は TSV を出し jq が組む）
+news_trunc_run "before	after"
+[[ "$(news_trunc_desc)" == "before after" ]] \
+  && pass "tabs in the description do not shift the columns" \
+  || fail "tab handling wrong: $(news_trunc_desc)"
+
+# (8) CRLF の CDATA: \r は削除、\n だけを空白にする。両方を空白にすると
+# 二重空白になって本文が間延びする。
+news_trunc_run "$(printf 'line one\r\nline two')"
+[[ "$(news_trunc_desc)" == "line one line two" ]] \
+  && pass "CRLF collapses to a single space" \
+  || fail "CRLF handling wrong: [$(news_trunc_desc)]"
+
+# (9) 改行で整形された <link>: url に余白を残さない。余白付きの url は
+# news-loop の open が失敗する。
+news_item_run '<title><![CDATA[Link Case]]></title><link>
+    https://example.com/spaced
+  </link><description><![CDATA[desc]]></description>'
+NEWS_TRUNC_URL=$(jq -r '.items[0].url' "$NEWS_TRUNC_FILE" 2>/dev/null || true)
+[[ "$NEWS_TRUNC_URL" == "https://example.com/spaced" ]] \
+  && pass "a newline-wrapped <link> yields a clean url" \
+  || fail "url has stray whitespace: [$NEWS_TRUNC_URL]"
+
+# (10) 不正な UTF-8 バイト: awk は測定も切断もしないので落ちない（LC_ALL=C）。
+# jq が U+FFFD へ置き換えた有効な JSON になる。
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel><title>TC</title>\n<item><title><![CDATA[Bad Byte]]></title><link>https://example.com/b</link><description><![CDATA[before\377after]]></description></item>\n</channel></rss>\n' \
+    > "$NEWS_TRUNC_FEED"
+news_feed_run
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written despite an invalid UTF-8 byte" \
+  || fail "no news file: the invalid byte killed the run"
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid despite an invalid UTF-8 byte" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+NEWS_TRUNC_REPL=$(printf '\357\277\275')
+[[ "$(news_trunc_desc)" == "before${NEWS_TRUNC_REPL}after" ]] \
+  && pass "the invalid byte becomes U+FFFD" \
+  || fail "invalid byte handling wrong: [$(news_trunc_desc)]"
+
+# ============================================================
 section "29. fetch-news.sh (handles API failure gracefully)"
 # ============================================================
 

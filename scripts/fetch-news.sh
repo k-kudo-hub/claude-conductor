@@ -29,8 +29,26 @@ if [[ $? -ne 0 ]] || [[ -z "$RSS" ]]; then
     exit 0
 fi
 
-# Parse RSS XML with awk (BSD-compatible) and convert to JSON (first 5 items)
-RESULT=$(echo "$RSS" | awk '
+# Parse RSS XML with awk (BSD-compatible) into tab-separated rows (first 5
+# items), then let jq build the JSON.
+#
+# awk only extracts and cleans; it never escapes and never measures text.
+# Hand-rolled escaping plus a byte-wise substr had two failure modes, both of
+# which produced no news file at all for the whole day:
+#   - escaping before trimming could cut inside an escape sequence and leave a
+#     lone backslash, which made the document invalid JSON
+#   - trimming with substr() cuts on bytes, so a cut through a multibyte
+#     character makes BSD awk abort with "towc: multibyte conversion failure"
+# jq owns both jobs now: it escapes correctly by construction and slices by
+# codepoint, so the ordering problem cannot come back. Trimming is 120
+# codepoints, matching the Go version (mdev-go internal/domain/news_rss.go:
+# truncateRunes, also runes) rather than 120 bytes.
+#
+# LC_ALL=C keeps awk byte-oriented. Every regex here is ASCII, and awk no longer
+# measures or cuts text, so this changes nothing about the output — it only
+# removes the last path where a stray invalid UTF-8 byte in a feed could abort
+# awk ("towc: multibyte conversion failure") and cost the whole day's file.
+ROWS=$(echo "$RSS" | LC_ALL=C awk '
 function extract(str, open, end,    n, parts, val) {
     n = split(str, parts, open)
     if (n < 2) return ""
@@ -40,7 +58,6 @@ function extract(str, open, end,    n, parts, val) {
 BEGIN {
     RS = "<item>"
     count = 0
-    print "{\"items\":["
 }
 NR > 1 && count < 5 {
     title = ""; link = ""; desc = ""
@@ -61,43 +78,48 @@ NR > 1 && count < 5 {
     desc = raw
 
     if (title != "" && link != "") {
-        # Strip HTML tags before escaping (tags may contain quotes)
+        # Strip HTML tags (they may contain quotes and stray angle brackets)
         gsub(/<[^>]*>/, "", title)
         gsub(/<[^>]*>/, "", desc)
-        # Remove newlines/carriage returns (CDATA blocks may contain them)
-        gsub(/\n/, " ", title)
-        gsub(/\r/, "", title)
-        gsub(/\n/, " ", desc)
-        gsub(/\r/, "", desc)
-        # Escape backslashes and double quotes in all fields
-        gsub(/\\/, "\\\\", title)
-        gsub(/"/, "\\\"", title)
-        gsub(/\\/, "\\\\", link)
-        gsub(/"/, "\\\"", link)
-        gsub(/\\/, "\\\\", desc)
-        gsub(/"/, "\\\"", desc)
-        # Trim description to 120 chars
-        if (length(desc) > 120) desc = substr(desc, 1, 120) "..."
+        # Flatten every separator that would break "one item per line, one
+        # field per tab" (CDATA blocks may contain newlines and tabs).
+        # \r is dropped rather than replaced: CRLF would otherwise leave two
+        # spaces where the text had one line break.
+        gsub(/\r/, "", title); gsub(/\n/, " ", title); gsub(/\t/, " ", title)
+        gsub(/\r/, "", desc);  gsub(/\n/, " ", desc);  gsub(/\t/, " ", desc)
+        # A URL carries no whitespace, and feeds do wrap <link> across lines.
+        # Drop the separators outright and trim what the wrapping indented,
+        # otherwise the padded url fails to open from the news pane.
+        gsub(/\r/, "", link); gsub(/\n/, "", link); gsub(/\t/, "", link)
+        sub(/^[[:space:]]+/, "", link); sub(/[[:space:]]+$/, "", link)
 
-        if (count > 0) print ","
-        printf "{\"title\":\"%s\",\"url\":\"%s\",\"description\":\"%s\"}", title, link, desc
+        printf "%s\t%s\t%s\n", title, link, desc
         count++
     }
 }
-END {
-    print "]}"
-}
 ' 2>/dev/null)
 
-if [[ $? -ne 0 ]] || [[ -z "$RESULT" ]]; then
+if [[ $? -ne 0 ]]; then
     exit 0
 fi
 
-# Validate JSON with jq before saving (write to temp file to avoid empty file on failure)
-VALIDATED=$(echo "$RESULT" | jq '.' 2>/dev/null)
+# Build the JSON from the rows. jq escapes each field by construction, and
+# `.[:120]` slices by codepoint, so neither quotes nor multibyte text can
+# produce a broken document.
+RESULT=$(echo "$ROWS" | jq -R -n '
+    {items: [
+        inputs
+        | select(length > 0)
+        | split("\t")
+        | {
+            title: .[0],
+            url: .[1],
+            description: (.[2] // "" | if length > 120 then .[:120] + "..." else . end)
+          }
+    ]}' 2>/dev/null)
 
-if [[ $? -eq 0 ]] && [[ -n "$VALIDATED" ]]; then
-    echo "$VALIDATED" > "$NEWS_FILE"
+if [[ $? -eq 0 ]] && [[ -n "$RESULT" ]]; then
+    echo "$RESULT" > "$NEWS_FILE"
 fi
 
 # Clean up news files older than 7 days
