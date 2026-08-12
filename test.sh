@@ -4931,6 +4931,89 @@ zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 1h ago] '; cd '$MDEV_WORKDIR
   && pass "alive attach keeps pending intact" || fail "pending removed on alive attach"
 rm -rf "$HOME/.claude-pending/myapp"
 
+# ============================================================
+section "54c. mdev startup session autoclean"
+# ============================================================
+
+# detached のまま残ったセッションはペインのポーリングが回り続け、zellij サーバを
+# じわじわ劣化させる。セッションを新しく作る経路だけで
+# `bin/mdev sessions clean --auto` を呼んで掃除する。attach は既存セッションへ
+# 戻るだけなので呼ばない。掃除本体は mdev-go 側の実装。
+MDEV_CLEAN_LOG="$SANDBOX/mdev-clean-calls.log"
+
+# 引数を記録するだけの bin/mdev。$1 でスタブの終了コードを決める。
+mdev_clean_stub() {
+    mkdir -p "$CONDUCTOR_HOME/bin"
+    printf '#!/bin/bash\necho "$*" >> "%s"\nexit %s\n' "$MDEV_CLEAN_LOG" "$1" \
+        > "$CONDUCTOR_HOME/bin/mdev"
+    chmod +x "$CONDUCTOR_HOME/bin/mdev"
+}
+
+mdev_clean_count() {
+    grep -c '^sessions clean --auto$' "$MDEV_CLEAN_LOG" 2>/dev/null | tr -d ' ' || true
+}
+
+# 1. 新規作成経路: sessions clean --auto がちょうど 1 回呼ばれる
+mdev_clean_stub 0
+: > "$MDEV_CLEAN_LOG"; : > "$ZLOG"
+zsh -c "cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ "$(mdev_clean_count)" == "1" ]] \
+  && pass "create path runs 'sessions clean --auto' once" \
+  || fail "clean calls: $(mdev_clean_count) ($(cat "$MDEV_CLEAN_LOG" 2>/dev/null | tr '\n' ' '))"
+grep -q "new-session-with-layout" "$ZLOG" \
+  && pass "create path still starts the session" || fail "session not created: $(cat "$ZLOG")"
+
+# 2. EXITED からの作り直しも新規作成経路なので掃除する
+: > "$MDEV_CLEAN_LOG"; : > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 5h ago] (EXITED - attach to resurrect)'; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ "$(mdev_clean_count)" == "1" ]] \
+  && pass "exited rebuild runs the autoclean" || fail "exited rebuild clean calls: $(mdev_clean_count)"
+
+# 3. 生存セッションへの attach では呼ばない
+: > "$MDEV_CLEAN_LOG"; : > "$ZLOG"
+zsh -c "export MOCK_SESSIONS_OUTPUT='myapp [Created 1h ago] '; cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ ! -s "$MDEV_CLEAN_LOG" ]] \
+  && pass "alive attach does not run the autoclean" \
+  || fail "autoclean ran on attach: $(cat "$MDEV_CLEAN_LOG")"
+
+# 4. `mdev update` はセッションを作らないので呼ばない
+mv "$CONDUCTOR_HOME/scripts/update.sh" "$CONDUCTOR_HOME/scripts/update.sh.real"
+printf '#!/bin/bash\nexit 0\n' > "$CONDUCTOR_HOME/scripts/update.sh"
+chmod +x "$CONDUCTOR_HOME/scripts/update.sh"
+: > "$MDEV_CLEAN_LOG"
+zsh -c "cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev update" >/dev/null 2>&1
+[[ ! -s "$MDEV_CLEAN_LOG" ]] \
+  && pass "mdev update does not run the autoclean" \
+  || fail "autoclean ran on update: $(cat "$MDEV_CLEAN_LOG")"
+mv "$CONDUCTOR_HOME/scripts/update.sh.real" "$CONDUCTOR_HOME/scripts/update.sh"
+
+# 5. 掃除が失敗してもセッション起動は止めない
+mdev_clean_stub 1
+: > "$MDEV_CLEAN_LOG"; : > "$ZLOG"
+zsh -c "cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" >/dev/null 2>&1
+[[ "$(mdev_clean_count)" == "1" ]] \
+  && pass "failing autoclean is still attempted" || fail "autoclean not called when it fails"
+grep -q "new-session-with-layout" "$ZLOG" \
+  && pass "failing autoclean does not stop the session" || fail "session not created: $(cat "$ZLOG")"
+
+# 6. bin/mdev が無い環境（Shell 版のみ）でも素通りする
+rm -f "$CONDUCTOR_HOME/bin/mdev"
+: > "$ZLOG"
+if MDEV_NOBIN_OUT=$(zsh -c "cd '$MDEV_WORKDIR' && source '$INIT_FILE' && mdev" 2>&1); then
+    MDEV_NOBIN_RC=0
+else
+    MDEV_NOBIN_RC=$?
+fi
+[[ "$MDEV_NOBIN_RC" -eq 0 ]] \
+  && pass "mdev succeeds without bin/mdev" || fail "mdev exited $MDEV_NOBIN_RC without bin/mdev"
+echo "$MDEV_NOBIN_OUT" | grep -qi 'no such file\|not found\|permission denied' \
+  && fail "mdev complained about the missing bin/mdev: $MDEV_NOBIN_OUT" \
+  || pass "no error output when bin/mdev is absent"
+grep -q "new-session-with-layout" "$ZLOG" \
+  && pass "session still starts without bin/mdev" || fail "session not created: $(cat "$ZLOG")"
+
+rm -rf "$CONDUCTOR_HOME/bin"
+
 # Restore the real scripts
 mv "$CONDUCTOR_HOME/scripts/fetch-news.sh.real" "$CONDUCTOR_HOME/scripts/fetch-news.sh"
 mv "$CONDUCTOR_HOME/scripts/check-update.sh.real" "$CONDUCTOR_HOME/scripts/check-update.sh"

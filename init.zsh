@@ -86,6 +86,10 @@ mdev() {
         return $?
     fi
 
+    # detached のまま残ったセッションはペインのポーリングが回り続け、zellij
+    # サーバをじわじわ劣化させる。セッションを作る前に掃除しておく（掃除本体は
+    # mdev-go 側の `mdev sessions clean --auto`。Shell 版のみの環境では何もしない）。
+    [[ -x "$CONDUCTOR_HOME/bin/mdev" ]] && "$CONDUCTOR_HOME/bin/mdev" sessions clean --auto 2>/dev/null
     bash "$CONDUCTOR_HOME/scripts/fetch-news.sh"
     bash "$CONDUCTOR_HOME/scripts/check-update.sh"
     if [[ "$state" == "exited" ]]; then
