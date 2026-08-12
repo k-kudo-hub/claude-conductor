@@ -91,6 +91,8 @@ _screen_write_pending() {
     local file="$1" tab="$2" session="$3" slug="$4" message="$5" event="$6" agent="$7"
     local dir="" task_type="" transcript=""
     IFS=$'\t' read -r dir task_type transcript <<< "$(_screen_registry_lookup "$session" "$tab")"
+    # 合成ID `screen-<slug>` の生成元。この接頭辞は record-output.sh の dedupe
+    # 判定と task-lib.sh の resume_session_id でも見ている。変えるなら3箇所同時に。
     jq -n \
         --arg tab "$tab" \
         --arg session "$session" \

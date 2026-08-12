@@ -227,6 +227,8 @@ resume_session_id() {
     local sid="$1" transcript="$2"
     [[ -n "$sid" ]] || return 0
     [[ -n "$transcript" ]] || return 0
+    # 合成IDの接頭辞 "screen-" は screen-detect-lib.sh が生成し、record-output.sh の
+    # dedupe 判定でも見ている。変えるなら3箇所同時に。
     case "$sid" in
         screen-*) return 0 ;;
     esac
