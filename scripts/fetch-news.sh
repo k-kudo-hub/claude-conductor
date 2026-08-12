@@ -43,7 +43,12 @@ fi
 # codepoint, so the ordering problem cannot come back. Trimming is 120
 # codepoints, matching the Go version (mdev-go internal/domain/news_rss.go:
 # truncateRunes, also runes) rather than 120 bytes.
-ROWS=$(echo "$RSS" | awk '
+#
+# LC_ALL=C keeps awk byte-oriented. Every regex here is ASCII, and awk no longer
+# measures or cuts text, so this changes nothing about the output — it only
+# removes the last path where a stray invalid UTF-8 byte in a feed could abort
+# awk ("towc: multibyte conversion failure") and cost the whole day's file.
+ROWS=$(echo "$RSS" | LC_ALL=C awk '
 function extract(str, open, end,    n, parts, val) {
     n = split(str, parts, open)
     if (n < 2) return ""
@@ -77,10 +82,16 @@ NR > 1 && count < 5 {
         gsub(/<[^>]*>/, "", title)
         gsub(/<[^>]*>/, "", desc)
         # Flatten every separator that would break "one item per line, one
-        # field per tab" (CDATA blocks may contain newlines and tabs)
-        gsub(/\n/, " ", title); gsub(/\r/, " ", title); gsub(/\t/, " ", title)
-        gsub(/\n/, " ", link);  gsub(/\r/, " ", link);  gsub(/\t/, " ", link)
-        gsub(/\n/, " ", desc);  gsub(/\r/, " ", desc);  gsub(/\t/, " ", desc)
+        # field per tab" (CDATA blocks may contain newlines and tabs).
+        # \r is dropped rather than replaced: CRLF would otherwise leave two
+        # spaces where the text had one line break.
+        gsub(/\r/, "", title); gsub(/\n/, " ", title); gsub(/\t/, " ", title)
+        gsub(/\r/, "", desc);  gsub(/\n/, " ", desc);  gsub(/\t/, " ", desc)
+        # A URL carries no whitespace, and feeds do wrap <link> across lines.
+        # Drop the separators outright and trim what the wrapping indented,
+        # otherwise the padded url fails to open from the news pane.
+        gsub(/\r/, "", link); gsub(/\n/, "", link); gsub(/\t/, "", link)
+        sub(/^[[:space:]]+/, "", link); sub(/[[:space:]]+$/, "", link)
 
         printf "%s\t%s\t%s\n", title, link, desc
         count++

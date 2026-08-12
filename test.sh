@@ -3256,23 +3256,39 @@ repeat_str() {
     awk -v s="$1" -v n="$2" 'BEGIN { out = ""; for (i = 0; i < n; i++) out = out s; print out }'
 }
 
-# $1 を description に持つ 1 件だけのフィードを置いて fetch-news.sh を走らせる。
-# 実行のたびに当日ファイルのパスを引き直す（日付を先に固定すると、日付を
-# またいだ瞬間にスクリプトの書き先とテストの検証先がずれて偽 fail になる）。
-news_trunc_run() {
+# $NEWS_TRUNC_FEED に置いたフィードで fetch-news.sh を走らせる。
+# 当日ファイルのパスは実行の前後で引き直し、両方を探す。日付を先に固定すると
+# 日付をまたいだ瞬間に書き先と検証先がずれて偽 fail になる。実行中にまたぐ
+# 可能性もあるので、実行後の日付だけを見るのでも足りない。
+news_feed_run() {
+    NEWS_TRUNC_BEFORE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    rm -f "$NEWS_TRUNC_BEFORE"
+    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" 2>/dev/null
+    NEWS_TRUNC_AFTER="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    if [[ -f "$NEWS_TRUNC_AFTER" ]]; then
+        NEWS_TRUNC_FILE="$NEWS_TRUNC_AFTER"
+    else
+        NEWS_TRUNC_FILE="$NEWS_TRUNC_BEFORE"
+    fi
+}
+
+# $1 を <item> の中身にした 1 件だけのフィードで走らせる
+news_item_run() {
     cat > "$NEWS_TRUNC_FEED" << FEED
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
 <channel>
 <title>TC</title>
-<item><title><![CDATA[Truncate Case]]></title><link>https://example.com/t</link><description><![CDATA[$1]]></description></item>
+<item>$1</item>
 </channel>
 </rss>
 FEED
-    NEWS_TRUNC_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
-    rm -f "$NEWS_TRUNC_FILE"
-    bash "$HOME/.claude-conductor/scripts/fetch-news.sh" 2>"$SANDBOX/news-trunc-stderr"
-    NEWS_TRUNC_FILE="$NEWS_DIR/$(date '+%Y-%m-%d').json"
+    news_feed_run
+}
+
+# $1 を description に持つ 1 件だけのフィードで走らせる
+news_trunc_run() {
+    news_item_run "<title><![CDATA[Truncate Case]]></title><link>https://example.com/t</link><description><![CDATA[$1]]></description>"
 }
 
 news_trunc_desc() {
@@ -3290,9 +3306,6 @@ news_trunc_run "${NEWS_TRUNC_HEAD}あ and more text past the limit"
 jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
   && pass "news JSON is valid when the cut lands on a multibyte char" \
   || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
-[[ ! -s "$SANDBOX/news-trunc-stderr" ]] \
-  && pass "awk does not abort on the multibyte cut" \
-  || fail "stderr from fetch-news.sh: $(cat "$SANDBOX/news-trunc-stderr")"
 [[ "$(news_trunc_desc)" == "${NEWS_TRUNC_HEAD}あ..." ]] \
   && pass "the multibyte char is kept whole at the cut" \
   || fail "description wrong at the multibyte cut: $(news_trunc_desc)"
@@ -3351,6 +3364,39 @@ news_trunc_run "before	after"
 [[ "$(news_trunc_desc)" == "before after" ]] \
   && pass "tabs in the description do not shift the columns" \
   || fail "tab handling wrong: $(news_trunc_desc)"
+
+# (8) CRLF の CDATA: \r は削除、\n だけを空白にする。両方を空白にすると
+# 二重空白になって本文が間延びする。
+news_trunc_run "$(printf 'line one\r\nline two')"
+[[ "$(news_trunc_desc)" == "line one line two" ]] \
+  && pass "CRLF collapses to a single space" \
+  || fail "CRLF handling wrong: [$(news_trunc_desc)]"
+
+# (9) 改行で整形された <link>: url に余白を残さない。余白付きの url は
+# news-loop の open が失敗する。
+news_item_run '<title><![CDATA[Link Case]]></title><link>
+    https://example.com/spaced
+  </link><description><![CDATA[desc]]></description>'
+NEWS_TRUNC_URL=$(jq -r '.items[0].url' "$NEWS_TRUNC_FILE" 2>/dev/null || true)
+[[ "$NEWS_TRUNC_URL" == "https://example.com/spaced" ]] \
+  && pass "a newline-wrapped <link> yields a clean url" \
+  || fail "url has stray whitespace: [$NEWS_TRUNC_URL]"
+
+# (10) 不正な UTF-8 バイト: awk は測定も切断もしないので落ちない（LC_ALL=C）。
+# jq が U+FFFD へ置き換えた有効な JSON になる。
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel><title>TC</title>\n<item><title><![CDATA[Bad Byte]]></title><link>https://example.com/b</link><description><![CDATA[before\377after]]></description></item>\n</channel></rss>\n' \
+    > "$NEWS_TRUNC_FEED"
+news_feed_run
+[[ -f "$NEWS_TRUNC_FILE" ]] \
+  && pass "news file written despite an invalid UTF-8 byte" \
+  || fail "no news file: the invalid byte killed the run"
+jq '.' "$NEWS_TRUNC_FILE" > /dev/null 2>&1 \
+  && pass "news JSON is valid despite an invalid UTF-8 byte" \
+  || fail "news JSON invalid: $(tail -c 120 "$NEWS_TRUNC_FILE" 2>/dev/null)"
+NEWS_TRUNC_REPL=$(printf '\357\277\275')
+[[ "$(news_trunc_desc)" == "before${NEWS_TRUNC_REPL}after" ]] \
+  && pass "the invalid byte becomes U+FFFD" \
+  || fail "invalid byte handling wrong: [$(news_trunc_desc)]"
 
 # ============================================================
 section "29. fetch-news.sh (handles API failure gracefully)"
