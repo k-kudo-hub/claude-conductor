@@ -52,11 +52,9 @@ while IFS= read -r entry; do
         continue
     fi
 
-    # Resume only when the transcript is still on disk (no broken --resume).
-    resume_id=""
-    if [ -n "$sid" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
-        resume_id="$sid"
-    fi
+    # Resume only for a real session id whose transcript is still on disk
+    # (no broken --resume). See resume_session_id in task-lib.sh.
+    resume_id=$(resume_session_id "$sid" "$transcript")
 
     create_task "$dir" "$task_type" "$tab" "$resume_id" "$agent"
     ct_rc=$?

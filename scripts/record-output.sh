@@ -307,6 +307,8 @@ if [ -n "$OUT" ]; then
     trap '[ "$LOCK_HELD" = 1 ] && release_lock "$DAILY_LOCK"; rm -f "$TMP"' EXIT
 
     # Condition 1: only a real session id is a usable dedupe key.
+    # 合成IDの接頭辞 "screen-" は screen-detect-lib.sh が生成し、task-lib.sh の
+    # resume_session_id も見ている。変えるなら3箇所同時に。
     DEDUPE_KEY=""
     case "$CLAUDE_SESSION_ID" in
         ""|screen-*) ;;

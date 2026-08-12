@@ -2594,6 +2594,45 @@ HB_FLAG=$(jq -r 'select(.tab=="halfbuilt") | .restored' "$RESTORE_DAILY_FILE")
 [[ "$HB_FLAG" == "true" ]] && pass "half-built restore marks the entry restored (no duplicate on retry)" \
   || fail "half-built entry left in Done: $HB_FLAG"
 
+# スクリーン検出のタブには claude_session_id が無いので、screen-detect-lib.sh が
+# タブ名から `screen-<slug>` という合成 ID を作って pending に書く。それは daily
+# ログにもそのまま載り、transcript はレジストリ由来で実在するため、
+# 「sid あり・transcript あり・transcript 実在」の 3 条件を素通りしてしまう。
+# 復元すると `codex resume screen-<slug>` という存在しない ID で起動する。
+# 合成 ID では再開せず、新規セッションで起動しなければならない。
+SCREEN_AT="${RESTORE_TODAY}T04:00:00+0900"
+SCREEN_CX_AT="${RESTORE_TODAY}T03:00:00+0900"
+cat >> "$RESTORE_DAILY_FILE" << JSONL
+{"tab":"screen-task","session":"$RESTORE_SESSION","completed_at":"$SCREEN_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ_DIR","task_type":"dev","claude_session_id":"screen-screen-task","transcript_path":"$RESTORE_TRANSCRIPT"}
+{"tab":"cx-task","session":"$RESTORE_SESSION","completed_at":"$SCREEN_CX_AT","message":"done","summary":null,"markers":{"merged":false,"slack":false,"doc":false},"dir":"$PROJ2_DIR","task_type":"dev","agent":"codex","claude_session_id":"screen-cx_task-1234567890","transcript_path":"$RESTORE_TRANSCRIPT"}
+JSONL
+
+: > "$HOME/.claude-pending/zellij-calls.log"
+SCREEN_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "screen-task" "$RESTORE_SESSION" "$SCREEN_AT" || SCREEN_RC=$?
+[[ $SCREEN_RC -eq 0 ]] && pass "screen-detected entry still restores" || fail "screen restore exit wrong: $SCREEN_RC"
+grep -q -- "--resume screen-" "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "resumed a synthesized screen- id: $(grep new-tab "$HOME/.claude-pending/zellij-calls.log")" \
+  || pass "screen- session id is not resumed"
+grep -q "action new-tab -n screen-task --cwd $PROJ_DIR -- env TASK_TAB_NAME=screen-task TASK_TYPE=dev claude\$" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "screen-detected entry starts a fresh claude" \
+  || fail "screen entry did not fall back correctly: $(grep new-tab "$HOME/.claude-pending/zellij-calls.log")"
+SCREEN_FLAG=$(jq -r 'select(.tab=="screen-task") | .restored' "$RESTORE_DAILY_FILE")
+[[ "$SCREEN_FLAG" == "true" ]] && pass "screen-detected entry marked restored" || fail "screen entry not marked: $SCREEN_FLAG"
+
+# codex は resume_args が `resume` なので、素通りすると
+# `codex resume screen-cx_task-...` になる（実際に観測された形）。
+: > "$HOME/.claude-pending/zellij-calls.log"
+SCREEN_CX_RC=0
+ZELLIJ_SESSION_NAME="$RESTORE_SESSION" bash "$HOME/.claude-conductor/scripts/restore-task.sh" "cx-task" "$RESTORE_SESSION" "$SCREEN_CX_AT" || SCREEN_CX_RC=$?
+[[ $SCREEN_CX_RC -eq 0 ]] && pass "screen-detected codex entry still restores" || fail "codex screen restore exit wrong: $SCREEN_CX_RC"
+grep -q "resume screen-" "$HOME/.claude-pending/zellij-calls.log" \
+  && fail "codex resumed a synthesized screen- id: $(grep new-tab "$HOME/.claude-pending/zellij-calls.log")" \
+  || pass "codex does not resume a screen- session id"
+grep -q "action new-tab -n cx-task --cwd $PROJ2_DIR -- env TASK_TAB_NAME=cx-task TASK_TYPE=dev TASK_AGENT=codex codex\$" "$HOME/.claude-pending/zellij-calls.log" \
+  && pass "screen-detected codex entry starts a fresh codex" \
+  || fail "codex screen entry did not fall back: $(grep new-tab "$HOME/.claude-pending/zellij-calls.log")"
+
 # ============================================================
 section "26f. done-loop.sh (r+number triggers restore)"
 # ============================================================
@@ -3052,6 +3091,22 @@ registry_upsert "rs-sess" "rs-sid-2" "beta-dev" "$RS_DIR2" "" "" "/nonexistent/t
 ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
 grep -q "new-tab -n beta-dev --cwd $RS_DIR2 -- env TASK_TAB_NAME=beta-dev TASK_TYPE= claude$" "$RS_CALLS" \
   && pass "missing transcript -> fresh session (no broken --resume)" || fail "wrong recreation: $(grep new-tab "$RS_CALLS")"
+
+# スクリーン検出の合成ID（screen-<slug>）では再開しない。レジストリには今のところ
+# 合成IDが入らないが、pending からレジストリへ書き戻す経路が増えたときに
+# `claude --resume screen-...` が復活しないよう、両経路で同じ判断にしておく。
+rm -rf "$CONDUCTOR_HOME/tasks"
+# 直前のブロックで作られたタブ名がモックに残っていると「既存タブ」として
+# スキップされ、再生成そのものが起きない。
+mock_zellij_reset
+registry_upsert "rs-sess" "screen-scr_dev" "scr-dev" "$RS_DIR1" "" "" "$RS_TRANSCRIPT"
+: > "$RS_CALLS"
+ZELLIJ_SESSION_NAME=rs-sess MOCK_TAB_NAMES="Main" bash "$RS"
+grep -q -- "--resume screen-" "$RS_CALLS" \
+  && fail "restore-session resumed a synthesized screen- id: $(grep new-tab "$RS_CALLS")" \
+  || pass "restore-session does not resume a screen- session id"
+grep -q "new-tab -n scr-dev --cwd $RS_DIR1 -- env TASK_TAB_NAME=scr-dev TASK_TYPE= claude\$" "$RS_CALLS" \
+  && pass "screen- sid -> fresh session on session restore" || fail "wrong recreation: $(grep new-tab "$RS_CALLS")"
 
 # 既に存在するタブは再生成しない（エントリは保持）
 rm -rf "$CONDUCTOR_HOME/tasks"
