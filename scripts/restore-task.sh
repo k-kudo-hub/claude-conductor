@@ -65,12 +65,11 @@ if [ ! -d "$DIR" ]; then
     exit 3
 fi
 
-# Resume the previous conversation only when its transcript is still on disk.
-# An unknown or missing transcript means a fresh session (no broken --resume).
-RESUME_ID=""
-if [ -n "$CLAUDE_SESSION_ID" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    RESUME_ID="$CLAUDE_SESSION_ID"
-fi
+# Resume the previous conversation only for a real session id whose transcript
+# is still on disk. An unknown session, a synthesized screen-<slug> id or a
+# missing transcript all mean a fresh session (no broken --resume).
+# See resume_session_id in task-lib.sh.
+RESUME_ID=$(resume_session_id "$CLAUDE_SESSION_ID" "$TRANSCRIPT_PATH")
 
 # Recreate the tab. A missing task_type falls back to no special layout;
 # a missing agent falls back to the legacy single-agent path (claude).

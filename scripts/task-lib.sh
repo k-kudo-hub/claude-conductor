@@ -206,6 +206,34 @@ agent_resume_args() {
     echo "$args"
 }
 
+# 再開に使うエージェントのセッションIDを返す。次のすべてを満たしたときだけ
+# 再開し、1つでも欠ければ空を返して新規セッションで起動する（壊れた resume を
+# しない）。
+#
+#   - セッションIDが記録されている
+#   - transcript のパスが記録されている
+#   - セッションIDがスクリーン検出の合成ID（screen-<slug>）ではない
+#   - transcript のファイルが実在する
+#
+# 3つ目が要るのは、hookを持たないエージェント（codex）の完了をタブの画面から
+# 検出するとき、screen-detect-lib.sh が claude_session_id をタブ名から
+# `screen-<slug>` として合成するため。合成IDは daily ログにもそのまま載り、
+# transcript はレジストリ由来で実在するので他の条件を素通りしてしまい、
+# `codex resume screen-cx_task-1234567890` という存在しないIDで起動する。
+#
+# 復元は「起動時のセッション復元」と「Doneからの復元」の2経路あるが、
+# 判断はここに集約する。別々に書くと片方だけに直しが入って挙動がずれる。
+resume_session_id() {
+    local sid="$1" transcript="$2"
+    [[ -n "$sid" ]] || return 0
+    [[ -n "$transcript" ]] || return 0
+    case "$sid" in
+        screen-*) return 0 ;;
+    esac
+    [[ -f "$transcript" ]] || return 0
+    echo "$sid"
+}
+
 # Configured agent names (config .agents keys), one per line. Empty output
 # means no named agents are configured and tasks use the legacy single-agent
 # path.
