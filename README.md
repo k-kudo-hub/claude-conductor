@@ -1,5 +1,25 @@
 # Claude Conductor
 
+> [!IMPORTANT]
+> **This repository is archived. Development has moved to [mdev-go](https://github.com/k-kudo-hub/mdev-go).**
+>
+> mdev-go is a Go rewrite of this project. It reads and writes the same data
+> (`~/.claude-conductor/`: `config.json`, `daily/`, `tasks/`, `news/`, and the
+> pending files under `~/.claude-pending/`), and feature parity with the shell
+> version has been verified, so an existing environment carries over as is.
+> Install it and run `mdev install` to migrate.
+>
+> This repository is kept as the final form of the shell version. The code below
+> is preserved as a historical record and is no longer maintained.
+>
+> To go back to the shell version, install from the last release, **v0.9.1**:
+>
+> ```bash
+> curl -fsSL https://github.com/k-kudo-hub/claude-conductor/archive/refs/tags/v0.9.1.tar.gz | tar xz
+> cd claude-conductor-0.9.1
+> ./install.sh
+> ```
+
 Orchestrate multiple Claude Code sessions with an interactive dashboard in [Zellij](https://zellij.dev/).
 
 ```
